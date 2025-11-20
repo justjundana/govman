@@ -1230,7 +1230,7 @@ func TestManager_ListRemote(t *testing.T) {
 	}
 }
 
-func TestManager_resolveVersion(t *testing.T) {
+func TestManager_ResolveVersion(t *testing.T) {
 	_golang.ClearReleasesCache()
 
 	tests := []struct {
@@ -1306,14 +1306,14 @@ func TestManager_resolveVersion(t *testing.T) {
 
 			tt.setup(config)
 
-			got, err := manager.resolveVersion(tt.input)
+			got, err := manager.ResolveVersion(tt.input)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("resolveVersion() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ResolveVersion() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if got != tt.want && tt.want != "" {
-				t.Errorf("resolveVersion() = %v, want %v", got, tt.want)
+				t.Errorf("ResolveVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}

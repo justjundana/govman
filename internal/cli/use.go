@@ -57,6 +57,12 @@ Examples:
 			mgr := _manager.New(getConfig())
 
 			if version != "default" {
+				resolved, err := mgr.ResolveVersion(version)
+				if err != nil {
+					return fmt.Errorf("failed to resolve version %s: %w", version, err)
+				}
+				version = resolved
+
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s', or check available versions with 'govman list'.", version)
 					_logger.ErrorWithHelp("Go version %s is not installed", helpMsg, version)

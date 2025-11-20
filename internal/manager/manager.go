@@ -37,7 +37,7 @@ func New(cfg *_config.Config) *Manager {
 // version may be an exact string or "latest". Returns an error if resolution, download, or installation fails.
 func (m *Manager) Install(version string) error {
 	timer := _logger.StartTimer("version resolution")
-	resolvedVersion, err := m.resolveVersion(version)
+	resolvedVersion, err := m.ResolveVersion(version)
 	if err != nil {
 		_logger.StopTimer(timer)
 		return fmt.Errorf("failed to resolve version %s: %w", version, err)
@@ -341,9 +341,9 @@ func (m *Manager) Clean() error {
 	return nil
 }
 
-// resolveVersion resolves aliases and partial versions to a concrete version.
+// ResolveVersion resolves aliases and partial versions to a concrete version.
 // "latest" becomes the newest stable; "major.minor" expands to the latest patch. Returns the resolved version or an error.
-func (m *Manager) resolveVersion(version string) (string, error) {
+func (m *Manager) ResolveVersion(version string) (string, error) {
 	if version == "latest" {
 		versions, err := m.ListRemote(false)
 		if err != nil {
