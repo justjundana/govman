@@ -3,6 +3,7 @@ package manager
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	_config "github.com/justjundana/govman/internal/config"
 	_downloader "github.com/justjundana/govman/internal/downloader"
+	_golang "github.com/justjundana/govman/internal/golang"
 )
 
 // mockShell implements Shell interface for testing
@@ -54,6 +56,13 @@ func (m *mockShell) ExecutePathCommand(path string) error {
 func createTestConfig(t *testing.T) *_config.Config {
 	tempDir := t.TempDir()
 
+	// Mock HOME directory to ensure GetBinPath uses the temporary directory
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	t.Cleanup(func() {
+		os.Setenv("HOME", originalHome)
+	})
+
 	// Create config file first
 	configFile := filepath.Join(tempDir, "config.yaml")
 	config := &_config.Config{
@@ -96,122 +105,178 @@ func createTestManager(t *testing.T, config *_config.Config) *Manager {
 	}
 }
 
-func TestNew(t *testing.T) {
-	config := createTestConfig(t)
+func TestManagerNew(t *testing.T) {
+	tests := []struct {
+		name           string
+		setup          func() *_config.Config
+		validateResult func(*testing.T, *Manager)
+		wantErr        bool
+	}{
+		{
+			name: "successful initialization",
+			setup: func() *_config.Config {
+				return createTestConfig(t)
+			},
+			validateResult: func(t *testing.T, m *Manager) {
+				if m == nil {
+					t.Fatal("New() returned nil")
+				}
+				if m.downloader == nil {
+					t.Error("Manager downloader not initialized")
+				}
+				if m.shell == nil {
+					t.Error("Manager shell not detected")
+				}
+			},
+			wantErr: false,
+		},
+	}
 
-	manager := New(config)
-
-	if manager == nil {
-		t.Fatal("New() returned nil")
-	}
-	if manager.config != config {
-		t.Error("Manager config not set correctly")
-	}
-	if manager.downloader == nil {
-		t.Error("Manager downloader not initialized")
-	}
-	if manager.shell == nil {
-		t.Error("Manager shell not detected")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := tt.setup()
+			manager := New(config)
+			tt.validateResult(t, manager)
+		})
 	}
 }
 
 func TestManager_IsInstalled(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		version  string
-		setup    func()
-		expected bool
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		want    bool
+		wantErr bool
 	}{
 		{
-			name:     "Version not installed",
-			version:  "1.20.0",
-			setup:    func() {},
-			expected: false,
+			name:    "version not installed",
+			version: "1.20.0",
+			setup:   func(c *_config.Config) {},
+			want:    false,
+			wantErr: false,
 		},
 		{
-			name:    "Version installed",
+			name:    "version installed",
 			version: "1.20.0",
-			setup: func() {
-				versionDir := config.GetVersionDir("1.20.0")
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
 				os.MkdirAll(versionDir, 0755)
 			},
-			expected: true,
+			want:    true,
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up any existing directories
-			versionDir := config.GetVersionDir(tc.version)
+			versionDir := config.GetVersionDir(tt.version)
 			os.RemoveAll(versionDir)
 
-			tc.setup()
+			tt.setup(config)
 
-			result := manager.IsInstalled(tc.version)
-			if result != tc.expected {
-				t.Errorf("Expected IsInstalled(%s) = %v, got %v", tc.version, tc.expected, result)
+			got := manager.IsInstalled(tt.version)
+			if got != tt.want {
+				t.Errorf("IsInstalled() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_ListInstalled(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected []string
-		hasError bool
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    []string
+		wantErr bool
 	}{
 		{
-			name:     "No versions installed",
-			setup:    func() {},
-			expected: []string{},
-			hasError: false,
+			name:    "no versions installed",
+			setup:   func(c *_config.Config) {},
+			want:    []string{},
+			wantErr: false,
 		},
 		{
-			name: "Multiple versions installed",
-			setup: func() {
+			name: "multiple versions installed",
+			setup: func(c *_config.Config) {
 				versions := []string{"1.19.0", "1.20.0", "1.18.0"}
 				for _, version := range versions {
-					versionDir := config.GetVersionDir(version)
+					versionDir := c.GetVersionDir(version)
 					os.MkdirAll(versionDir, 0755)
 				}
 			},
-			expected: []string{"1.20.0", "1.19.0", "1.18.0"}, // Should be sorted descending
-			hasError: false,
+			want:    []string{"1.20.0", "1.19.0", "1.18.0"}, // Should be sorted descending
+			wantErr: false,
+		},
+		{
+			name: "versions installed out of order",
+			setup: func(c *_config.Config) {
+				versions := []string{"1.19.0", "1.21.0", "1.20.0"}
+				for _, v := range versions {
+					os.MkdirAll(c.GetVersionDir(v), 0755)
+				}
+			},
+			want:    []string{"1.21.0", "1.20.0", "1.19.0"},
+			wantErr: false,
+		},
+		{
+			name: "install directory read error",
+			setup: func(c *_config.Config) {
+				// Create install dir without read permissions
+				os.Chmod(c.InstallDir, 0000)
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "mixed directories and files",
+			setup: func(c *_config.Config) {
+				// Create a directory that starts with "go"
+				os.MkdirAll(filepath.Join(c.InstallDir, "go1.20.0"), 0755)
+				// Create a file that starts with "go"
+				os.WriteFile(filepath.Join(c.InstallDir, "go.mod"), []byte("test"), 0644)
+				// Create a directory that doesn't start with "go"
+				os.MkdirAll(filepath.Join(c.InstallDir, "cache"), 0755)
+			},
+			want:    []string{"1.20.0"},
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up install directory
 			os.RemoveAll(config.InstallDir)
 			os.MkdirAll(config.InstallDir, 0755)
 
-			tc.setup()
+			tt.setup(config)
 
-			result, err := manager.ListInstalled()
+			// Cleanup permissions after test
+			t.Cleanup(func() {
+				os.Chmod(config.InstallDir, 0755)
+			})
 
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			if len(result) != len(tc.expected) {
-				t.Errorf("Expected %d versions, got %d", len(tc.expected), len(result))
+			got, err := manager.ListInstalled()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListInstalled() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
 
-			for i, expected := range tc.expected {
-				if i >= len(result) || result[i] != expected {
-					t.Errorf("Expected version %s at index %d, got %s", expected, i, result[i])
+			if len(got) != len(tt.want) {
+				t.Errorf("ListInstalled() = %v, want %v", got, tt.want)
+				return
+			}
+
+			for i, want := range tt.want {
+				if i >= len(got) || got[i] != want {
+					t.Errorf("ListInstalled() version at index %d = %s, want %s", i, got[i], want)
 				}
 			}
 		})
@@ -219,30 +284,29 @@ func TestManager_ListInstalled(t *testing.T) {
 }
 
 func TestManager_Current(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected string
-		hasError bool
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
 	}{
 		{
-			name:     "No active version",
-			setup:    func() {},
-			expected: "1.25.2", // System Go version
-			hasError: false,
+			name: "no active version - uses system go",
+			setup: func(c *_config.Config) {
+				// No setup needed, uses system Go
+			},
+			want:    "SYSTEM_GO", // Will be resolved dynamically
+			wantErr: false,
 		},
 		{
-			name: "Global version active",
-			setup: func() {
+			name: "global version active",
+			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 
 				// Create symlink
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				targetPath := filepath.Join(versionDir, "bin", "go")
 				os.Symlink(targetPath, symlinkPath)
 
@@ -253,14 +317,14 @@ func TestManager_Current(t *testing.T) {
 				// Temporarily replace PATH to use the test go binary
 				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
-			expected: "1.20.0",
-			hasError: false,
+			want:    "1.20.0",
+			wantErr: false,
 		},
 		{
-			name: "Local version specified",
-			setup: func() {
+			name: "local version specified",
+			setup: func(c *_config.Config) {
 				version := "1.19.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 
 				// Create a go binary that reports the correct version
@@ -271,36 +335,53 @@ func TestManager_Current(t *testing.T) {
 				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 				// Write local version file
-				os.WriteFile(config.AutoSwitch.ProjectFile, []byte(version), 0644)
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 			},
-			expected: "1.19.0",
-			hasError: false,
+			want:    "1.19.0",
+			wantErr: false,
 		},
 		{
-			name: "Session version check fails",
-			setup: func() {
+			name: "session version check fails",
+			setup: func(c *_config.Config) {
 				// Set PATH to non-existent directory so go command fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name: "Local version not installed",
-			setup: func() {
+			name: "local version not installed",
+			setup: func(c *_config.Config) {
 				version := "1.19.0"
 				// Write local version file but don't install the version
-				os.WriteFile(config.AutoSwitch.ProjectFile, []byte(version), 0644)
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 				// Set PATH to non-existent directory so session check fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "session version not managed by govman",
+			setup: func(c *_config.Config) {
+				// Create a fake go that returns a version not in GOVMAN
+				binDir := filepath.Join(c.GetBinPath(), "systemgo")
+				os.MkdirAll(binDir, 0755)
+				goPath := filepath.Join(binDir, "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.99.0 darwin/arm64'"), 0755)
+				os.Chmod(goPath, 0755)
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			},
+			want:    "1.99.0",
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.RemoveAll(config.InstallDir)
 			os.RemoveAll(config.GetBinPath())
@@ -308,45 +389,51 @@ func TestManager_Current(t *testing.T) {
 			os.MkdirAll(config.InstallDir, 0755)
 			os.MkdirAll(config.GetBinPath(), 0755)
 
-			tc.setup()
+			tt.setup(config)
 
-			result, err := manager.Current()
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			got, err := manager.Current()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Current() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
 
-			if result != tc.expected {
-				t.Errorf("Expected current version %s, got %s", tc.expected, result)
+			want := tt.want
+			if want == "SYSTEM_GO" {
+				// Get system Go version dynamically
+				out, err := exec.Command("go", "version").Output()
+				if err == nil {
+					parts := strings.Fields(string(out))
+					if len(parts) >= 3 {
+						want = strings.TrimPrefix(parts[2], "go")
+					}
+				}
+			}
+
+			if got != want {
+				t.Errorf("Current() = %v, want %v", got, want)
 			}
 		})
 	}
 }
 
 func TestManager_CurrentGlobal(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected string
-		hasError bool
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
 	}{
 		{
-			name:     "No symlink exists",
-			setup:    func() {},
-			expected: "",
-			hasError: true,
+			name:    "no symlink exists",
+			setup:   func(c *_config.Config) {},
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name: "Valid symlink",
-			setup: func() {
+			name: "valid symlink",
+			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 
 				// Create go executable
@@ -357,7 +444,7 @@ func TestManager_CurrentGlobal(t *testing.T) {
 				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0'"), 0755)
 
 				// Create symlink
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				if runtime.GOOS == "windows" {
 					symlinkPath += ".exe"
 				}
@@ -367,204 +454,259 @@ func TestManager_CurrentGlobal(t *testing.T) {
 				}
 				os.Symlink(targetPath, symlinkPath)
 			},
-			expected: "1.20.0",
-			hasError: false,
+			want:    "1.20.0",
+			wantErr: false,
 		},
 		{
-			name: "Symlink points to non-existent version",
-			setup: func() {
+			name: "symlink points to non-existent version",
+			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				targetPath := filepath.Join(versionDir, "bin", "go")
 
 				// Create symlink but don't create the version directory
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				os.Symlink(targetPath, symlinkPath)
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name: "Symlink is not a symlink",
-			setup: func() {
-				symlinkPath := config.GetCurrentSymlink()
+			name: "symlink is not a symlink",
+			setup: func(c *_config.Config) {
+				symlinkPath := c.GetCurrentSymlink()
 				// Create a regular file instead of a symlink
 				os.WriteFile(symlinkPath, []byte("not a symlink"), 0644)
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name: "Symlink target format invalid",
-			setup: func() {
+			name: "symlink target format invalid",
+			setup: func(c *_config.Config) {
 				// Create symlink pointing to invalid path
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				os.Symlink("/invalid/path/go", symlinkPath)
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name: "Symlink read failure",
-			setup: func() {
-				symlinkPath := config.GetCurrentSymlink()
-				// Create symlink
-				os.Symlink("/some/path/go", symlinkPath)
-				// Make the symlink file unreadable
-				os.Chmod(symlinkPath, 0000)
-			},
-			expected: "",
-			hasError: true,
-		},
-		{
-			name: "Go executable missing",
-			setup: func() {
+			name: "go executable missing",
+			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 
 				// Create symlink but don't create the go executable
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				targetPath := filepath.Join(versionDir, "bin", "go")
 				os.Symlink(targetPath, symlinkPath)
 			},
-			expected: "",
-			hasError: true,
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "no symlink and no default version",
+			setup: func(c *_config.Config) {
+				// Ensure no symlink exists
+				os.Remove(c.GetCurrentSymlink())
+				c.DefaultVersion = ""
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "default version not installed",
+			setup: func(c *_config.Config) {
+				// Set default version but do not install it
+				c.DefaultVersion = "1.20.0"
+				os.Remove(c.GetCurrentSymlink())
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "default version installed but symlink missing",
+			setup: func(c *_config.Config) {
+				version := "1.20.0"
+				c.DefaultVersion = version
+				versionDir := c.GetVersionDir(version)
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				os.Remove(c.GetCurrentSymlink())
+			},
+			want:    "",
+			wantErr: true,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.RemoveAll(config.InstallDir)
 			os.RemoveAll(config.GetBinPath())
 			os.MkdirAll(config.InstallDir, 0755)
 			os.MkdirAll(config.GetBinPath(), 0755)
 
-			tc.setup()
+			tt.setup(config)
 
-			result, err := manager.CurrentGlobal()
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			got, err := manager.CurrentGlobal()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CurrentGlobal() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
 
-			if result != tc.expected {
-				t.Errorf("Expected global version %s, got %s", tc.expected, result)
+			if got != tt.want {
+				t.Errorf("CurrentGlobal() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_Use(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	// Install a version first
-	version := "1.20.0"
-	versionDir := config.GetVersionDir(version)
-	os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-	testCases := []struct {
+	tests := []struct {
 		name       string
 		version    string
 		setDefault bool
 		setLocal   bool
-		expected   string
-		hasError   bool
+		setup      func(*_config.Config)
+		wantErr    bool
 	}{
 		{
-			name:       "Use for session only",
-			version:    version,
+			name:       "use for session only",
+			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   false,
-			expected:   "",
-			hasError:   false, // ExecutePathCommand returns nil
+			setup: func(c *_config.Config) {
+				// Install version first
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+			},
+			wantErr: false,
 		},
 		{
-			name:       "Set as default",
-			version:    version,
+			name:       "set as default",
+			version:    "1.20.0",
 			setDefault: true,
 			setLocal:   false,
-			expected:   version,
-			hasError:   false,
+			setup: func(c *_config.Config) {
+				// Install version first
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+			},
+			wantErr: false,
 		},
 		{
-			name:       "Set local version",
-			version:    version,
+			name:       "set local version",
+			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   true,
-			expected:   version,
-			hasError:   false,
+			setup: func(c *_config.Config) {
+				// Install version first
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+			},
+			wantErr: false,
 		},
 		{
-			name:       "Use non-installed version",
+			name:       "use non-installed version",
 			version:    "1.19.0",
 			setDefault: false,
 			setLocal:   false,
-			expected:   "",
-			hasError:   true,
+			setup:      func(c *_config.Config) {},
+			wantErr:    true,
 		},
 		{
-			name:       "Use default when CurrentGlobal fails",
+			name:       "use default when CurrentGlobal fails",
 			version:    "default",
 			setDefault: false,
 			setLocal:   false,
-			expected:   "",
-			hasError:   true,
+			setup:      func(c *_config.Config) {},
+			wantErr:    true,
 		},
 		{
-			name:       "Set local version with write failure",
-			version:    version,
+			name:       "set local version with write failure",
+			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   true,
-			expected:   "",
-			hasError:   true,
+			setup: func(c *_config.Config) {
+				// Install version first
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Make directory read-only to cause write failure
+				projectDir := filepath.Dir(c.AutoSwitch.ProjectFile)
+				os.Chmod(projectDir, 0444)
+			},
+			wantErr: true,
 		},
 		{
-			name:       "Set as default with createSymlink failure",
-			version:    version,
+			name:       "set as default with createSymlink failure",
+			version:    "1.20.0",
 			setDefault: true,
 			setLocal:   false,
-			expected:   "",
-			hasError:   true,
+			setup: func(c *_config.Config) {
+				// Install version first
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Make bin directory read-only to cause symlink creation failure
+				os.Chmod(c.GetBinPath(), 0444)
+			},
+			wantErr: true,
+		},
+		{
+			name:       "use default that is installed",
+			version:    "default",
+			setDefault: false,
+			setLocal:   false,
+			setup: func(c *_config.Config) {
+				c.DefaultVersion = "1.20.0"
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Create go executable
+				goPath := filepath.Join(versionDir, "bin", "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0'"), 0755)
+
+				// Create symlink so CurrentGlobal() works
+				symlinkPath := c.GetCurrentSymlink()
+				targetPath := filepath.Join(versionDir, "bin", "go")
+				os.Symlink(targetPath, symlinkPath)
+			},
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Clean up local version file
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
+			// Clean up
 			os.Remove(config.AutoSwitch.ProjectFile)
 
-			// For the write failure test, make the directory read-only
-			if tc.name == "Set local version with write failure" {
-				projectDir := filepath.Dir(config.AutoSwitch.ProjectFile)
-				os.Chmod(projectDir, 0444)
-				defer os.Chmod(projectDir, 0755)
-			}
-			// For createSymlink failure, make bin directory read-only
-			if tc.name == "Set as default with createSymlink failure" {
-				os.Chmod(config.GetBinPath(), 0444)
-				defer os.Chmod(config.GetBinPath(), 0755)
+			tt.setup(config)
+
+			// Cleanup permissions after test
+			t.Cleanup(func() {
+				os.Chmod(filepath.Dir(config.AutoSwitch.ProjectFile), 0755)
+				os.Chmod(config.GetBinPath(), 0755)
+			})
+
+			err := manager.Use(tt.version, tt.setDefault, tt.setLocal)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Use() error = %v, wantErr %v", err, tt.wantErr)
 			}
 
-			err := manager.Use(tc.version, tc.setDefault, tc.setLocal)
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			// Verify local version was set if requested
-			if tc.setLocal && !tc.hasError {
+			// Verify local version was set if requested and no error
+			if tt.setLocal && !tt.wantErr {
 				localVersion := manager.getLocalVersion()
-				if localVersion != tc.expected {
-					t.Errorf("Expected local version %s, got %s", tc.expected, localVersion)
+				if localVersion != tt.version {
+					t.Errorf("Local version = %v, want %v", localVersion, tt.version)
 				}
 			}
 		})
@@ -572,162 +714,187 @@ func TestManager_Use(t *testing.T) {
 }
 
 func TestManager_Install(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		version  string
-		setup    func()
-		hasError bool
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		wantErr bool
 	}{
 		{
-			name:     "Install new version",
-			version:  "1.20.0",
-			setup:    func() {},
-			hasError: true, // Will fail because no actual download URL available in test
+			name:    "install new version (network failure expected)",
+			version: "1.20.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: true, // Will fail because no actual download URL available in test
 		},
 		{
-			name:    "Install already installed version",
+			name:    "install already installed version",
 			version: "1.20.0",
-			setup: func() {
-				versionDir := config.GetVersionDir("1.20.0")
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
 				os.MkdirAll(versionDir, 0755)
 			},
-			hasError: true,
+			wantErr: true,
 		},
 		{
-			name:     "Install with resolveVersion failure",
-			version:  "latest",
-			setup:    func() {},
-			hasError: true,
+			name:    "install with resolveVersion failure",
+			version: "latest",
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			wantErr: true,
 		},
 		{
-			name:     "Install with GetDownloadURL failure",
-			version:  "1.19.0",
-			setup:    func() {},
-			hasError: true,
+			name:    "install with GetDownloadURL failure",
+			version: "1.19.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: true,
+		},
+		{
+			name:    "install exact version that is not already installed",
+			version: "1.21.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: true, // Fails due to no download URL
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.setup()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
 
-			err := manager.Install(tc.version)
+			tt.setup(config)
 
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			err := manager.Install(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Install() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
 func TestManager_Uninstall(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	version := "1.20.0"
-	versionDir := config.GetVersionDir(version)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		hasError bool
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		wantErr bool
 	}{
 		{
-			name: "Uninstall installed version",
-			setup: func() {
+			name:    "uninstall installed version",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
 				os.MkdirAll(versionDir, 0755)
 			},
-			hasError: false,
+			wantErr: false,
 		},
 		{
-			name:     "Uninstall non-installed version",
-			setup:    func() {},
-			hasError: true,
+			name:    "uninstall non-installed version",
+			version: "1.20.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: true,
+		},
+		{
+			name:    "uninstall currently active version",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Create symlink to make it current
+				symlinkPath := c.GetCurrentSymlink()
+				targetPath := filepath.Join(versionDir, "bin", "go")
+				os.Symlink(targetPath, symlinkPath)
+
+				// Create go binary
+				goPath := filepath.Join(versionDir, "bin", "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+
+				// Set as current by mocking go command path
+				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+			},
+			wantErr: true,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
+			versionDir := config.GetVersionDir(tt.version)
 			os.RemoveAll(versionDir)
 
-			tc.setup()
+			tt.setup(config)
 
-			err := manager.Uninstall(version)
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			err := manager.Uninstall(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Uninstall() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
 func TestManager_Clean(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		hasError bool
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		wantErr bool
 	}{
 		{
-			name: "Clean cache successfully",
-			setup: func() {
+			name: "clean cache successfully",
+			setup: func(c *_config.Config) {
 				// Create some files in cache
-				cacheFile := filepath.Join(config.CacheDir, "test.txt")
+				cacheFile := filepath.Join(c.CacheDir, "test.txt")
 				os.WriteFile(cacheFile, []byte("test"), 0644)
 			},
-			hasError: false,
+			wantErr: false,
 		},
 		{
-			name: "Clean cache with recreation failure",
-			setup: func() {
+			name: "clean cache with recreation failure",
+			setup: func(c *_config.Config) {
 				// Make parent directory of cache read-only
-				parentDir := filepath.Dir(config.CacheDir)
+				parentDir := filepath.Dir(c.CacheDir)
 				os.Chmod(parentDir, 0444)
 			},
-			hasError: true,
+			wantErr: true,
+		},
+		{
+			name: "clean empty cache directory",
+			setup: func(c *_config.Config) {
+				// Cache directory already exists but is empty
+			},
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.RemoveAll(config.CacheDir)
 			parentDir := filepath.Dir(config.CacheDir)
 			os.MkdirAll(parentDir, 0755)
 			os.MkdirAll(config.CacheDir, 0755)
-			os.Chmod(parentDir, 0755) // Reset permissions
 
-			tc.setup()
+			tt.setup(config)
 
-			// Reset permissions after setup to ensure cleanup works
-			defer func() {
-				os.Chmod(config.CacheDir, 0755)
+			// Cleanup permissions after test
+			t.Cleanup(func() {
 				os.Chmod(parentDir, 0755)
-			}()
+				os.Chmod(config.CacheDir, 0755)
+			})
 
 			err := manager.Clean()
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Clean() error = %v, wantErr %v", err, tt.wantErr)
 			}
 
 			// For success case, verify cache directory exists and is empty
-			if !tc.hasError {
+			if !tt.wantErr {
 				if _, err := os.Stat(config.CacheDir); os.IsNotExist(err) {
 					t.Error("Cache directory was not recreated")
 				}
@@ -737,182 +904,191 @@ func TestManager_Clean(t *testing.T) {
 }
 
 func TestManager_DefaultVersion(t *testing.T) {
-	config := createTestConfig(t)
-	config.DefaultVersion = "1.20.0"
-	manager := createTestManager(t, config)
-
-	result := manager.DefaultVersion()
-	if result != "1.20.0" {
-		t.Errorf("Expected default version '1.20.0', got '%s'", result)
-	}
-}
-
-func TestManager_resolveVersion(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		input    string
-		expected string
-		hasError bool
+	tests := []struct {
+		name    string
+		setup   func() *_config.Config
+		want    string
+		wantErr bool
 	}{
 		{
-			name:     "Resolve exact version",
-			input:    "1.20.0",
-			expected: "1.20.0",
-			hasError: false,
+			name: "get default version",
+			setup: func() *_config.Config {
+				config := createTestConfig(t)
+				config.DefaultVersion = "1.20.0"
+				return config
+			},
+			want:    "1.20.0",
+			wantErr: false,
 		},
 		{
-			name:     "Resolve partial version (major.minor)",
-			input:    "1.20",
-			expected: "", // This will fail due to HTTP 403, but we expect the error
-			hasError: true,
-		},
-		{
-			name:     "Resolve latest (mocked)",
-			input:    "latest",
-			expected: "",
-			hasError: true, // Will fail because we can't actually fetch versions
-		},
-		{
-			name:     "Resolve with no versions available",
-			input:    "latest",
-			expected: "",
-			hasError: true,
-		},
-		{
-			name:     "Resolve with ListRemote failure",
-			input:    "latest",
-			expected: "",
-			hasError: true,
-		},
-		{
-			name:     "Resolve partial version with ListRemote failure",
-			input:    "1.20",
-			expected: "", // Now it actually fails due to HTTP error, so expect error
-			hasError: true,
+			name: "no default version set",
+			setup: func() *_config.Config {
+				config := createTestConfig(t)
+				config.DefaultVersion = ""
+				return config
+			},
+			want:    "",
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// For tests that expect ListRemote failure, we can't easily mock it in this test
-			// Since the test environment doesn't have network access, all ListRemote calls will fail
-			// So these tests are expected to fail with error, which is already covered by hasError: true
-			result, err := manager.resolveVersion(tc.input)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := tt.setup()
+			manager := createTestManager(t, config)
 
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			if result != tc.expected && tc.expected != "" {
-				t.Errorf("Expected resolved version %s, got %s", tc.expected, result)
+			got := manager.DefaultVersion()
+			if got != tt.want {
+				t.Errorf("DefaultVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_setLocalVersion(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	version := "1.20.0"
-	err := manager.setLocalVersion(version)
-
-	if err != nil {
-		t.Errorf("setLocalVersion() returned error: %v", err)
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		wantErr bool
+	}{
+		{
+			name:    "set local version successfully",
+			version: "1.20.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: false,
+		},
+		{
+			name:    "set local version with write permission failure",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				// Make directory read-only
+				projectDir := filepath.Dir(c.AutoSwitch.ProjectFile)
+				os.Chmod(projectDir, 0444)
+			},
+			wantErr: true,
+		},
 	}
 
-	// Check that file was created with correct content
-	data, err := os.ReadFile(config.AutoSwitch.ProjectFile)
-	if err != nil {
-		t.Errorf("Failed to read local version file: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
 
-	if strings.TrimSpace(string(data)) != version {
-		t.Errorf("Expected file content %s, got %s", version, string(data))
+			tt.setup(config)
+
+			// Cleanup permissions after test
+			t.Cleanup(func() {
+				os.Chmod(filepath.Dir(config.AutoSwitch.ProjectFile), 0755)
+			})
+
+			err := manager.setLocalVersion(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("setLocalVersion() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			// Check that file was created with correct content
+			if !tt.wantErr {
+				data, err := os.ReadFile(config.AutoSwitch.ProjectFile)
+				if err != nil {
+					t.Errorf("Failed to read local version file: %v", err)
+				}
+
+				if strings.TrimSpace(string(data)) != tt.version {
+					t.Errorf("File content = %s, want %s", string(data), tt.version)
+				}
+			}
+		})
 	}
 }
 
 func TestManager_getLocalVersion(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected string
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
 	}{
 		{
-			name:     "No local version file",
-			setup:    func() {},
-			expected: "",
+			name:    "no local version file",
+			setup:   func(c *_config.Config) {},
+			want:    "",
+			wantErr: false,
 		},
 		{
-			name: "Local version file exists",
-			setup: func() {
+			name: "local version file exists",
+			setup: func(c *_config.Config) {
 				version := "1.19.0"
-				os.WriteFile(config.AutoSwitch.ProjectFile, []byte(version), 0644)
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 			},
-			expected: "1.19.0",
+			want:    "1.19.0",
+			wantErr: false,
+		},
+		{
+			name: "local version file with whitespace",
+			setup: func(c *_config.Config) {
+				version := "  1.19.0  \n"
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
+			},
+			want:    "1.19.0",
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.Remove(config.AutoSwitch.ProjectFile)
 
-			tc.setup()
+			tt.setup(config)
 
-			result := manager.getLocalVersion()
-
-			if result != tc.expected {
-				t.Errorf("Expected local version %s, got %s", tc.expected, result)
+			got := manager.getLocalVersion()
+			if got != tt.want {
+				t.Errorf("getLocalVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_CurrentActivationMethod(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected string
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
 	}{
 		{
-			name: "No active version",
-			setup: func() {
+			name: "no active version",
+			setup: func(c *_config.Config) {
 				// Set PATH to non-existent so session check fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},
-			expected: "system-default",
+			want:    "system-default",
+			wantErr: false,
 		},
 		{
-			name: "Local version set",
-			setup: func() {
-				os.WriteFile(config.AutoSwitch.ProjectFile, []byte("1.20.0"), 0644)
+			name: "local version set",
+			setup: func(c *_config.Config) {
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte("1.20.0"), 0644)
 				// Set PATH to include a fake go binary that will return an error, so session check fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},
-			expected: "project-local",
+			want:    "project-local",
+			wantErr: false,
 		},
 		{
-			name: "System default active",
-			setup: func() {
+			name: "system default active",
+			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
+				versionDir := c.GetVersionDir(version)
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 
 				// Create symlink
-				symlinkPath := config.GetCurrentSymlink()
+				symlinkPath := c.GetCurrentSymlink()
 				targetPath := filepath.Join(versionDir, "bin", "go")
 				os.Symlink(targetPath, symlinkPath)
 
@@ -923,12 +1099,33 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 				// Temporarily replace PATH to make this version active
 				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
-			expected: "system-default",
+			want:    "system-default",
+			wantErr: false,
+		},
+		{
+			name: "session-only version active",
+			setup: func(c *_config.Config) {
+				version := "1.20.0"
+				versionDir := c.GetVersionDir(version)
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Create go binary
+				goPath := filepath.Join(versionDir, "bin", "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+
+				// Set PATH to include this version but don't create symlink
+				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+			},
+			want:    "session-only",
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.RemoveAll(config.InstallDir)
 			os.RemoveAll(config.GetBinPath())
@@ -936,184 +1133,379 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 			os.MkdirAll(config.InstallDir, 0755)
 			os.MkdirAll(config.GetBinPath(), 0755)
 
-			tc.setup()
+			tt.setup(config)
 
-			result := manager.CurrentActivationMethod()
-
-			if result != tc.expected {
-				t.Errorf("Expected activation method %s, got %s", tc.expected, result)
+			got := manager.CurrentActivationMethod()
+			if got != tt.want {
+				t.Errorf("CurrentActivationMethod() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_Info(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		version  string
-		setup    func()
-		hasError bool
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		wantErr bool
 	}{
 		{
-			name:     "Version not installed",
-			version:  "1.20.0",
-			setup:    func() {},
-			hasError: true,
+			name:    "version not installed",
+			version: "1.20.0",
+			setup:   func(c *_config.Config) {},
+			wantErr: true,
 		},
 		{
-			name:    "Version installed",
+			name:    "version installed",
 			version: "1.20.0",
-			setup: func() {
-				versionDir := config.GetVersionDir("1.20.0")
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
 				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
 				// Create a mock go binary
 				goPath := filepath.Join(versionDir, "bin", "go")
 				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
 			},
-			hasError: false,
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.setup()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
 
-			result, err := manager.Info(tc.version)
+			tt.setup(config)
 
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
+			got, err := manager.Info(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Info() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
 
-			if !tc.hasError && result == nil {
+			if !tt.wantErr && got == nil {
 				t.Error("Expected VersionInfo but got nil")
 			}
 		})
 	}
 }
 
-func TestManager_GetDefaultVersionFromSymlink(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		expected string
-		hasError bool
+func TestManager_ListRemote(t *testing.T) {
+	tests := []struct {
+		name       string
+		forceCheck bool
+		setup      func(*_config.Config)
+		wantErr    bool
 	}{
 		{
-			name:     "No symlink exists",
-			setup:    func() {},
-			expected: "",
-			hasError: true,
+			name:       "list remote with invalid API URL",
+			forceCheck: false,
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			wantErr: true,
 		},
 		{
-			name: "Valid symlink",
-			setup: func() {
-				version := "1.20.0"
-				versionDir := config.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-				// Create go executable
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
-
-				// Create symlink
-				symlinkPath := config.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
+			name:       "list remote with force check and invalid URL",
+			forceCheck: true,
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
 			},
-			expected: "1.20.0",
-			hasError: false,
+			wantErr: true,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Clean up
-			os.RemoveAll(config.InstallDir)
-			os.RemoveAll(config.GetBinPath())
-			os.MkdirAll(config.InstallDir, 0755)
-			os.MkdirAll(config.GetBinPath(), 0755)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
 
-			tc.setup()
+			tt.setup(config)
 
-			result, err := manager.GetDefaultVersionFromSymlink()
-
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
+			_, err := manager.ListRemote(tt.forceCheck)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListRemote() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+		})
+	}
+}
+
+func TestManager_resolveVersion(t *testing.T) {
+	_golang.ClearReleasesCache()
+
+	tests := []struct {
+		name    string
+		input   string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "resolve exact version",
+			input:   "1.20.0",
+			setup:   func(c *_config.Config) {},
+			want:    "1.20.0",
+			wantErr: false,
+		},
+		{
+			name:  "resolve latest with API failure",
+			input: "latest",
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:  "resolve partial version with API failure",
+			input: "1.20",
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "resolve version with no dots",
+			input:   "1",
+			setup:   func(c *_config.Config) {},
+			want:    "1",
+			wantErr: false,
+		},
+		{
+			name:  "resolve version with one dot that doesn't match",
+			input: "99.99",
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:  "resolve latest with empty versions list",
+			input: "latest",
+			setup: func(c *_config.Config) {
+				c.GoReleases.APIURL = "invalid://url"
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "resolve version with three dots",
+			input:   "1.20.5",
+			setup:   func(c *_config.Config) {},
+			want:    "1.20.5",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
+			tt.setup(config)
+
+			got, err := manager.resolveVersion(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveVersion() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
 
-			if result != tc.expected {
-				t.Errorf("Expected default version from symlink %s, got %s", tc.expected, result)
+			if got != tt.want && tt.want != "" {
+				t.Errorf("resolveVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestManager_createSymlink(t *testing.T) {
-	config := createTestConfig(t)
-	manager := createTestManager(t, config)
-
-	version := "1.20.0"
-	versionDir := config.GetVersionDir(version)
-	os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-	testCases := []struct {
-		name     string
-		setup    func()
-		hasError bool
+	tests := []struct {
+		name    string
+		version string
+		setup   func(*_config.Config)
+		wantErr bool
 	}{
 		{
-			name:     "Create symlink successfully",
-			setup:    func() {},
-			hasError: false,
+			name:    "create symlink successfully",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+			},
+			wantErr: false,
 		},
 		{
-			name: "Create symlink with bin directory creation failure",
-			setup: func() {
+			name:    "create symlink with bin directory creation failure",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
 				// Make parent directory read-only
-				parentDir := filepath.Dir(config.GetBinPath())
+				parentDir := filepath.Dir(c.GetBinPath())
 				os.Chmod(parentDir, 0444)
 			},
-			hasError: true,
+			wantErr: true,
 		},
 		{
-			name: "Create symlink with symlink creation failure",
-			setup: func() {
+			name:    "create symlink with symlink creation failure",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
 				// Make bin directory read-only
-				os.Chmod(config.GetBinPath(), 0444)
+				os.Chmod(c.GetBinPath(), 0444)
 			},
-			hasError: true,
+			wantErr: true,
+		},
+		{
+			name:    "create symlink with non-empty directory at symlink location",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				versionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+
+				// Create a non-empty directory at the symlink location
+				symlinkPath := c.GetCurrentSymlink()
+				os.MkdirAll(symlinkPath, 0755)
+				// Add a file inside to make removal fail (non-empty dir)
+				os.WriteFile(filepath.Join(symlinkPath, "file.txt"), []byte("data"), 0644)
+			},
+			wantErr: true,
+		},
+		{
+			name:    "replace existing symlink",
+			version: "1.20.0",
+			setup: func(c *_config.Config) {
+				// Create old symlink
+				oldVersion := "1.19.0"
+				oldVersionDir := c.GetVersionDir(oldVersion)
+				os.MkdirAll(filepath.Join(oldVersionDir, "bin"), 0755)
+				symlinkPath := c.GetCurrentSymlink()
+				oldTargetPath := filepath.Join(oldVersionDir, "bin", "go")
+				os.Symlink(oldTargetPath, symlinkPath)
+
+				// Create new version
+				newVersionDir := c.GetVersionDir("1.20.0")
+				os.MkdirAll(filepath.Join(newVersionDir, "bin"), 0755)
+			},
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
 			// Clean up
 			os.RemoveAll(config.GetBinPath())
 			os.MkdirAll(config.GetBinPath(), 0755)
-			parentDir := filepath.Dir(config.GetBinPath())
-			os.Chmod(parentDir, 0755) // Reset permissions
 
-			tc.setup()
+			tt.setup(config)
 
-			err := manager.createSymlink(version)
+			// Cleanup permissions after test
+			t.Cleanup(func() {
+				parentDir := filepath.Dir(config.GetBinPath())
+				os.Chmod(parentDir, 0755)
+				os.Chmod(config.GetBinPath(), 0755)
+				os.RemoveAll(config.GetCurrentSymlink())
+			})
 
-			if tc.hasError && err == nil {
-				t.Error("Expected error but got none")
+			err := manager.createSymlink(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("createSymlink() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if !tc.hasError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+		})
+	}
+}
+
+func TestManager_getCurrentSessionVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*_config.Config)
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "get current session version successfully",
+			setup: func(c *_config.Config) {
+				// Create a fake go binary that outputs a version string
+				binDir := filepath.Join(c.GetBinPath(), "fakego")
+				os.MkdirAll(binDir, 0755)
+				goPath := filepath.Join(binDir, "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.21.0 linux/amd64'"), 0755)
+				// Prepend fake bin directory to PATH
+				originalPath := os.Getenv("PATH")
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+			},
+			want:    "1.21.0",
+			wantErr: false,
+		},
+		{
+			name: "get current session version with error",
+			setup: func(c *_config.Config) {
+				// Set PATH to a non-existent directory
+				os.Setenv("PATH", "/nonexistent/path")
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "get current session version with invalid output format",
+			setup: func(c *_config.Config) {
+				// Create a fake go binary that outputs invalid format
+				binDir := filepath.Join(c.GetBinPath(), "fakego")
+				os.MkdirAll(binDir, 0755)
+				goPath := filepath.Join(binDir, "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'invalid output'"), 0755)
+				os.Chmod(goPath, 0755)
+				originalPath := os.Getenv("PATH")
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "get current session version with empty version string",
+			setup: func(c *_config.Config) {
+				// Create a fake go binary that outputs version without 'go' prefix
+				binDir := filepath.Join(c.GetBinPath(), "fakego")
+				os.MkdirAll(binDir, 0755)
+				goPath := filepath.Join(binDir, "go")
+				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version  linux/amd64'"), 0755)
+				os.Chmod(goPath, 0755)
+				originalPath := os.Getenv("PATH")
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+			},
+			want:    "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			manager := createTestManager(t, config)
+
+			// Save original PATH
+			originalPath := os.Getenv("PATH")
+			t.Cleanup(func() {
+				os.Setenv("PATH", originalPath)
+			})
+
+			tt.setup(config)
+
+			got, err := manager.getCurrentSessionVersion()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getCurrentSessionVersion() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("getCurrentSessionVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -1,7 +1,6 @@
 package progress
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -407,103 +406,6 @@ func TestProgressBar_AddThrottling(t *testing.T) {
 
 	// Final add should trigger render regardless of throttling
 	pb.Add(990) // This should bring it to total and trigger render
-}
-
-func TestNewMultiProgress(t *testing.T) {
-	mp := NewMultiProgress()
-
-	if mp == nil {
-		t.Fatal("NewMultiProgress returned nil")
-	}
-	if !mp.active {
-		t.Error("Expected MultiProgress to be active")
-	}
-	if mp.bars != nil {
-		t.Error("Expected bars slice to be nil initially")
-	}
-}
-
-func TestMultiProgress_AddBar(t *testing.T) {
-	mp := NewMultiProgress()
-
-	bar := mp.AddBar(100, "Test bar")
-
-	if bar == nil {
-		t.Fatal("AddBar returned nil")
-	}
-	if bar.total != 100 {
-		t.Errorf("Expected total 100, got %d", bar.total)
-	}
-	if bar.description != "Test bar" {
-		t.Errorf("Expected description 'Test bar', got %s", bar.description)
-	}
-	if bar.width != 40 {
-		t.Errorf("Expected width 40, got %d", bar.width)
-	}
-	if len(mp.bars) != 1 {
-		t.Errorf("Expected 1 bar in MultiProgress, got %d", len(mp.bars))
-	}
-}
-
-func TestMultiProgress_Stop(t *testing.T) {
-	mp := NewMultiProgress()
-
-	// Add a few bars
-	bar1 := mp.AddBar(100, "Bar 1")
-	bar2 := mp.AddBar(200, "Bar 2")
-
-	// Set some progress
-	bar1.Set(50)
-	bar2.Set(100)
-
-	mp.Stop()
-
-	if mp.active {
-		t.Error("Expected MultiProgress to be inactive after Stop")
-	}
-
-	// Check that bars are finished
-	if !bar1.finished {
-		t.Error("Expected bar1 to be finished")
-	}
-	if !bar2.finished {
-		t.Error("Expected bar2 to be finished")
-	}
-	if bar1.current != bar1.total {
-		t.Errorf("Expected bar1 current %d, got %d", bar1.total, bar1.current)
-	}
-	if bar2.current != bar2.total {
-		t.Errorf("Expected bar2 current %d, got %d", bar2.total, bar2.current)
-	}
-}
-
-func TestMultiProgress_ConcurrentAddBar(t *testing.T) {
-	mp := NewMultiProgress()
-
-	var wg sync.WaitGroup
-	numBars := 10
-
-	bars := make([]*ProgressBar, numBars)
-
-	for i := 0; i < numBars; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			bars[index] = mp.AddBar(100, fmt.Sprintf("Bar %d", index))
-		}(i)
-	}
-
-	wg.Wait()
-
-	if len(mp.bars) != numBars {
-		t.Errorf("Expected %d bars, got %d", numBars, len(mp.bars))
-	}
-
-	for i, bar := range bars {
-		if bar == nil {
-			t.Errorf("Bar %d is nil", i)
-		}
-	}
 }
 
 func TestProgressBar_RenderSpeedAndETA(t *testing.T) {

@@ -369,6 +369,7 @@ func (m *Manager) resolveVersion(version string) (string, error) {
 				return v, nil
 			}
 		}
+		return "", fmt.Errorf("no patch version found for %s", version)
 	}
 
 	return version, nil
@@ -430,12 +431,6 @@ func (m *Manager) getLocalVersion() string {
 // DefaultVersion returns the configured default version string.
 func (m *Manager) DefaultVersion() string {
 	return m.config.DefaultVersion
-}
-
-// GetDefaultVersionFromSymlink returns the active/default version by reading the global symlink.
-// It delegates to CurrentGlobal and returns its result.
-func (m *Manager) GetDefaultVersionFromSymlink() (string, error) {
-	return m.CurrentGlobal()
 }
 
 // CurrentActivationMethod returns the activation method for the currently active Go version.

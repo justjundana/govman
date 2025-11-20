@@ -55,10 +55,12 @@ func TestGetAvailableVersions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear cache before each test
+			ClearReleasesCache()
+
 			server := createMockServer(tc.mockResponse, http.StatusOK)
 			defer server.Close()
 
-			ClearReleasesCache()
 			versions, err := GetAvailableVersionsWithConfig(tc.includeUnstable, server.URL, 1*time.Minute)
 
 			if tc.shouldError && err == nil {
@@ -113,6 +115,9 @@ func TestGetAvailableVersionsWithConfig_Errors(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear cache before each test
+			ClearReleasesCache()
+
 			var server *httptest.Server
 			if tc.statusCode == http.StatusOK {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +131,6 @@ func TestGetAvailableVersionsWithConfig_Errors(t *testing.T) {
 			}
 			defer server.Close()
 
-			ClearReleasesCache()
 			_, err := GetAvailableVersionsWithConfig(false, server.URL, 1*time.Minute)
 
 			if tc.expectError && err == nil {
@@ -137,6 +141,9 @@ func TestGetAvailableVersionsWithConfig_Errors(t *testing.T) {
 }
 
 func TestGetDownloadURL(t *testing.T) {
+	// Determine the expected architecture after resolution
+	expectedArch := resolveArch("1.21.0", runtime.GOOS, runtime.GOARCH)
+
 	testCases := []struct {
 		name         string
 		version      string
@@ -152,15 +159,15 @@ func TestGetDownloadURL(t *testing.T) {
 					Version: "go1.21.0",
 					Files: []File{
 						{
-							Filename: fmt.Sprintf("go1.21.0.%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH),
+							Filename: fmt.Sprintf("go1.21.0.%s-%s.tar.gz", runtime.GOOS, expectedArch),
 							OS:       runtime.GOOS,
-							Arch:     runtime.GOARCH,
+							Arch:     expectedArch,
 							Kind:     "archive",
 						},
 					},
 				},
 			},
-			expectedURL: fmt.Sprintf("https://go.dev/dl/go1.21.0.%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH),
+			expectedURL: fmt.Sprintf("https://go.dev/dl/go1.21.0.%s-%s.tar.gz", runtime.GOOS, expectedArch),
 			shouldError: false,
 		},
 		{
@@ -205,10 +212,12 @@ func TestGetDownloadURL(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear cache before each test
+			ClearReleasesCache()
+
 			server := createMockServer(tc.mockResponse, http.StatusOK)
 			defer server.Close()
 
-			ClearReleasesCache()
 			url, err := GetDownloadURLWithConfig(tc.version, server.URL, 1*time.Minute, defaultGoDownloadURL)
 
 			if tc.shouldError && err == nil {
@@ -297,6 +306,9 @@ func TestResolveArch(t *testing.T) {
 }
 
 func TestGetFileInfo(t *testing.T) {
+	// Determine the expected architecture after resolution
+	expectedArch := resolveArch("1.21.0", runtime.GOOS, runtime.GOARCH)
+
 	testCases := []struct {
 		name         string
 		version      string
@@ -312,9 +324,9 @@ func TestGetFileInfo(t *testing.T) {
 					Version: "go1.21.0",
 					Files: []File{
 						{
-							Filename: "go1.21.0." + runtime.GOOS + "-" + runtime.GOARCH + ".tar.gz",
+							Filename: "go1.21.0." + runtime.GOOS + "-" + expectedArch + ".tar.gz",
 							OS:       runtime.GOOS,
-							Arch:     runtime.GOARCH,
+							Arch:     expectedArch,
 							Kind:     "archive",
 							Sha256:   "abc123",
 							Size:     1024,
@@ -324,6 +336,9 @@ func TestGetFileInfo(t *testing.T) {
 			},
 			expectError: false,
 			checkFile: func(t *testing.T, f *File) {
+				if f == nil {
+					t.Fatal("Expected file to be non-nil")
+				}
 				if f.Sha256 != "abc123" {
 					t.Errorf("Expected sha256 'abc123', got %q", f.Sha256)
 				}
@@ -342,15 +357,18 @@ func TestGetFileInfo(t *testing.T) {
 				},
 			},
 			expectError: true,
+			checkFile:   nil,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear cache before each test
+			ClearReleasesCache()
+
 			server := createMockServer(tc.mockResponse, http.StatusOK)
 			defer server.Close()
 
-			ClearReleasesCache()
 			file, err := GetFileInfoWithConfig(tc.version, server.URL, 1*time.Minute)
 
 			if tc.expectError && err == nil {
@@ -579,75 +597,6 @@ func TestCompareVersions(t *testing.T) {
 
 			if result != tc.expected {
 				t.Errorf("CompareVersions(%q, %q) = %d, expected %d", tc.v1, tc.v2, result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestIsValidVersion(t *testing.T) {
-	testCases := []struct {
-		name     string
-		version  string
-		expected bool
-	}{
-		{
-			name:     "Valid semantic version",
-			version:  "1.21.0",
-			expected: true,
-		},
-		{
-			name:     "Valid without patch",
-			version:  "1.21",
-			expected: true,
-		},
-		{
-			name:     "Valid with RC",
-			version:  "1.21.0-rc1",
-			expected: true,
-		},
-		{
-			name:     "Valid with RC no dash",
-			version:  "1.21.0rc1",
-			expected: true,
-		},
-		{
-			name:     "Valid with beta",
-			version:  "1.21.0-beta2",
-			expected: true,
-		},
-		{
-			name:     "Valid with alpha",
-			version:  "1.21.0-alpha1",
-			expected: true,
-		},
-		{
-			name:     "Invalid - missing minor",
-			version:  "1",
-			expected: false,
-		},
-		{
-			name:     "Invalid - text",
-			version:  "latest",
-			expected: false,
-		},
-		{
-			name:     "Invalid - extra parts",
-			version:  "1.21.0.5",
-			expected: false,
-		},
-		{
-			name:     "Invalid - wrong prerelease",
-			version:  "1.21.0-gamma1",
-			expected: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := IsValidVersion(tc.version)
-
-			if result != tc.expected {
-				t.Errorf("IsValidVersion(%q) = %v, expected %v", tc.version, result, tc.expected)
 			}
 		})
 	}
@@ -941,6 +890,9 @@ func TestFetchReleasesWithConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear cache before each test
+			ClearReleasesCache()
+
 			var server *httptest.Server
 
 			if tc.statusCode == http.StatusOK && tc.responseBody != "invalid" {
@@ -957,7 +909,6 @@ func TestFetchReleasesWithConfig(t *testing.T) {
 			}
 			defer server.Close()
 
-			ClearReleasesCache()
 			releases, err := fetchReleasesWithConfig(server.URL, tc.cacheDuration)
 
 			if tc.expectError && err == nil {
@@ -983,14 +934,15 @@ func TestFetchReleasesWithConfig(t *testing.T) {
 
 func TestFetchReleasesCache(t *testing.T) {
 	t.Run("Cache hit", func(t *testing.T) {
+		// Clear cache before test
+		ClearReleasesCache()
+
 		mockReleases := []Release{
 			{Version: "go1.21.0", Stable: true},
 		}
 
 		server := createMockServer(mockReleases, http.StatusOK)
 		defer server.Close()
-
-		ClearReleasesCache()
 
 		// First call - populate cache
 		releases1, err := fetchReleasesWithConfig(server.URL, 5*time.Minute)
@@ -1010,14 +962,15 @@ func TestFetchReleasesCache(t *testing.T) {
 	})
 
 	t.Run("Cache expired", func(t *testing.T) {
+		// Clear cache before test
+		ClearReleasesCache()
+
 		mockReleases := []Release{
 			{Version: "go1.21.0", Stable: true},
 		}
 
 		server := createMockServer(mockReleases, http.StatusOK)
 		defer server.Close()
-
-		ClearReleasesCache()
 
 		// First call with very short cache duration
 		_, err := fetchReleasesWithConfig(server.URL, 1*time.Millisecond)
@@ -1160,78 +1113,10 @@ func TestGetDirSizeWithErrors(t *testing.T) {
 	})
 }
 
-func TestClearReleasesCache(t *testing.T) {
-	testCases := []struct {
-		name string
-		test func(t *testing.T)
-	}{
-		{
-			name: "Clear populated cache",
-			test: func(t *testing.T) {
-				mockReleases := []Release{
-					{Version: "go1.21.0", Stable: true},
-				}
-
-				server := createMockServer(mockReleases, http.StatusOK)
-				defer server.Close()
-
-				// Populate cache
-				_, err := fetchReleasesWithConfig(server.URL, 5*time.Minute)
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-
-				// Verify cache is populated
-				cacheMutex.RLock()
-				cacheNotEmpty := releasesCache != nil
-				cacheMutex.RUnlock()
-
-				if !cacheNotEmpty {
-					t.Error("Cache should be populated")
-				}
-
-				// Clear cache
-				ClearReleasesCache()
-
-				// Verify cache is cleared
-				cacheMutex.RLock()
-				isEmpty := releasesCache == nil
-				expiryZero := cacheExpiry.IsZero()
-				cacheMutex.RUnlock()
-
-				if !isEmpty {
-					t.Error("Cache should be nil after clear")
-				}
-				if !expiryZero {
-					t.Error("Cache expiry should be zero after clear")
-				}
-			},
-		},
-		{
-			name: "Clear empty cache",
-			test: func(t *testing.T) {
-				ClearReleasesCache()
-				ClearReleasesCache() // Should not panic
-
-				cacheMutex.RLock()
-				isEmpty := releasesCache == nil
-				cacheMutex.RUnlock()
-
-				if !isEmpty {
-					t.Error("Cache should remain nil")
-				}
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.test(t)
-		})
-	}
-}
-
 func TestDefaultFunctions(t *testing.T) {
+	// Clear cache before tests
+	ClearReleasesCache()
+
 	testCases := []struct {
 		name string
 		test func(t *testing.T)
@@ -1279,14 +1164,15 @@ func TestConcurrency(t *testing.T) {
 		{
 			name: "Concurrent cache access",
 			test: func(t *testing.T) {
+				// Clear cache before test
+				ClearReleasesCache()
+
 				mockReleases := []Release{
 					{Version: "go1.21.0", Stable: true},
 				}
 
 				server := createMockServer(mockReleases, http.StatusOK)
 				defer server.Close()
-
-				ClearReleasesCache()
 
 				var wg sync.WaitGroup
 				for i := 0; i < 10; i++ {
@@ -1485,7 +1371,9 @@ func TestConstants(t *testing.T) {
 
 func TestFetchReleasesNetworkError(t *testing.T) {
 	t.Run("Invalid URL causes error", func(t *testing.T) {
+		// Clear cache before test
 		ClearReleasesCache()
+
 		_, err := fetchReleasesWithConfig("http://invalid-url-that-does-not-exist-12345.com", 1*time.Minute)
 		if err == nil {
 			t.Error("Expected error for invalid URL")

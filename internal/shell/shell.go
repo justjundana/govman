@@ -166,35 +166,6 @@ func Detect() Shell {
 	return detectAvailableShell()
 }
 
-// DetectAll returns a slice of supported shells that are available on the current system.
-func DetectAll() []Shell {
-	var shells []Shell
-
-	if currentGOOS == "windows" {
-		// Windows-specific shells
-		shells = []Shell{
-			&PowerShell{},
-			&CmdShell{},
-		}
-	} else {
-		// Unix-like shells
-		shells = []Shell{
-			&ZshShell{},
-			&BashShell{},
-			&FishShell{},
-		}
-	}
-
-	var available []Shell
-	for _, shell := range shells {
-		if shell.IsAvailable() {
-			available = append(available, shell)
-		}
-	}
-
-	return available
-}
-
 // detectAvailableShell returns the first available shell from a prioritized list.
 func detectAvailableShell() Shell {
 	shells := []Shell{

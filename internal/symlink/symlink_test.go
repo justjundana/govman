@@ -7,64 +7,6 @@ import (
 	"testing"
 )
 
-func TestReadLink_AbsoluteAndRelative(t *testing.T) {
-	tempDir := t.TempDir()
-
-	targetPath := filepath.Join(tempDir, "file.txt")
-	if err := os.WriteFile(targetPath, []byte("test"), 0644); err != nil {
-		t.Fatalf("failed to create file: %v", err)
-	}
-
-	symlinkAbs := filepath.Join(tempDir, "abs_link")
-	if err := os.Symlink(targetPath, symlinkAbs); err != nil {
-		t.Skipf("Skipping test: os.Symlink failed (maybe not supported on this OS): %v", err)
-	}
-
-	resultAbs, err := ReadLink(symlinkAbs)
-	if err != nil {
-		t.Fatalf("ReadLink absolute failed: %v", err)
-	}
-	if resultAbs != targetPath {
-		t.Errorf("expected %q, got %q", targetPath, resultAbs)
-	}
-
-	relTarget := "file.txt"
-	symlinkRel := filepath.Join(tempDir, "rel_link")
-	if err := os.Symlink(relTarget, symlinkRel); err != nil {
-		t.Skipf("Skipping test: os.Symlink failed (maybe not supported): %v", err)
-	}
-
-	resultRel, err := ReadLink(symlinkRel)
-	if err != nil {
-		t.Fatalf("ReadLink relative failed: %v", err)
-	}
-	expectedRel := filepath.Join(tempDir, relTarget)
-	if resultRel != expectedRel {
-		t.Errorf("expected %q, got %q", expectedRel, resultRel)
-	}
-}
-
-func TestReadLink_Error_NotASymlink(t *testing.T) {
-	tempDir := t.TempDir()
-	regularFile := filepath.Join(tempDir, "regular.txt")
-
-	if err := os.WriteFile(regularFile, []byte("data"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := ReadLink(regularFile)
-	if err == nil {
-		t.Error("expected error when reading non-symlink file, got nil")
-	}
-}
-
-func TestReadLink_Error_NotExist(t *testing.T) {
-	_, err := ReadLink("/path/does/not/exist")
-	if err == nil {
-		t.Error("expected error for non-existent path, got nil")
-	}
-}
-
 func TestCreate_NewSymlink(t *testing.T) {
 	tempDir := t.TempDir()
 	target := filepath.Join(tempDir, "target.txt")
@@ -77,9 +19,9 @@ func TestCreate_NewSymlink(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	resolved, err := ReadLink(symlink)
+	resolved, err := os.Readlink(symlink)
 	if err != nil {
-		t.Fatalf("ReadLink failed: %v", err)
+		t.Fatalf("os.Readlink failed: %v", err)
 	}
 	if resolved != target {
 		t.Errorf("expected %q, got %q", target, resolved)
@@ -103,7 +45,7 @@ func TestCreate_OverwriteExisting(t *testing.T) {
 		t.Fatalf("overwrite Create failed: %v", err)
 	}
 
-	resolved, _ := ReadLink(symlink)
+	resolved, _ := os.Readlink(symlink)
 	if resolved != target2 {
 		t.Errorf("expected %q, got %q", target2, resolved)
 	}

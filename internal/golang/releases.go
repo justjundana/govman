@@ -234,14 +234,6 @@ func CompareVersions(v1, v2 string) int {
 	return comparePrerelease(parts1.prerelease, parts2.prerelease)
 }
 
-// IsValidVersion validates a version string (optional patch and prerelease tags supported).
-// Parameter version. Returns true if valid, false otherwise.
-func IsValidVersion(version string) bool {
-	pattern := `^\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?$`
-	matched, _ := regexp.MatchString(pattern, version)
-	return matched
-}
-
 type versionParts struct {
 	numbers    [3]int
 	prerelease string
@@ -408,7 +400,8 @@ func getDirSize(path string) (int64, error) {
 	return size, err
 }
 
-// ClearReleasesCache clears the in-memory releases cache and resets its expiry time.
+// ClearReleasesCache clears the in-memory releases cache.
+// This is primarily used for testing to ensure a clean state.
 func ClearReleasesCache() {
 	cacheMutex.Lock()
 	releasesCache = nil

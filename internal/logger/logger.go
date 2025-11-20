@@ -188,15 +188,6 @@ func (l *Logger) Progress(format string, args ...interface{}) {
 	}
 }
 
-// Step logs a step-level message (verbose flow guidance).
-func (l *Logger) Step(format string, args ...interface{}) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-	if l.level >= VerboseLevel {
-		fmt.Fprintf(l.verboseWriter, "Step: "+format+"\n", args...)
-	}
-}
-
 // Download logs a download-related message at normal level.
 func (l *Logger) Download(format string, args ...interface{}) {
 	l.mutex.Lock()
@@ -307,11 +298,6 @@ func StopTimer(t *Timer) {
 // ErrorWithHelp is a package-level proxy to Logger.ErrorWithHelp.
 func ErrorWithHelp(errorMsg, helpMsg string, args ...interface{}) {
 	Get().ErrorWithHelp(errorMsg, helpMsg, args...)
-}
-
-// Step is a package-level proxy to Logger.Step.
-func Step(format string, args ...interface{}) {
-	Get().Step(format, args...)
 }
 
 // InternalProgress is a package-level proxy to Logger.InternalProgress.

@@ -94,7 +94,6 @@ func TestDownloader_New(t *testing.T) {
 			downloader := New(tc.config)
 
 			if tc.expectError {
-				// This test case doesn't actually expect errors for New()
 				t.Skip("New() constructor doesn't fail in current implementation")
 			}
 
@@ -116,7 +115,6 @@ func TestDownloader_downloadFile_Cached(t *testing.T) {
 	config := createTestConfig(t)
 	downloader := createTestDownloader(t, config)
 
-	// Create a cached file with correct size
 	testContent := "cached file content"
 	cachePath := filepath.Join(config.CacheDir, "cached-file.tar.gz")
 	err := os.WriteFile(cachePath, []byte(testContent), 0644)
@@ -129,7 +127,6 @@ func TestDownloader_downloadFile_Cached(t *testing.T) {
 	fileInfo.Filename = "cached-file.tar.gz"
 	fileInfo.Size = int64(len(testContent))
 
-	// Should return cached file without downloading
 	resultPath, err := downloader.downloadFile("http://example.com/cached-file.tar.gz", fileInfo)
 	if err != nil {
 		t.Fatalf("downloadFile with cached file failed: %v", err)
@@ -143,11 +140,11 @@ func TestDownloader_downloadFile_Cached(t *testing.T) {
 // TestDownloader_downloadFile_Timeout tests timeout handling
 func TestDownloader_downloadFile_Timeout(t *testing.T) {
 	config := createTestConfig(t)
-	config.Download.Timeout = 1 * time.Millisecond // Very short timeout
+	config.Download.Timeout = 1 * time.Millisecond
 	downloader := createTestDownloader(t, config)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Millisecond) // Longer than timeout
+		time.Sleep(10 * time.Millisecond)
 		w.Write([]byte("delayed response"))
 	}))
 	defer server.Close()
@@ -166,7 +163,6 @@ func TestDownloader_verifyChecksum_EmptyFile(t *testing.T) {
 	config := createTestConfig(t)
 	downloader := createTestDownloader(t, config)
 
-	// Create empty test file
 	testFile := filepath.Join(config.CacheDir, "empty.txt")
 	err := os.WriteFile(testFile, []byte(""), 0644)
 	if err != nil {
@@ -174,7 +170,6 @@ func TestDownloader_verifyChecksum_EmptyFile(t *testing.T) {
 	}
 	defer os.Remove(testFile)
 
-	// SHA256 of empty string
 	emptySHA256 := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 	err = downloader.verifyChecksum(testFile, emptySHA256)
@@ -242,6 +237,9 @@ func TestDownloader_Download(t *testing.T) {
 			mockResponse:  "",
 			expectedError: "",
 			setupDownload: func(t *testing.T, config *_config.Config) (string, func()) {
+				// Clear the golang package cache before setting up
+				_golang.ClearReleasesCache()
+
 				// Create a valid tar.gz file
 				var buf bytes.Buffer
 				gzWriter := gzip.NewWriter(&buf)
@@ -261,24 +259,25 @@ func TestDownloader_Download(t *testing.T) {
 				archiveData := buf.Bytes()
 				expectedSHA256 := fmt.Sprintf("%x", sha256.Sum256(archiveData))
 
+				// Create API server first
+				apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(fmt.Sprintf(`[{"version":"go1.21.0","stable":true,"files":[{"filename":"go1.21.0.darwin-arm64.tar.gz","os":"darwin","arch":"arm64","version":"go1.21.0","sha256":"%s","size":%d,"kind":"archive"}]}]`, expectedSHA256, len(archiveData))))
+				}))
+
+				// Update config to use mock API server BEFORE creating download server
+				config.GoReleases.APIURL = apiServer.URL
+
 				// Create mock download server
 				downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Write(archiveData)
 				}))
 
-				// Override config for this test
-				apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(fmt.Sprintf(`[{"version":"go1.21.0","stable":true,"files":[{"filename":"go1.21.0.darwin-arm64.tar.gz","os":"darwin","arch":"arm64","version":"go1.21.0","sha256":"%s","size":%d,"kind":"archive"}]}]`, expectedSHA256, len(archiveData))))
-				}))
-				// Clear cache to ensure fresh API call
-				_golang.ClearReleasesCache()
-
 				cleanup := func() {
 					apiServer.Close()
 					downloadServer.Close()
+					_golang.ClearReleasesCache()
 				}
-				config.GoReleases.APIURL = apiServer.URL
 
 				return downloadServer.URL + "/go1.21.0.darwin-arm64.tar.gz", cleanup
 			},
@@ -297,7 +296,6 @@ func TestDownloader_Download(t *testing.T) {
 				downloadURL, cleanup = tc.setupDownload(t, config)
 				defer cleanup()
 			} else {
-				// Create mock server for error cases
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					w.Write([]byte(tc.mockResponse))
@@ -305,7 +303,6 @@ func TestDownloader_Download(t *testing.T) {
 				cleanup = func() { server.Close() }
 				defer cleanup()
 
-				// Override config to use mock server
 				config.GoReleases.APIURL = server.URL
 			}
 
@@ -322,7 +319,6 @@ func TestDownloader_Download(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// For successful download, verify extracted file exists
 				if tc.name == "Successful download" {
 					extractedFile := filepath.Join(installDir, "test.txt")
 					if _, err := os.Stat(extractedFile); os.IsNotExist(err) {
@@ -372,7 +368,6 @@ func TestDownloader_downloadFile(t *testing.T) {
 			config := createTestConfig(t)
 			downloader := createTestDownloader(t, config)
 
-			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tc.statusCode != 200 {
 					w.WriteHeader(tc.statusCode)
@@ -400,12 +395,10 @@ func TestDownloader_downloadFile(t *testing.T) {
 				t.Fatalf("downloadFile failed: %v", err)
 			}
 
-			// Verify file was downloaded
 			if _, err := os.Stat(cachePath); os.IsNotExist(err) {
 				t.Error("Downloaded file does not exist")
 			}
 
-			// Verify content
 			content, err := os.ReadFile(cachePath)
 			if err != nil {
 				t.Fatalf("Failed to read downloaded file: %v", err)
@@ -414,7 +407,6 @@ func TestDownloader_downloadFile(t *testing.T) {
 				t.Errorf("Expected content %q, got %q", tc.fileContent, string(content))
 			}
 
-			// Cleanup
 			os.Remove(cachePath)
 		})
 	}
@@ -437,7 +429,7 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 		{
 			name:        "Resume with complete file",
 			testContent: "complete file content",
-			partialSize: 21, // Full content length
+			partialSize: 21,
 			expectError: false,
 		},
 	}
@@ -449,7 +441,6 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 
 			partialContent := tc.testContent[:tc.partialSize]
 
-			// Create partial file
 			cachePath := filepath.Join(config.CacheDir, "test-resume.txt")
 			err := os.WriteFile(cachePath, []byte(partialContent), 0644)
 			if err != nil {
@@ -483,7 +474,6 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 				t.Fatalf("downloadFile resume failed: %v", err)
 			}
 
-			// Verify full content
 			content, err := os.ReadFile(downloadedPath)
 			if err != nil {
 				t.Fatalf("Failed to read resumed file: %v", err)
@@ -492,7 +482,6 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 				t.Errorf("Expected resumed content %q, got %q", tc.testContent, string(content))
 			}
 
-			// Cleanup
 			os.Remove(downloadedPath)
 		})
 	}
@@ -533,12 +522,10 @@ func TestDownloader_verifyChecksum(t *testing.T) {
 
 			var testFile string
 			if tc.name != "Non-existent file" {
-				// Calculate expected SHA256 for valid checksum test
 				if tc.expectedSHA256 == "" {
 					tc.expectedSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(tc.fileContent)))
 				}
 
-				// Create test file
 				testFile = filepath.Join(config.CacheDir, "test-checksum.txt")
 				err := os.WriteFile(testFile, []byte(tc.fileContent), 0644)
 				if err != nil {
@@ -600,7 +587,6 @@ func TestDownloader_extractArchive(t *testing.T) {
 			installDir := filepath.Join(config.InstallDir, "test-extract")
 			archiveFile := filepath.Join(config.CacheDir, tc.archiveName)
 
-			// Create archive file
 			err := os.WriteFile(archiveFile, []byte("test"), 0644)
 			if err != nil {
 				t.Fatalf("Failed to create test file: %v", err)
@@ -614,7 +600,6 @@ func TestDownloader_extractArchive(t *testing.T) {
 					t.Errorf("Expected error containing %q, got: %v", tc.errorContains, err)
 				}
 			} else {
-				// For supported formats, we expect an error because the file isn't a valid archive
 				if err == nil {
 					t.Error("Expected error for invalid archive file")
 				}
@@ -641,7 +626,7 @@ func TestDownloader_extractTarGz(t *testing.T) {
 			name:        "Empty file name",
 			fileName:    "",
 			fileContent: "content",
-			expectError: false, // Empty names are skipped without error
+			expectError: false,
 		},
 		{
 			name:        "Directory entry",
@@ -658,7 +643,6 @@ func TestDownloader_extractTarGz(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-tar")
 
-			// Create a simple tar.gz file in memory
 			var buf bytes.Buffer
 			gzWriter := gzip.NewWriter(&buf)
 			tarWriter := tar.NewWriter(gzWriter)
@@ -689,7 +673,6 @@ func TestDownloader_extractTarGz(t *testing.T) {
 			tarWriter.Close()
 			gzWriter.Close()
 
-			// Write to temp file
 			tarFile := filepath.Join(config.CacheDir, "test.tar.gz")
 			err := os.WriteFile(tarFile, buf.Bytes(), 0644)
 			if err != nil {
@@ -697,7 +680,6 @@ func TestDownloader_extractTarGz(t *testing.T) {
 			}
 			defer os.Remove(tarFile)
 
-			// Extract
 			err = downloader.extractTarGz(tarFile, installDir)
 
 			if tc.expectError {
@@ -711,22 +693,18 @@ func TestDownloader_extractTarGz(t *testing.T) {
 				t.Fatalf("extractTarGz failed: %v", err)
 			}
 
-			// Verify extracted file/directory
 			if tc.fileName == "" {
-				// Empty filename - nothing to verify
 				return
 			}
 
 			extractedPath := filepath.Join(installDir, tc.fileName)
 			if strings.HasSuffix(tc.fileName, "/") {
-				// Directory entry - verify directory exists
 				if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
 					t.Error("Extracted directory does not exist")
 				}
 				return
 			}
 
-			// Regular file - verify content
 			if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
 				t.Error("Extracted file does not exist")
 			}
@@ -739,7 +717,6 @@ func TestDownloader_extractTarGz(t *testing.T) {
 				t.Errorf("Expected extracted content %q, got %q", tc.fileContent, string(content))
 			}
 
-			// Cleanup
 			os.RemoveAll(installDir)
 		})
 	}
@@ -786,7 +763,6 @@ func TestDownloader_extractZip(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-zip")
 
-			// Create a simple zip file in memory
 			var buf bytes.Buffer
 			zipWriter := zip.NewWriter(&buf)
 
@@ -801,7 +777,6 @@ func TestDownloader_extractZip(t *testing.T) {
 
 			zipWriter.Close()
 
-			// Write to temp file
 			zipFile := filepath.Join(config.CacheDir, "test.zip")
 			err = os.WriteFile(zipFile, buf.Bytes(), 0644)
 			if err != nil {
@@ -809,7 +784,6 @@ func TestDownloader_extractZip(t *testing.T) {
 			}
 			defer os.Remove(zipFile)
 
-			// Extract
 			err = downloader.extractZip(zipFile, installDir)
 
 			if tc.expectError {
@@ -823,13 +797,11 @@ func TestDownloader_extractZip(t *testing.T) {
 				t.Fatalf("extractZip failed: %v", err)
 			}
 
-			// Determine expected extracted file name
 			expectedName := tc.fileName
 			if strings.HasPrefix(tc.fileName, "go/") || strings.HasPrefix(tc.fileName, "go\\") {
 				expectedName = tc.fileName[3:]
 			}
 
-			// Verify extracted file
 			extractedFile := filepath.Join(installDir, expectedName)
 			if _, err := os.Stat(extractedFile); os.IsNotExist(err) {
 				t.Error("Extracted file does not exist")
@@ -843,7 +815,6 @@ func TestDownloader_extractZip(t *testing.T) {
 				t.Errorf("Expected extracted content %q, got %q", tc.fileContent, string(content))
 			}
 
-			// Cleanup
 			os.RemoveAll(installDir)
 		})
 	}
@@ -880,12 +851,10 @@ func TestDownloader_extractTarGz_PathTraversal(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-path-traversal")
 
-			// Create a tar.gz with path traversal attempt
 			var buf bytes.Buffer
 			gzWriter := gzip.NewWriter(&buf)
 			tarWriter := tar.NewWriter(gzWriter)
 
-			// Malicious path
 			header := &tar.Header{
 				Name: tc.fileName,
 				Size: 4,
@@ -903,7 +872,6 @@ func TestDownloader_extractTarGz_PathTraversal(t *testing.T) {
 			tarWriter.Close()
 			gzWriter.Close()
 
-			// Write to temp file
 			tarFile := filepath.Join(config.CacheDir, "malicious.tar.gz")
 			err = os.WriteFile(tarFile, buf.Bytes(), 0644)
 			if err != nil {
@@ -911,7 +879,6 @@ func TestDownloader_extractTarGz_PathTraversal(t *testing.T) {
 			}
 			defer os.Remove(tarFile)
 
-			// Attempt extraction - should fail
 			err = downloader.extractTarGz(tarFile, installDir)
 			if err == nil || !strings.Contains(err.Error(), tc.expected) {
 				t.Errorf("Expected error containing %q, got: %v", tc.expected, err)
@@ -951,7 +918,6 @@ func TestDownloader_extractZip_PathTraversal(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-zip-traversal")
 
-			// Create a zip with path traversal attempt
 			var buf bytes.Buffer
 			zipWriter := zip.NewWriter(&buf)
 
@@ -962,7 +928,6 @@ func TestDownloader_extractZip_PathTraversal(t *testing.T) {
 
 			zipWriter.Close()
 
-			// Write to temp file
 			zipFile := filepath.Join(config.CacheDir, "malicious.zip")
 			err = os.WriteFile(zipFile, buf.Bytes(), 0644)
 			if err != nil {
@@ -970,7 +935,6 @@ func TestDownloader_extractZip_PathTraversal(t *testing.T) {
 			}
 			defer os.Remove(zipFile)
 
-			// Attempt extraction - should fail
 			err = downloader.extractZip(zipFile, installDir)
 			if err == nil || !strings.Contains(err.Error(), tc.expected) {
 				t.Errorf("Expected error containing %q, got: %v", tc.expected, err)
@@ -1009,14 +973,12 @@ func TestDownloader_Download_ErrorPaths(t *testing.T) {
 			config := createTestConfig(t)
 			downloader := createTestDownloader(t, config)
 
-			// Create mock server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(tc.mockResponse))
 			}))
 			defer server.Close()
 
-			// Override config to use mock server
 			config.GoReleases.APIURL = server.URL
 
 			installDir := filepath.Join(config.InstallDir, "test-error")
@@ -1048,7 +1010,6 @@ func TestDownloader_extractTarGz_ErrorHandling(t *testing.T) {
 		{
 			name: "Invalid gzip data",
 			setupArchive: func() ([]byte, error) {
-				// Create a tar file without gzip compression
 				var buf bytes.Buffer
 				tarWriter := tar.NewWriter(&buf)
 				header := &tar.Header{
@@ -1090,7 +1051,6 @@ func TestDownloader_extractTarGz_ErrorHandling(t *testing.T) {
 				t.Fatalf("Failed to setup archive: %v", err)
 			}
 
-			// Write to temp file
 			tarFile := filepath.Join(config.CacheDir, "corrupted.tar.gz")
 			err = os.WriteFile(tarFile, archiveData, 0644)
 			if err != nil {
@@ -1098,7 +1058,6 @@ func TestDownloader_extractTarGz_ErrorHandling(t *testing.T) {
 			}
 			defer os.Remove(tarFile)
 
-			// Attempt extraction
 			err = downloader.extractTarGz(tarFile, installDir)
 
 			if tc.expectError {
@@ -1136,8 +1095,8 @@ func TestDownloader_extractZip_ErrorHandling(t *testing.T) {
 			name: "Corrupted zip data",
 			setupArchive: func() ([]byte, error) {
 				var buf bytes.Buffer
-				buf.WriteString("PK\x03\x04") // Start of zip header but corrupted
-				buf.Write(make([]byte, 20))   // Incomplete header
+				buf.WriteString("PK\x03\x04")
+				buf.Write(make([]byte, 20))
 				return buf.Bytes(), nil
 			},
 			expectError:   true,
@@ -1157,7 +1116,6 @@ func TestDownloader_extractZip_ErrorHandling(t *testing.T) {
 				t.Fatalf("Failed to setup archive: %v", err)
 			}
 
-			// Write to temp file
 			zipFile := filepath.Join(config.CacheDir, "corrupted.zip")
 			err = os.WriteFile(zipFile, archiveData, 0644)
 			if err != nil {
@@ -1165,7 +1123,6 @@ func TestDownloader_extractZip_ErrorHandling(t *testing.T) {
 			}
 			defer os.Remove(zipFile)
 
-			// Attempt extraction
 			err = downloader.extractZip(zipFile, installDir)
 
 			if tc.expectError {
@@ -1190,11 +1147,9 @@ func TestDownloader_extractZip_Symlinks(t *testing.T) {
 
 	installDir := filepath.Join(config.InstallDir, "test-zip-symlinks")
 
-	// Create a zip with a symlink entry
 	var buf bytes.Buffer
 	zipWriter := zip.NewWriter(&buf)
 
-	// Add a regular file first
 	fileWriter, err := zipWriter.Create("target.txt")
 	if err != nil {
 		t.Fatalf("Failed to create zip file: %v", err)
@@ -1204,8 +1159,6 @@ func TestDownloader_extractZip_Symlinks(t *testing.T) {
 		t.Fatalf("Failed to write zip content: %v", err)
 	}
 
-	// Add a symlink (this will be treated as a regular file in Go's zip implementation)
-	// Go's zip package doesn't preserve symlinks, they become regular files
 	linkWriter, err := zipWriter.Create("link.txt")
 	if err != nil {
 		t.Fatalf("Failed to create zip symlink: %v", err)
@@ -1217,7 +1170,6 @@ func TestDownloader_extractZip_Symlinks(t *testing.T) {
 
 	zipWriter.Close()
 
-	// Write to temp file
 	zipFile := filepath.Join(config.CacheDir, "symlink.zip")
 	err = os.WriteFile(zipFile, buf.Bytes(), 0644)
 	if err != nil {
@@ -1225,13 +1177,11 @@ func TestDownloader_extractZip_Symlinks(t *testing.T) {
 	}
 	defer os.Remove(zipFile)
 
-	// Extract - should work without errors
 	err = downloader.extractZip(zipFile, installDir)
 	if err != nil {
 		t.Fatalf("extractZip failed: %v", err)
 	}
 
-	// Verify extracted files
 	targetFile := filepath.Join(installDir, "target.txt")
 	if _, err := os.Stat(targetFile); os.IsNotExist(err) {
 		t.Error("Target file does not exist")
@@ -1242,7 +1192,6 @@ func TestDownloader_extractZip_Symlinks(t *testing.T) {
 		t.Error("Link file does not exist")
 	}
 
-	// Cleanup
 	os.RemoveAll(installDir)
 }
 
@@ -1277,23 +1226,19 @@ func TestDownloader_extractZip_DirectoryCreation(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-zip-dirs")
 
-			// Ensure installDir exists and has proper permissions
 			err := os.MkdirAll(installDir, 0755)
 			if err != nil {
 				t.Fatalf("Failed to create install directory: %v", err)
 			}
 
-			// Create a zip with directory entry
 			var buf bytes.Buffer
 			zipWriter := zip.NewWriter(&buf)
 
-			// Create directory in zip
 			_, err = zipWriter.Create(tc.dirName)
 			if err != nil {
 				t.Fatalf("Failed to create zip directory: %v", err)
 			}
 
-			// Add a file in the directory
 			fileName := strings.TrimSuffix(tc.dirName, "/") + "/file.txt"
 			fileWriter, err := zipWriter.Create(fileName)
 			if err != nil {
@@ -1306,7 +1251,6 @@ func TestDownloader_extractZip_DirectoryCreation(t *testing.T) {
 
 			zipWriter.Close()
 
-			// Write to temp file
 			zipFile := filepath.Join(config.CacheDir, "dir.zip")
 			err = os.WriteFile(zipFile, buf.Bytes(), 0644)
 			if err != nil {
@@ -1314,7 +1258,6 @@ func TestDownloader_extractZip_DirectoryCreation(t *testing.T) {
 			}
 			defer os.Remove(zipFile)
 
-			// Extract
 			err = downloader.extractZip(zipFile, installDir)
 
 			if tc.expectError {
@@ -1328,7 +1271,6 @@ func TestDownloader_extractZip_DirectoryCreation(t *testing.T) {
 				t.Fatalf("extractZip failed: %v", err)
 			}
 
-			// Verify directory and file were created
 			expectedDir := filepath.Join(installDir, strings.TrimPrefix(strings.TrimSuffix(tc.dirName, "/"), "go/"))
 			if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
 				t.Errorf("Directory %s does not exist", expectedDir)
@@ -1339,7 +1281,6 @@ func TestDownloader_extractZip_DirectoryCreation(t *testing.T) {
 				t.Errorf("File %s does not exist", expectedFile)
 			}
 
-			// Cleanup
 			os.RemoveAll(installDir)
 		})
 	}
@@ -1350,7 +1291,6 @@ func TestDownloader_verifyChecksum_WrongHash(t *testing.T) {
 	config := createTestConfig(t)
 	downloader := createTestDownloader(t, config)
 
-	// Create test file
 	testFile := filepath.Join(config.CacheDir, "wrong-hash.txt")
 	err := os.WriteFile(testFile, []byte("test content"), 0644)
 	if err != nil {
@@ -1358,7 +1298,6 @@ func TestDownloader_verifyChecksum_WrongHash(t *testing.T) {
 	}
 	defer os.Remove(testFile)
 
-	// Use wrong hash
 	err = downloader.verifyChecksum(testFile, "wrong-hash-value")
 	if err == nil {
 		t.Error("Expected checksum verification error but got none")
@@ -1370,16 +1309,13 @@ func TestDownloader_verifyChecksum_WrongHash(t *testing.T) {
 
 // TestDownloader_GetFileInfoFailure tests file info retrieval failure
 func TestDownloader_GetFileInfoFailure(t *testing.T) {
-	// Clear any cached releases to ensure fresh fetch
 	_golang.ClearReleasesCache()
 
-	// Create mock server that returns 500 error for releases API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
-	// Test the file info retrieval directly
 	_, err := _golang.GetFileInfoWithConfig("1.20.0", server.URL, time.Minute)
 	if err == nil {
 		t.Fatal("Expected file info retrieval error but got none")
@@ -1392,7 +1328,6 @@ func TestDownloader_downloadFile_ServerError(t *testing.T) {
 	config := createTestConfig(t)
 	downloader := createTestDownloader(t, config)
 
-	// Create server that returns 500 error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}))
@@ -1412,11 +1347,9 @@ func TestDownloader_downloadFile_ServerError(t *testing.T) {
 // TestDownloader_downloadFile_NetworkTimeout tests network timeout handling
 func TestDownloader_downloadFile_NetworkTimeout(t *testing.T) {
 	config := createTestConfig(t)
-	// Set very short timeout
 	config.Download.Timeout = 1 * time.Nanosecond
 	downloader := createTestDownloader(t, config)
 
-	// Create server that delays response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
 		w.Write([]byte("delayed response"))
@@ -1438,7 +1371,6 @@ func TestDownloader_extractArchive_UnsupportedFormatDirect(t *testing.T) {
 
 	installDir := filepath.Join(config.InstallDir, "test-unsupported")
 
-	// Create dummy file
 	archiveFile := filepath.Join(config.CacheDir, "test.rar")
 	err := os.WriteFile(archiveFile, []byte("dummy"), 0644)
 	if err != nil {
@@ -1458,11 +1390,9 @@ func TestDownloader_extractArchive_UnsupportedFormatDirect(t *testing.T) {
 // TestDownloader_downloadFile_RetryExhaustion tests when all retry attempts are exhausted
 func TestDownloader_downloadFile_RetryExhaustion(t *testing.T) {
 	config := createTestConfig(t)
-	// Set retry count to 1 to speed up test
 	config.Download.RetryCount = 1
 	downloader := createTestDownloader(t, config)
 
-	// Create server that always fails
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 	}))
@@ -1475,7 +1405,6 @@ func TestDownloader_downloadFile_RetryExhaustion(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error but got none")
 	}
-	// The error message will be about the HTTP status, which is correct behavior
 	if !strings.Contains(err.Error(), "download failed with status 500") {
 		t.Errorf("Expected download error, got: %v", err)
 	}
@@ -1508,14 +1437,12 @@ func TestDownloader_downloadFile_PartialResume(t *testing.T) {
 			config := createTestConfig(t)
 			downloader := createTestDownloader(t, config)
 
-			// Pre-create partial file
 			cachePath := filepath.Join(config.CacheDir, "resume-test.txt")
 			err := os.WriteFile(cachePath, []byte(tc.initialData), 0644)
 			if err != nil {
 				t.Fatalf("Failed to create partial file: %v", err)
 			}
 
-			// Create server that supports range requests
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				rangeHeader := r.Header.Get("Range")
 				if rangeHeader == fmt.Sprintf("bytes=%d-", len(tc.initialData)) {
@@ -1544,7 +1471,6 @@ func TestDownloader_downloadFile_PartialResume(t *testing.T) {
 				t.Fatalf("downloadFile failed: %v", err)
 			}
 
-			// Verify final content
 			content, err := os.ReadFile(resultPath)
 			if err != nil {
 				t.Fatalf("Failed to read result file: %v", err)
@@ -1553,7 +1479,6 @@ func TestDownloader_downloadFile_PartialResume(t *testing.T) {
 				t.Errorf("Expected content %q, got %q", tc.finalData, string(content))
 			}
 
-			// Cleanup
 			os.Remove(resultPath)
 		})
 	}
@@ -1611,7 +1536,6 @@ func TestDownloader_extractArchive_UnsupportedFormat(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-unsupported")
 
-			// Create dummy file
 			archiveFile := filepath.Join(config.CacheDir, tc.archiveName)
 			err := os.WriteFile(archiveFile, []byte("dummy"), 0644)
 			if err != nil {

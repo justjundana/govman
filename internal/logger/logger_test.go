@@ -476,51 +476,6 @@ func TestProgress(t *testing.T) {
 	}
 }
 
-func TestStep(t *testing.T) {
-	testCases := []struct {
-		name           string
-		level          LogLevel
-		format         string
-		args           []interface{}
-		expectedOutput string
-		shouldLog      bool
-	}{
-		{
-			name:           "Step does not log at NormalLevel",
-			level:          NormalLevel,
-			format:         "initializing",
-			args:           []interface{}{},
-			expectedOutput: "",
-			shouldLog:      false,
-		},
-		{
-			name:           "Step logs at VerboseLevel",
-			level:          VerboseLevel,
-			format:         "step %d: %s",
-			args:           []interface{}{1, "setup"},
-			expectedOutput: "Step: step 1: setup\n",
-			shouldLog:      true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
-			logger := New()
-			buf := &bytes.Buffer{}
-			logger.SetVerboseWriter(buf)
-			logger.SetLevel(tc.level)
-
-			logger.Step(tc.format, tc.args...)
-
-			output := buf.String()
-			if output != tc.expectedOutput {
-				t.Errorf("Expected output %q, got %q", tc.expectedOutput, output)
-			}
-		})
-	}
-}
-
 func TestDownload(t *testing.T) {
 	testCases := []struct {
 		name           string
@@ -1063,27 +1018,6 @@ func TestGlobalLogger(t *testing.T) {
 
 				output := buf.String()
 				expected := "Error: connection failed\nHelp: Check network settings\n"
-				if output != expected {
-					t.Errorf("Expected %q, got %q", expected, output)
-				}
-			},
-		},
-		{
-			name: "Global Step function",
-			test: func(t *testing.T) {
-				viper.Reset()
-				globalLogger = nil
-				once = sync.Once{}
-
-				buf := &bytes.Buffer{}
-				logger := Get()
-				logger.SetVerboseWriter(buf)
-				logger.SetLevel(VerboseLevel)
-
-				Step("initialization")
-
-				output := buf.String()
-				expected := "Step: initialization\n"
 				if output != expected {
 					t.Errorf("Expected %q, got %q", expected, output)
 				}
