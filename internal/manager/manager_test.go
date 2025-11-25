@@ -75,7 +75,7 @@ func createTestConfig(t *testing.T) *_config.Config {
 			DownloadURL: "",
 		},
 		AutoSwitch: _config.AutoSwitchConfig{
-			ProjectFile: filepath.Join(tempDir, ".govman-version"),
+			ProjectFile: filepath.Join(tempDir, ".govman-goversion"),
 		},
 	}
 

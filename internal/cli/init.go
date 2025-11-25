@@ -25,7 +25,7 @@ func newInitCmd() *cobra.Command {
 		Long: `Set up intelligent shell integration for automatic Go version management.
 
 Integration Features:
-  • Automatic Go version switching based on .govman-version files
+  • Automatic Go version switching based on .govman-goversion files
   • Smart PATH management and environment variable handling
   • Support for bash, zsh, fish, and PowerShell
   • Non-intrusive configuration with easy removal
@@ -73,7 +73,7 @@ Go version when you navigate to different projects.`,
 			_logger.Info("Next Steps:")
 			_logger.Info("  1. Restart your terminal or run: source %s", sh.ConfigFile())
 			_logger.Info("  2. Navigate to a project directory")
-			_logger.Info("  3. Create a .govman-version file with your desired Go version")
+			_logger.Info("  3. Create a .govman-goversion file with your desired Go version")
 			_logger.Info("  4. govman will automatically switch versions for you!")
 			_logger.Info(strings.Repeat("─", 50))
 			_logger.Info("Happy Go development!")

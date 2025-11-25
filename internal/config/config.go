@@ -136,7 +136,7 @@ func (c *Config) setDefaults() {
 
 	c.AutoSwitch = AutoSwitchConfig{
 		Enabled:     true,
-		ProjectFile: ".govman-version",
+		ProjectFile: ".govman-goversion",
 	}
 
 	c.Shell = ShellConfig{

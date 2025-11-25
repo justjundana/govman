@@ -11,7 +11,7 @@ import (
 	_manager "github.com/justjundana/govman/internal/manager"
 )
 
-// newRefreshCmd creates the 'refresh' Cobra command to re-evaluate the current directory for a .govman-version file.
+// newRefreshCmd creates the 'refresh' Cobra command to re-evaluate the current directory for a .govman-goversion file.
 // Returns a *cobra.Command whose RunE switches to the local version if present, otherwise to the default; errors if the required version isn't installed.
 func newRefreshCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -20,16 +20,16 @@ func newRefreshCmd() *cobra.Command {
 		Long: `Manually trigger version switching based on the current directory.
 
 Purpose:
-  • Re-evaluate the current directory for .govman-version files
+  • Re-evaluate the current directory for .govman-goversion files
   • Switch to the appropriate version (local or default)
-  • Useful after adding/removing .govman-version files
+  • Useful after adding/removing .govman-goversion files
 
 Examples:
   govman refresh                    # Re-evaluate current directory
 
 Behavior:
-  • If .govman-version exists: switch to that version
-  • If no .govman-version: switch to default version
+  • If .govman-goversion exists: switch to that version
+  • If no .govman-goversion: switch to default version
   • Equivalent to the auto-switch that happens on 'cd'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr := _manager.New(getConfig())

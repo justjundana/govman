@@ -44,7 +44,7 @@ Activation Modes:
 Smart Features:
   • Automatic verification of version installation
   • Shell integration with PATH management
-  • Project-specific .govman-version file support
+  • Project-specific .govman-goversion file support
   • Seamless switching between versions
 
 Examples:
@@ -80,7 +80,7 @@ Examples:
 
 			if setLocal {
 				_logger.Success("Set Go %s as local version for this project", version)
-				_logger.Info("Created/updated .govman-version file in current directory")
+				_logger.Info("Created/updated .govman-goversion file in current directory")
 				_logger.Info("This version will be used automatically when working in this project")
 			} else if setDefault {
 				_logger.Success("Set Go %s as system default version", version)
@@ -102,7 +102,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVarP(&setDefault, "default", "d", false, "Set as system-wide default version (persistent)")
-	cmd.Flags().BoolVarP(&setLocal, "local", "l", false, "Set as project-local version (creates .govman-version file)")
+	cmd.Flags().BoolVarP(&setLocal, "local", "l", false, "Set as project-local version (creates .govman-goversion file)")
 
 	return cmd
 }
