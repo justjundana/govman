@@ -140,6 +140,12 @@ func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern str
 
 	if pattern != "" {
 		originalCount := len(versions)
+
+		if !strings.ContainsAny(pattern, "*?[]") {
+			pattern = pattern + "*"
+			_logger.Verbose("Pattern auto-expanded to '%s' for broader matching", pattern)
+		}
+
 		var filtered []string
 		for _, version := range versions {
 			if matched, _ := filepath.Match(pattern, version); matched {
