@@ -1017,21 +1017,39 @@ func TestManager_getLocalVersion(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "local version file exists",
+			name: "local version file exists with matching installed version",
 			setup: func(c *_config.Config) {
 				version := "1.19.0"
+				// Create the version directory to simulate it being installed
+				versionDir := c.GetVersionDir(version)
+				os.MkdirAll(versionDir, 0755)
+				// Write the local version file
 				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 			},
 			want:    "1.19.0",
 			wantErr: false,
 		},
 		{
-			name: "local version file with whitespace",
+			name: "local version file with whitespace and matching installed version",
 			setup: func(c *_config.Config) {
-				version := "  1.19.0  \n"
-				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
+				version := "1.19.0"
+				// Create the version directory to simulate it being installed
+				versionDir := c.GetVersionDir(version)
+				os.MkdirAll(versionDir, 0755)
+				// Write the local version file with whitespace
+				versionWithWhitespace := "  1.19.0  \n"
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(versionWithWhitespace), 0644)
 			},
 			want:    "1.19.0",
+			wantErr: false,
+		},
+		{
+			name: "local version file exists but no matching installed version",
+			setup: func(c *_config.Config) {
+				// Write local version file without installing the version
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte("1.19.0"), 0644)
+			},
+			want:    "",
 			wantErr: false,
 		},
 	}
@@ -1043,6 +1061,8 @@ func TestManager_getLocalVersion(t *testing.T) {
 
 			// Clean up
 			os.Remove(config.AutoSwitch.ProjectFile)
+			os.RemoveAll(config.InstallDir)
+			os.MkdirAll(config.InstallDir, 0755)
 
 			tt.setup(config)
 
@@ -1073,7 +1093,12 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 		{
 			name: "local version set",
 			setup: func(c *_config.Config) {
-				os.WriteFile(c.AutoSwitch.ProjectFile, []byte("1.20.0"), 0644)
+				version := "1.20.0"
+				// Install the version
+				versionDir := c.GetVersionDir(version)
+				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				// Write local version file
+				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 				// Set PATH to include a fake go binary that will return an error, so session check fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},

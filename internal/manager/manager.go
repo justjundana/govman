@@ -15,6 +15,7 @@ import (
 	_logger "github.com/justjundana/govman/internal/logger"
 	_shell "github.com/justjundana/govman/internal/shell"
 	_symlink "github.com/justjundana/govman/internal/symlink"
+	_util "github.com/justjundana/govman/internal/util"
 )
 
 type Manager struct {
@@ -173,6 +174,17 @@ func (m *Manager) Current() (string, error) {
 		}
 
 		return localVersion, nil
+	}
+
+	// Check if there's a raw local version that doesn't have a matching installed version
+	if rawLocalVersion := m.getLocalVersionRaw(); rawLocalVersion != "" {
+		installedVersions, _ := m.ListInstalled()
+		if len(installedVersions) > 0 {
+			return "", fmt.Errorf("no installed version matches %s (from %s) - install a version with matching major.minor (e.g., 'govman install %s')",
+				rawLocalVersion, m.config.AutoSwitch.ProjectFile, rawLocalVersion)
+		}
+		return "", fmt.Errorf("local version %s specified in %s but no Go versions are installed - run 'govman install %s' to install it",
+			rawLocalVersion, m.config.AutoSwitch.ProjectFile, rawLocalVersion)
 	}
 
 	version, err := m.CurrentGlobal()
@@ -416,9 +428,9 @@ func (m *Manager) setLocalVersion(version string) error {
 	return os.WriteFile(filename, []byte(version), 0644)
 }
 
-// getLocalVersion reads the project's autoswitch file and returns the local version.
+// getLocalVersionRaw reads the project's autoswitch file and returns the raw version string.
 // Returns an empty string if the file does not exist or cannot be read.
-func (m *Manager) getLocalVersion() string {
+func (m *Manager) getLocalVersionRaw() string {
 	filename := m.config.AutoSwitch.ProjectFile
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -426,6 +438,31 @@ func (m *Manager) getLocalVersion() string {
 	}
 
 	return strings.TrimSpace(string(data))
+}
+
+// getLocalVersion reads the project's autoswitch file and returns the best matching installed version.
+// It uses flexible version matching based on major.minor version (e.g., "1.25" matches "1.25.4").
+// Returns an empty string if the file does not exist or no matching version is installed.
+func (m *Manager) getLocalVersion() string {
+	rawVersion := m.getLocalVersionRaw()
+	if rawVersion == "" {
+		return ""
+	}
+
+	// Get all installed versions
+	installedVersions, err := m.ListInstalled()
+	if err != nil || len(installedVersions) == 0 {
+		return ""
+	}
+
+	// Find a matching version based on major.minor
+	matchedVersion, err := _util.FindBestMatchingVersion(rawVersion, installedVersions)
+	if err != nil {
+		// No matching version found, return empty string
+		return ""
+	}
+
+	return matchedVersion
 }
 
 // DefaultVersion returns the configured default version string.

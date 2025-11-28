@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	cobra "github.com/spf13/cobra"
 
 	_logger "github.com/justjundana/govman/internal/logger"
 	_manager "github.com/justjundana/govman/internal/manager"
+	_util "github.com/justjundana/govman/internal/util"
 )
 
 // getActivationMode returns a human-friendly label for the activation mode.
@@ -57,11 +59,44 @@ Examples:
 			mgr := _manager.New(getConfig())
 
 			if version != "default" {
-				resolved, err := mgr.ResolveVersion(version)
-				if err != nil {
-					return fmt.Errorf("failed to resolve version %s: %w", version, err)
+				isPartialVersion := strings.Count(version, ".") == 1
+
+				if isPartialVersion {
+					// Partial version (e.g., "1.24"): use flexible matching
+					installedVersions, _ := mgr.ListInstalled()
+					if len(installedVersions) > 0 {
+						if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+							_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
+							version = matchedVersion
+						} else {
+							// No installed version matches, resolve from remote
+							resolved, err := mgr.ResolveVersion(version)
+							if err != nil {
+								return fmt.Errorf("failed to resolve version %s: %w", version, err)
+							}
+							version = resolved
+						}
+					} else {
+						// No versions installed, resolve from remote
+						resolved, err := mgr.ResolveVersion(version)
+						if err != nil {
+							return fmt.Errorf("failed to resolve version %s: %w", version, err)
+						}
+						version = resolved
+					}
+				} else {
+					// Full version (e.g., "1.24.1"): check exact match first
+					if !mgr.IsInstalled(version) {
+						// Exact version not found, try flexible matching as fallback
+						installedVersions, _ := mgr.ListInstalled()
+						if len(installedVersions) > 0 {
+							if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+								_logger.Verbose("Exact version %s not found, using %s (closest match)", version, matchedVersion)
+								version = matchedVersion
+							}
+						}
+					}
 				}
-				version = resolved
 
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s', or check available versions with 'govman list'.", version)
