@@ -198,7 +198,7 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
-// Name returns the identifier for Bash.
+// ==================== BASH SHELL ====================
 func (s *BashShell) Name() string {
 	return "bash"
 }
@@ -263,8 +263,8 @@ func (s *BashShell) SetupCommands(binPath string) []string {
 		`        output="$("$govman_bin" "$@" 2>&1)"`,
 		"        local exit_code=$?",
 		"        if [[ $exit_code -eq 0 ]]; then",
-		`            local export_cmd=$(echo "$output" | grep -E '^export PATH=')`,
-		`            if [[ -n "$export_cmd" ]]; then`,
+		`            local export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH=' | head -n 1)`,
+		`            if [[ -n "$export_cmd" && "$export_cmd" =~ ^export\ PATH=\"[^\"]*\"$ ]]; then`,
 		`                eval "$export_cmd"`,
 		`                echo "✓ Go version switched successfully"`,
 		"                return 0",
@@ -281,11 +281,13 @@ func (s *BashShell) SetupCommands(binPath string) []string {
 		"govman_auto_switch() {",
 		"    # Check if auto-switch is enabled in config",
 		`    local config_file="$HOME/.govman/config.yaml"`,
+		`    local auto_switch_enabled="true"`,
 		`    if [[ -f "$config_file" ]]; then`,
-		`        local auto_switch_enabled=$(grep -E '^auto_switch:' -A 10 "$config_file" 2>/dev/null | grep -E '^[[:space:]]*enabled:' | head -1 | awk '{print $2}' | tr -d '[:space:]')`,
-		`        if [[ "$auto_switch_enabled" != "true" ]]; then`,
-		"            return 0",
-		"        fi",
+		`        auto_switch_enabled=$(awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
+		`        [[ -z "$auto_switch_enabled" ]] && auto_switch_enabled="true"`,
+		`    fi`,
+		`    if [[ "$auto_switch_enabled" != "true" ]]; then`,
+		"        return 0",
 		"    fi",
 		"",
 		"    if [[ -f .govman-goversion ]]; then",
@@ -299,8 +301,9 @@ func (s *BashShell) SetupCommands(binPath string) []string {
 		"                return",
 		"            fi",
 		"",
-		`            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')`,
-		`            if [[ "$current_version" != "$required_version" ]]; then`,
+		`            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')`,
+		`            if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi`,
+		`            if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then`,
 		`                echo "Auto-switching to Go $required_version (required by .govman-goversion)"`,
 		`                govman use "$required_version" >/dev/null 2>&1 || {`,
 		`                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
@@ -320,10 +323,12 @@ func (s *BashShell) SetupCommands(binPath string) []string {
 		"}",
 		"",
 		"# Add to PROMPT_COMMAND (preserves existing commands)",
-		`if [[ -z "$PROMPT_COMMAND" ]]; then`,
-		`    PROMPT_COMMAND="__govman_check_dir_change"`,
-		"else",
-		`    PROMPT_COMMAND="__govman_check_dir_change;$PROMPT_COMMAND"`,
+		`if [[ ! "$PROMPT_COMMAND" =~ __govman_check_dir_change ]]; then`,
+		`    if [[ -z "$PROMPT_COMMAND" ]]; then`,
+		`        PROMPT_COMMAND="__govman_check_dir_change"`,
+		"    else",
+		`        PROMPT_COMMAND="__govman_check_dir_change;$PROMPT_COMMAND"`,
+		"    fi",
 		"fi",
 		"",
 		"# Run auto-switch on shell startup",
@@ -352,7 +357,7 @@ func (s *BashShell) ExecutePathCommand(path string) error {
 	return nil
 }
 
-// Name returns the identifier for Zsh.
+// ==================== ZSH SHELL ====================
 func (s *ZshShell) Name() string {
 	return "zsh"
 }
@@ -403,8 +408,8 @@ func (s *ZshShell) SetupCommands(binPath string) []string {
 		`        output="$("$govman_bin" "$@" 2>&1)"`,
 		"        local exit_code=$?",
 		"        if [[ $exit_code -eq 0 ]]; then",
-		`            local export_cmd=$(echo "$output" | grep -E '^export PATH=')`,
-		`            if [[ -n "$export_cmd" ]]; then`,
+		`            local export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH=' | head -n 1)`,
+		`            if [[ -n "$export_cmd" && "$export_cmd" =~ ^export\ PATH=\"[^\"]*\"$ ]]; then`,
 		`                eval "$export_cmd"`,
 		`                echo "✓ Go version switched successfully"`,
 		"                return 0",
@@ -421,11 +426,13 @@ func (s *ZshShell) SetupCommands(binPath string) []string {
 		"govman_auto_switch() {",
 		"    # Check if auto-switch is enabled in config",
 		`    local config_file="$HOME/.govman/config.yaml"`,
+		`    local auto_switch_enabled="true"`,
 		`    if [[ -f "$config_file" ]]; then`,
-		`        local auto_switch_enabled=$(grep -E '^auto_switch:' -A 10 "$config_file" 2>/dev/null | grep -E '^[[:space:]]*enabled:' | head -1 | awk '{print $2}' | tr -d '[:space:]')`,
-		`        if [[ "$auto_switch_enabled" != "true" ]]; then`,
-		"            return 0",
-		"        fi",
+		`        auto_switch_enabled=$(awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
+		`        [[ -z "$auto_switch_enabled" ]] && auto_switch_enabled="true"`,
+		`    fi`,
+		`    if [[ "$auto_switch_enabled" != "true" ]]; then`,
+		"        return 0",
 		"    fi",
 		"",
 		"    if [[ -f .govman-goversion ]]; then",
@@ -439,8 +446,9 @@ func (s *ZshShell) SetupCommands(binPath string) []string {
 		"                return",
 		"            fi",
 		"",
-		`            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')`,
-		`            if [[ "$current_version" != "$required_version" ]]; then`,
+		`            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')`,
+		`            if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi`,
+		`            if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then`,
 		`                echo "Auto-switching to Go $required_version (required by .govman-goversion)"`,
 		`                govman use "$required_version" >/dev/null 2>&1 || {`,
 		`                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
@@ -452,7 +460,9 @@ func (s *ZshShell) SetupCommands(binPath string) []string {
 		"",
 		"# Zsh-specific: Hook into chpwd for directory changes",
 		"autoload -U add-zsh-hook",
-		"add-zsh-hook chpwd govman_auto_switch",
+		`if [[ ! "${chpwd_functions[(r)govman_auto_switch]}" ]]; then`,
+		"    add-zsh-hook chpwd govman_auto_switch",
+		"fi",
 		"",
 		"# Run auto-switch on shell startup",
 		"govman_auto_switch",
@@ -477,7 +487,7 @@ func (s *ZshShell) ExecutePathCommand(path string) error {
 	return nil
 }
 
-// Name returns the identifier for Fish.
+// ==================== FISH SHELL ====================
 func (s *FishShell) Name() string {
 	return "fish"
 }
@@ -548,11 +558,13 @@ func (s *FishShell) SetupCommands(binPath string) []string {
 		"# Auto-switch Go versions based on .govman-goversion file",
 		"function govman_auto_switch",
 		`    set config_file "$HOME/.govman/config.yaml"`,
+		`    set auto_switch_enabled "true"`,
 		`    if test -f "$config_file"`,
-		`        set auto_switch_enabled (grep -E '^auto_switch:' -A 10 "$config_file" 2>/dev/null | grep -E '^[[:space:]]*enabled:' | head -1 | awk '{print $2}' | tr -d '[:space:]')`,
-		`        if test "$auto_switch_enabled" != "true"`,
-		"            return 0",
-		"        end",
+		`        set auto_switch_enabled (awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
+		`        test -z "$auto_switch_enabled"; and set auto_switch_enabled "true"`,
+		`    end`,
+		`    if test "$auto_switch_enabled" != "true"`,
+		"        return 0",
 		"    end",
 		"",
 		"    if test -f .govman-goversion",
@@ -566,9 +578,10 @@ func (s *FishShell) SetupCommands(binPath string) []string {
 		"                return",
 		"            end",
 		"",
-		"            set current_version (go version 2>/dev/null | awk '{print $3}' | sed 's/go//')",
-		`            if test "$current_version" != "$required_version"`,
-		`                echo "Auto-switching to Go $required_version (required by .govman-goversion)"`,
+		"            set current_version (go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\\.[0-9]+(\\.[0-9]+)?).*/\\1/')",
+		`            if not string match -qr '^[0-9]+\.[0-9]+(\.[0-9]+)?$' -- "$current_version"; set current_version ""; end`,
+		`            if test -n "$current_version"; and test "$current_version" != "$required_version"`,
+		"                echo \"Auto-switching to Go $required_version (required by .govman-goversion)\"",
 		`                govman use "$required_version" >/dev/null 2>&1; or begin`,
 		`                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
 		"                end",
@@ -578,6 +591,7 @@ func (s *FishShell) SetupCommands(binPath string) []string {
 		"end",
 		"",
 		"# Fish-specific: Hook into directory changes",
+		"functions -q __govman_cd_hook; and functions -e __govman_cd_hook",
 		"function __govman_cd_hook --on-variable PWD",
 		"    govman_auto_switch",
 		"end",
@@ -605,7 +619,7 @@ func (s *FishShell) ExecutePathCommand(path string) error {
 	return nil
 }
 
-// Name returns the identifier for PowerShell.
+// ==================== POWER SHELL ====================
 func (s *PowerShell) Name() string {
 	return "powershell"
 }
@@ -665,8 +679,8 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"        try {",
 		"            $output = & $govman_bin @args 2>&1",
 		"            if ($LASTEXITCODE -eq 0) {",
-		"                $pathCmd = $output | Where-Object { $_ -match '^\\$env:PATH = ' }",
-		"                if ($pathCmd) {",
+		"                $pathCmd = $output | Where-Object { $_ -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$' } | Select-Object -First 1",
+		"                if ($pathCmd -and $pathCmd -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$') {",
 		"                    Invoke-Expression $pathCmd",
 		"                    Write-Host '✓ Go version switched successfully' -ForegroundColor Green",
 		"                    return",
@@ -688,9 +702,11 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"    $configFile = \"$env:USERPROFILE\\.govman\\config.yaml\"",
 		"    if (Test-Path $configFile) {",
 		"        try {",
-		"            $autoSwitchEnabled = $false",
+		"            $autoSwitchEnabled = $true",
 		"            $content = Get-Content $configFile -Raw -ErrorAction Stop",
-		"            if ($content -match '(?ms)auto_switch:.*?enabled:\\s*(true|false)') {",
+		"            if ($content -match '(?ms)^\\s*auto_switch:\\s*$[\\r\\n]+\\s*enabled:\\s*(true|false)\\s*$') {",
+		"                $autoSwitchEnabled = ($matches[1] -eq 'true')",
+		"            } elseif ($content -match 'auto_switch:[^\\n]*enabled:\\s*(true|false)') {",
 		"                $autoSwitchEnabled = ($matches[1] -eq 'true')",
 		"            }",
 		"            if (-not $autoSwitchEnabled) {",
@@ -713,7 +729,7 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"            try {",
 		"                $goVersionOutput = go version 2>$null",
 		"                if ($LASTEXITCODE -eq 0 -and $goVersionOutput) {",
-		"                    if ($goVersionOutput -match 'go version go([\\d\\.]+)') {",
+		"                    if ($goVersionOutput -match 'go version go(\\d+\\.\\d+(?:\\.\\d+)?)') {",
 		"                        $currentVersion = $matches[1]",
 		"                    }",
 		"                }",
@@ -750,7 +766,7 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"}",
 		"",
 		"# Hook into prompt for auto-switching",
-		"if (Get-Command prompt -ErrorAction SilentlyContinue) {",
+		"if ((Get-Command prompt -ErrorAction SilentlyContinue) -and -not $Global:GovmanPromptInjected) {",
 		"    $Global:GovmanOriginalPrompt = $function:prompt",
 		"    function global:prompt {",
 		"        Invoke-GovmanLocationCheck",
@@ -760,6 +776,7 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"            \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \"",
 		"        }",
 		"    }",
+		"    $Global:GovmanPromptInjected = $true",
 		"}",
 		"",
 		"# Run auto-switch on shell startup",
@@ -785,7 +802,7 @@ func (s *PowerShell) ExecutePathCommand(path string) error {
 	return nil
 }
 
-// Name returns the identifier for Windows Command Prompt.
+// ==================== CMD SHELL ====================
 func (s *CmdShell) Name() string {
 	return "cmd"
 }
@@ -813,7 +830,7 @@ func (s *CmdShell) PathCommand(path string) string {
 
 // SetupCommands returns guidance for integrating govman with Command Prompt.
 func (s *CmdShell) SetupCommands(binPath string) []string {
-	escapedPath := escapeBashPath(binPath)
+	escapedPath := escapeCmdPath(binPath)
 
 	commands := []string{
 		"@echo off",
