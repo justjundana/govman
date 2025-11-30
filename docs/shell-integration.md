@@ -1,69 +1,143 @@
 # Shell Integration
 
-Complete guide to setting up **govman** shell integration for automatic Go version switching.
+govman provides intelligent shell integration for automatic Go version management.
 
-## Overview
+## Features
 
-govman's shell integration provides:
-
-- ✅ **Automatic PATH management** - Go binaries available instantly
-- ✅ **Auto-switching** - Change Go versions when entering project directories
-- ✅ **Seamless activation** - Versions activate automatically with `.govman-version` files
-- ✅ **Non-intrusive** - Minimal impact on shell startup time
-- ✅ **Easy removal** - Clean uninstall when needed
-
-## Quick Setup
-
-### Automatic Initialization
-
-Run the initialization command for your shell:
-
-```bash
-govman init
-```
-
-This will:
-1. Detect your current shell
-2. Add govman configuration to your shell's RC file
-3. Set up PATH and environment variables
-4. Enable auto-switching functionality
-
-Then restart your terminal or reload your shell configuration.
+- **Automatic version switching** based on `.govman-goversion` files
+- **Smart PATH management** for Go binaries
+- **Wrapper functions** for seamless `govman use` execution
+- **Project-aware** version detection
+- **Non-intrusive** configuration with easy removal
+- **Security hardened** with input validation and command injection prevention (v1.1.0+)
+- **Robust YAML parsing** with fallback mechanisms (v1.1.0+)
+- **Duplicate prevention** for hook registration (v1.1.0+)
 
 ## Supported Shells
 
-| Shell | OS Support | Auto-Switch | Status |
-|-------|-----------|-------------|--------|
-| **Bash** | macOS, Linux, Windows (Git Bash) | ✅ Yes | Fully Supported |
-| **Zsh** | macOS, Linux | ✅ Yes | Fully Supported |
-| **Fish** | macOS, Linux | ✅ Yes | Fully Supported |
-| **PowerShell** | Windows, macOS, Linux | ✅ Yes | Fully Supported |
-| **Command Prompt** | Windows | ❌ No | Limited Support |
+| Shell      | Platform    | Auto-Switch | Wrapper | Hook Mechanism   |
+|------------|-------------|-------------|---------|------------------|
+| Bash       | Linux/macOS | ✅           | ✅       | PROMPT_COMMAND   |
+| Zsh        | Linux/macOS | ✅           | ✅       | chpwd hook       |
+| Fish       | Linux/macOS | ✅           | ✅       | Native events    |
+| PowerShell | Windows     | ✅           | ✅       | Set-Location hook|
+| Cmd        | Windows     | ❌           | Partial | Not supported    |
 
-## Shell-Specific Instructions
+## Setup
 
-### Bash
-
-#### Auto-Initialize
+### Automatic Setup
 
 ```bash
 govman init
-source ~/.bashrc
 ```
 
-#### Manual Setup
+This automatically:
+1. Detects your current shell
+2. Adds integration code to your shell config file
+3. Sets up PATH and environment variables
+4. Enables automatic version switching
 
-Add to `~/.bashrc`:
+### Manual Shell Selection
+
+```bash
+# Specify a shell explicitly
+govman init --shell bash
+govman init --shell zsh
+govman init --shell fish
+govman init --shell powershell
+```
+
+### Force Reinitialization
+
+```bash
+# Overwrites existing configuration
+govman init --force
+```
+
+## Shell Configuration Files
+
+govman modifies these files based on your shell:
+
+- **Bash**: `~/.bashrc`, `~/.bash_profile`, or `~/.profile`
+- **Zsh**: `~/.zshrc`
+- **Fish**: `~/.config/fish/config.fish`
+- **PowerShell**: `$PROFILE` (`Microsoft.PowerShell_profile.ps1`)
+- **Cmd**: Creates wrapper batch file (limited functionality)
+
+
+
+## How Auto-Switching Works
+
+### Directory Change Detection
+
+When you navigate to a directory, govman:
+
+1. Checks for `.govman-goversion` file in current directory
+2. Reads the required Go version from the file
+3. Compares with currently active version
+4. Automatically switches if different
+5. Updates PATH to use the correct Go binary
+
+### Activation Priority
+
+govman resolves the active version in this order:
+
+1. **Session-only**: Temporary activation via `govman use`
+2. **Project-local**: `.govman-goversion` file in current/parent directory
+3. **System-default**: Global version set via `govman use --default`
+
+
+## Security & Reliability Improvements (v1.1.0+)
+
+### Command Injection Prevention
+
+All shell integration code includes strict validation before executing commands:
+
+- **Bash/Zsh**: Uses `printf` instead of `echo` and validates export commands against regex pattern `^export PATH="[^"]*"$` before `eval`
+- **PowerShell**: Validates PATH commands match `^\$env:PATH\s*=\s*"[^"]+"\s*\+\s*\$env:PATH$` before `Invoke-Expression`
+- **Fish**: Improved pattern matching for `fish_add_path` commands
+
+### Robust YAML Parsing
+
+Configuration parsing is now more reliable:
+
+- Uses `awk`-based parsing instead of fragile `grep -A 10` approach
+- No dependency on hardcoded line limits
+- Includes default values and fallback logic
+- Handles edge cases in YAML structure
+
+### Duplicate Prevention
+
+Hook registration prevents issues from multiple config sourcing:
+
+- **Bash**: Checks if `__govman_check_dir_change` already exists in `PROMPT_COMMAND`
+- **Zsh**: Validates hook not in `chpwd_functions` array before adding
+- **Fish**: Removes existing function before redefining
+- **PowerShell**: Uses `$Global:GovmanPromptInjected` flag to track prompt injection
+
+### Version Validation
+
+Go version extraction includes format validation:
+
+- More precise regex patterns: `\d+\.\d+(?:\.\d+)?` 
+- Validates extracted version matches expected format
+- Properly handles pre-release versions (rc, beta)
+- Prevents issues from malformed version strings
+## Shell Integration Code
+
+> **Note:** The code examples below reflect the latest security improvements and robustness enhancements from v1.1.0.
+
+### Bash/Zsh
 
 ```bash
 # GOVMAN - Go Version Manager
 export PATH="$HOME/.govman/bin:$PATH"
-export GOTOOLCHAIN=local
 
 # Ensure GOBIN and GOPATH/bin are available
 if [ -n "$GOBIN" ]; then export PATH="$GOBIN:$PATH"; fi
-if command -v go >/dev/null 2>&1; then export PATH="$(go env GOPATH)/bin:$PATH"; fi
+if command -v go > /dev/null 2>&1; then export PATH="$(go env GOPATH)/bin:$PATH"; fi
 export PATH="$HOME/go/bin:$PATH"
+export GOTOOLCHAIN=local
 
 # Wrapper function for automatic PATH execution
 govman() {
@@ -73,8 +147,9 @@ govman() {
         output="$("$govman_bin" "$@" 2>&1)"
         local exit_code=$?
         if [[ $exit_code -eq 0 ]]; then
-            local export_cmd=$(echo "$output" | grep -E '^export PATH=')
-            if [[ -n "$export_cmd" ]]; then
+            # Security: Use printf instead of echo, validate format before eval
+            local export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH=' | head -n 1)
+            if [[ -n "$export_cmd" && "$export_cmd" =~ ^export\ PATH=\"[^\"]*\"$ ]]; then
                 eval "$export_cmd"
                 echo "✓ Go version switched successfully"
                 return 0
@@ -87,27 +162,44 @@ govman() {
     "$govman_bin" "$@"
 }
 
-# Auto-switch Go versions based on .govman-version file
+# Auto-switch Go versions based on .govman-goversion file
 govman_auto_switch() {
-    if [[ -f .govman-version ]]; then
-        local required_version=$(cat .govman-version 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # Check if auto-switch is enabled in config (improved YAML parsing)
+    local config_file="$HOME/.govman/config.yaml"
+    local auto_switch_enabled="true"
+    if [[ -f "$config_file" ]]; then
+        auto_switch_enabled=$(awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')
+        [[ -z "$auto_switch_enabled" ]] && auto_switch_enabled="true"
+    fi
+    if [[ "$auto_switch_enabled" != "true" ]]; then
+        return 0
+    fi
+
+    if [[ -f .govman-goversion ]]; then
+        local required_version=$(cat .govman-goversion 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [[ -n "$required_version" ]]; then
-            if ! command -v go >/dev/null 2>&1; then
+            if ! command -v go > /dev/null 2>&1; then
                 echo "Go not found. Switching to Go $required_version..."
-                govman use "$required_version" >/dev/null 2>&1
+                govman use "$required_version" > /dev/null 2>&1 || {
+                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
+                }
                 return
             fi
-            
-            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
-            if [[ "$current_version" != "$required_version" ]]; then
-                echo "Auto-switching to Go $required_version (required by .govman-version)"
-                govman use "$required_version" >/dev/null 2>&1
+
+            # Improved version extraction with validation
+            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')
+            if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi
+            if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then
+                echo "Auto-switching to Go $required_version (required by .govman-goversion)"
+                govman use "$required_version" > /dev/null 2>&1 || {
+                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
+                }
             fi
         fi
     fi
 }
 
-# Hook into PROMPT_COMMAND for directory changes
+# Bash-specific: Hook into PROMPT_COMMAND for directory changes
 __govman_prev_pwd="$PWD"
 __govman_check_dir_change() {
     if [[ "$PWD" != "$__govman_prev_pwd" ]]; then
@@ -116,10 +208,13 @@ __govman_check_dir_change() {
     fi
 }
 
-if [[ -z "$PROMPT_COMMAND" ]]; then
-    PROMPT_COMMAND="__govman_check_dir_change"
-else
-    PROMPT_COMMAND="__govman_check_dir_change;$PROMPT_COMMAND"
+# Add to PROMPT_COMMAND (prevents duplicates on re-source)
+if [[ ! "$PROMPT_COMMAND" =~ __govman_check_dir_change ]]; then
+    if [[ -z "$PROMPT_COMMAND" ]]; then
+        PROMPT_COMMAND="__govman_check_dir_change"
+    else
+        PROMPT_COMMAND="__govman_check_dir_change;$PROMPT_COMMAND"
+    fi
 fi
 
 # Run auto-switch on shell startup
@@ -127,102 +222,19 @@ govman_auto_switch
 # END GOVMAN
 ```
 
-Then reload:
-```bash
-source ~/.bashrc
-```
-
 ### Zsh
 
-#### Auto-Initialize
+Zsh uses the `chpwd` hook instead of `PROMPT_COMMAND`:
 
 ```bash
-govman init
-source ~/.zshrc
-```
-
-#### Manual Setup
-
-Add to `~/.zshrc`:
-
-```bash
-# GOVMAN - Go Version Manager
-export PATH="$HOME/.govman/bin:$PATH"
-export GOTOOLCHAIN=local
-
-# Ensure GOBIN and GOPATH/bin are available
-if [ -n "$GOBIN" ]; then export PATH="$GOBIN:$PATH"; fi
-if command -v go >/dev/null 2>&1; then export PATH="$(go env GOPATH)/bin:$PATH"; fi
-export PATH="$HOME/go/bin:$PATH"
-
-# Wrapper function for automatic PATH execution
-govman() {
-    local govman_bin="$HOME/.govman/bin/govman"
-    if [[ "$1" == "use" && "$#" -ge 2 && "$2" != "--help" && "$2" != "-h" ]]; then
-        local output
-        output="$("$govman_bin" "$@" 2>&1)"
-        local exit_code=$?
-        if [[ $exit_code -eq 0 ]]; then
-            local export_cmd=$(echo "$output" | grep -E '^export PATH=')
-            if [[ -n "$export_cmd" ]]; then
-                eval "$export_cmd"
-                echo "✓ Go version switched successfully"
-                return 0
-            fi
-        else
-            echo "$output" >&2
-            return $exit_code
-        fi
-    fi
-    "$govman_bin" "$@"
-}
-
-# Auto-switch Go versions based on .govman-version file
-govman_auto_switch() {
-    if [[ -f .govman-version ]]; then
-        local required_version=$(cat .govman-version 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -n "$required_version" ]]; then
-            if ! command -v go >/dev/null 2>&1; then
-                echo "Go not found. Switching to Go $required_version..."
-                govman use "$required_version" >/dev/null 2>&1
-                return
-            fi
-            
-            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
-            if [[ "$current_version" != "$required_version" ]]; then
-                echo "Auto-switching to Go $required_version (required by .govman-version)"
-                govman use "$required_version" >/dev/null 2>&1
-            fi
-        fi
-    fi
-}
-
-# Zsh-specific: Hook into chpwd for directory changes
+# Zsh-specific: Hook into chpwd for directory changes (prevents duplicates)
 autoload -U add-zsh-hook
-add-zsh-hook chpwd govman_auto_switch
-
-# Run auto-switch on shell startup
-govman_auto_switch
-# END GOVMAN
-```
-
-Then reload:
-```bash
-source ~/.zshrc
+if [[ ! "${chpwd_functions[(r)govman_auto_switch]}" ]]; then
+    add-zsh-hook chpwd govman_auto_switch
+fi
 ```
 
 ### Fish
-
-#### Auto-Initialize
-
-```bash
-govman init
-source ~/.config/fish/config.fish
-```
-
-#### Manual Setup
-
-Add to `~/.config/fish/config.fish`:
 
 ```fish
 # GOVMAN - Go Version Manager
@@ -247,7 +259,7 @@ function govman
                     echo "✓ Go version switched successfully"
                     return 0
                 end
-            end
+           end
         else
             for line in $output
                 echo $line >&2
@@ -258,27 +270,12 @@ function govman
     $govman_bin $argv
 end
 
-# Auto-switch Go versions based on .govman-version file
+# Auto-switch Go versions based on .govman- version file
 function govman_auto_switch
-    if test -f .govman-version
-        set required_version (string trim < .govman-version)
-        if test -n "$required_version"
-            if not command -v go >/dev/null 2>&1
-                echo "Go not found. Switching to Go $required_version..."
-                govman use "$required_version" >/dev/null 2>&1
-                return
-            end
-            
-            set current_version (go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
-            if test "$current_version" != "$required_version"
-                echo "Auto-switching to Go $required_version (required by .govman-version)"
-                govman use "$required_version" >/dev/null 2>&1
-            end
-        end
-    end
+   # Implementation follows same logic as bash
 end
 
-# Fish-specific: Hook into directory changes
+# Fish event for directory changes
 function __govman_cd_hook --on-variable PWD
     govman_auto_switch
 end
@@ -288,119 +285,47 @@ govman_auto_switch
 # END GOVMAN
 ```
 
-Then reload:
-```fish
-source ~/.config/fish/config.fish
-```
-
 ### PowerShell
-
-#### Auto-Initialize
-
-```powershell
-govman init
-. $PROFILE
-```
-
-#### Manual Setup
-
-Add to your PowerShell profile (`$PROFILE`):
 
 ```powershell
 # GOVMAN - Go Version Manager
-$env:PATH = "$env:USERPROFILE\.govman\bin;" + $env:PATH
-$env:GOTOOLCHAIN = 'local'
-
-# Ensure GOPATH\bin and GOBIN are available
-if ($env:GOBIN) { $env:PATH = "$env:GOBIN;" + $env:PATH }
-$goCmd = Get-Command go -ErrorAction SilentlyContinue
-if ($goCmd) { 
-    $gopath = (& go env GOPATH 2>$null)
-    if ($gopath) { $env:PATH = "$gopath\bin;" + $env:PATH }
-}
-$homeGoBin = Join-Path $env:USERPROFILE "go\bin"
-if (Test-Path $homeGoBin) { $env:PATH = "$homeGoBin;" + $env:PATH }
+$env:PATH = "$env:USERPROFILE\.govman\bin;$env:PATH"
+$env:GOTOOLCHAIN = "local"
 
 # Wrapper function for automatic PATH execution
 function govman {
-    $govman_bin = "$env:USERPROFILE\.govman\bin\govman.exe"
-    if ($args.Count -ge 2 -and $args[0] -eq 'use' -and $args[1] -ne '--help' -and $args[1] -ne '-h') {
-        try {
-            $output = & $govman_bin @args 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $pathCmd = $output | Where-Object { $_ -match '^\$env:PATH = ' }
-                if ($pathCmd) {
-                    Invoke-Expression $pathCmd
-                    Write-Host '✓ Go version switched successfully' -ForegroundColor Green
-                    return
-                }
-            } else {
-                $output | ForEach-Object { Write-Error $_ }
+    $govmanBin = "$env:USERPROFILE\.govman\bin\govman.exe"
+    if ($args.Count -ge 2 -and $args[0] -eq "use" -and $args[1] -ne "--help" -and $args[1] -ne "-h") {
+        $output = & $govmanBin $args 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $exportCmd = $output -split "`n" | Where-Object { $_ -match '^\$env:PATH' }
+            if ($exportCmd) {
+                Invoke-Expression $exportCmd
+                Write-Host "✓ Go version switched successfully"
                 return
             }
-        } catch {
-            Write-Error $_.Exception.Message
+        } else {
+            Write-Error $output
             return
         }
     }
-    & $govman_bin @args
+    & $govmanBin $args
 }
 
-# Auto-switch Go versions based on .govman-version file
+# Auto-switch function
 function Invoke-GovmanAutoSwitch {
-    if (Test-Path .govman-version) {
-        try {
-            $requiredVersion = (Get-Content .govman-version -Raw -ErrorAction Stop).Trim()
-        } catch {
-            return
-        }
-
-        if ($requiredVersion) {
-            $currentVersion = $null
-            try {
-                $goVersionOutput = go version 2>$null
-                if ($LASTEXITCODE -eq 0 -and $goVersionOutput) {
-                    if ($goVersionOutput -match 'go version go([\d\.]+)') {
-                        $currentVersion = $matches[1]
-                    }
-                }
-            } catch {}
-
-            if (-not $currentVersion) {
-                Write-Host "Go not found. Switching to Go $requiredVersion..." -ForegroundColor Yellow
-                govman use $requiredVersion *>$null
-                return
-            }
-
-            if ($currentVersion -ne $requiredVersion) {
-                Write-Host "Auto-switching to Go $requiredVersion (required by .govman-version)" -ForegroundColor Yellow
-                govman use $requiredVersion *>$null
-            }
-        }
-    }
+    # Implementation follows same logic as bash
 }
 
-# PowerShell-specific: Hook into location changes
-$Global:GovmanPreviousLocation = $PWD.Path
-
-function Global:Invoke-GovmanLocationCheck {
-    if ($PWD.Path -ne $Global:GovmanPreviousLocation) {
-        $Global:GovmanPreviousLocation = $PWD.Path
+# Hook into Set-Location (cd)
+$global:__GovmanPreviousLocation = Get-Location
+function prompt {
+    $currentLocation = Get-Location
+    if ($currentLocation.Path -ne $global:__GovmanPreviousLocation.Path) {
+        $global:__GovmanPreviousLocation = $currentLocation
         Invoke-GovmanAutoSwitch
     }
-}
-
-# Hook into prompt for auto-switching
-if (Get-Command prompt -ErrorAction SilentlyContinue) {
-    $Global:GovmanOriginalPrompt = $function:prompt
-    function global:prompt {
-        Invoke-GovmanLocationCheck
-        if ($Global:GovmanOriginalPrompt) {
-            & $Global:GovmanOriginalPrompt
-        } else {
-            "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
-        }
-    }
+    # Call original prompt
 }
 
 # Run auto-switch on shell startup
@@ -408,283 +333,111 @@ Invoke-GovmanAutoSwitch
 # END GOVMAN
 ```
 
-Then reload:
-```powershell
-. $PROFILE
-```
+## Disabling Auto-Switch
 
-### Command Prompt (Windows)
+### Temporarily
 
-Command Prompt has limited auto-switching capabilities. Use PowerShell for better experience.
+```bash
+# Edit config
+nano ~/.govman/config.yaml
 
-#### Basic Setup
-
-After running `govman init`, the PATH is configured. Manual version switching is required:
-
-```cmd
-govman use 1.21.5
-```
-
-**Limitations:**
-- ❌ No automatic version switching
-- ❌ No directory change hooks
-- ✅ Manual switching works
-
-**Recommendation:** Use PowerShell instead for full functionality.
-
-## Features
-
-### Auto-Switching
-
-When enabled, govman automatically switches Go versions when you enter a directory containing a `.govman-version` file.
-
-#### Enable/Disable
-
-In `~/.govman/config.yaml`:
-
-```yaml
+# Set enabled to false
 auto_switch:
-  enabled: true  # Set to false to disable
-  project_file: ".govman-version"
+  enabled: false
 ```
 
-#### How It Works
-
-1. You enter a directory: `cd ~/my-project`
-2. govman checks for `.govman-version`
-3. If found, it reads the version number
-4. If different from current, it switches automatically
-5. You see: `Auto-switching to Go 1.21.5 (required by .govman-version)`
-
-#### Example
+### Remove Shell Integration
 
 ```bash
-# Project A
-cd ~/projects/project-a
-cat .govman-version  # Shows: 1.21.5
-# Output: Auto-switching to Go 1.21.5 (required by .govman-version)
+# Edit your shell config file
+nano ~/.bashrc  # or ~/.zshrc, etc.
 
-# Project B
-cd ~/projects/project-b
-cat .govman-version  # Shows: 1.20.12
-# Output: Auto-switching to Go 1.20.12 (required by .govman-version)
-
-# Verify
-go version  # Shows: go version go1.20.12 ...
+# Remove the GOVMAN section (between # GOVMAN and # END GOVMAN markers)
 ```
 
-### PATH Management
-
-govman automatically manages multiple PATH entries:
-
-1. **govman bin**: `~/.govman/bin` - The govman binary
-2. **Active Go**: `~/.govman/versions/go1.21.5/bin` - Current Go version
-3. **GOBIN**: `$GOBIN` - User-installed Go tools
-4. **GOPATH**: `$GOPATH/bin` - Project-installed tools
-5. **Default Go bin**: `~/go/bin` - Default Go workspace
-
-### Environment Variables
-
-govman sets/manages:
-
-- `PATH` - Includes govman and active Go version
-- `GOTOOLCHAIN` - Set to `local` (prevents automatic downloads)
-- `GOBIN` - If set, added to PATH
-- `GOPATH` - Binary path added to PATH
-
-## Advanced Configuration
-
-### Custom Project File Name
-
-Use a different filename instead of `.govman-version`:
-
-```yaml
-auto_switch:
-  enabled: true
-  project_file: ".govman-version"  # Default name
-```
-
-### Multiple Shell Support
-
-If you use multiple shells, initialize each:
+Then restart your shell or run:
 
 ```bash
-# Bash
-govman init --shell bash
-
-# Zsh
-govman init --shell zsh
-
-# Fish
-govman init --shell fish
-```
-
-### Force Re-initialization
-
-Overwrite existing configuration:
-
-```bash
-govman init --force
+source ~/.bashrc  # or appropriate config file
 ```
 
 ## Troubleshooting
 
 ### Auto-Switch Not Working
 
-**Check if enabled:**
-```bash
-cat ~/.govman/config.yaml | grep -A 2 auto_switch
-```
+1. **Check shell integration**:
+   ```bash
+   type govman_auto_switch
+   ```
+   Should show the function definition.
 
-**Verify .govman-version exists:**
-```bash
-cat .govman-version
-```
+2. **Verify config**:
+   ```bash
+   cat ~/.govman/config.yaml | grep -A 3 auto_switch
+   ```
+   Ensure `enabled: true`.
 
-**Test manually:**
-```bash
-govman refresh
-```
+3. **Check .govman-goversion file**:
+   ```bash
+   cat .govman-goversion
+   ```
+   Should contain only the version number (e.g., `1.25.1`).
 
-### Wrong Version After cd
-
-**Check file content:**
-```bash
-cat .govman-version
-# Should contain just: 1.21.5
-```
-
-**Verify version is installed:**
-```bash
-govman list | grep 1.21.5
-```
-
-**Install if missing:**
-```bash
-govman install 1.21.5
-```
-
-### Shell Integration Not Loaded
-
-**Verify configuration exists:**
-```bash
-grep -A 5 "GOVMAN" ~/.bashrc  # Or ~/.zshrc, etc.
-```
-
-**Reload shell:**
-```bash
-source ~/.bashrc  # Or appropriate RC file
-```
-
-**Re-initialize:**
-```bash
-govman init --force
-```
+4. **Test manually**:
+   ```bash
+   govman_auto_switch
+   ```
 
 ### PATH Not Updated
 
-**Check PATH:**
-```bash
-echo $PATH | tr ':' '\n' | grep govman
-```
+If `govman use` doesn't update PATH in current session:
 
-**Verify wrapper function:**
-```bash
-type govman  # Should show it's a function
-```
+1. **Use the wrapper function**:
+   Ensure you're calling `govman` (the shell function), not the binary directly.
 
-**Manual reload:**
-```bash
-eval "$(govman use 1.21.5)"
-```
+2. **Check wrapper function**:
+   ```bash
+   type govman
+   ```
+   Should show it's a function, not an alias or binary.
 
-## Uninstalling Shell Integration
+3. **Reinitialize shell integration**:
+   ```bash
+   govman init --force
+   source ~/.bashrc
+   ```
 
-### Remove Configuration
+### Command Prompt (cmd.exe) Limitations
 
-Edit your shell RC file and remove the section between:
-```bash
-# GOVMAN - Go Version Manager
-...
-# END GOVMAN
-```
+Windows Command Prompt has limited shell integration:
+- No automatic version switching
+- No wrapper function for PATH updates
+- Manual `govman use` required in each session
 
-**Files to check:**
-- Bash: `~/.bashrc` or `~/.bash_profile`
-- Zsh: `~/.zshrc`
-- Fish: `~/.config/fish/config.fish`
-- PowerShell: `$PROFILE`
-
-### Reload Shell
-
-```bash
-source ~/.bashrc  # Or appropriate RC file
-```
-
-### Clean Removal Script
-
-Use the uninstall script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/uninstall.sh | bash
-```
+**Recommendation**: Use PowerShell or Git Bash for full functionality.
 
 ## Best Practices
 
-### 1. Commit .govman-version
+1. **Commit .govman-goversion to Git**:
+   ```bash
+   echo "1.25.1" > .govman-goversion
+   git add .govman-goversion
+   git commit -m "Set Go version to 1.25.1"
+   ```
 
-Always commit `.govman-version` to ensure team consistency:
+2. **Use .govman-goversion for Projects**:
+   Ensure consistent Go versions across team members and CI/CD.
 
-```bash
-git add .govman-version
-git commit -m "Pin Go version to 1.21.5"
-```
+3. **Set System Default for Personal Projects**:
+   ```bash
+   govman use 1.25.1 --default
+   ```
 
-### 2. Use Auto-Switch in Development
-
-Keep auto-switch enabled for seamless development:
-
-```yaml
-auto_switch:
-  enabled: true
-```
-
-### 3. Disable in CI/CD
-
-For reproducible builds, disable auto-switch and use explicit versions:
-
-```yaml
-auto_switch:
-  enabled: false
-```
-
-```bash
-# In CI script
-govman use 1.21.5 --default
-```
-
-### 4. Test Shell Integration
-
-After setup, test in a new terminal:
-
-```bash
-# Create test project
-mkdir -p /tmp/test-govman
-cd /tmp/test-govman
-echo "1.21.5" > .govman-version
-
-# Should auto-switch
-cd /tmp/test-govman
-go version  # Should show 1.21.5
-```
-
-## See Also
-
-- [Quick Start](quick-start.md) - Get started with govman
-- [Configuration](configuration.md) - Configure govman behavior
-- [Commands](commands.md) - All available commands
-- [Troubleshooting](troubleshooting.md) - Common issues and solutions
-
----
-
-Enjoy seamless Go version management! 🚀
+4. **Verify Integration After Updates**:
+   After updating shell config or govman, verify integration works:
+   ```bash
+   cd /tmp
+   echo "1.24.0" > .govman-goversion
+   cd .  # Trigger auto-switch
+   go version
+   ```

@@ -1,624 +1,443 @@
 # Data Flow
 
-Understanding how data moves through govman during key operations.
+How data flows through govman during various operations.
 
 ## Overview
 
-govman follows a layered architecture where data flows through:
+govman follows a layered architecture:
 
 ```
-CLI Layer → Manager Layer → Service Layer → External Resources
+User (CLI) → CLI Commands → Manager → Core Services → External APIs/Filesystem
 ```
 
-Each layer has specific responsibilities and transforms data as needed.
+## Install Flow
 
-## Installation Flow
+### User Command
 
-### Complete Installation Sequence
+```bash
+govman install 1.25.1
+```
+
+### Flow Diagram
 
 ```
-User Command: govman install 1.21.5
-    ↓
-[CLI Layer]
-    Parse arguments → Validate version format
-    ↓
-[Manager Layer]
-    Check if already installed → Get release info
-    ↓
-[Go Releases Service]
-    Fetch from cache OR API → Parse JSON → Find matching file
-    ↓
-[Download Service]
-    Calculate URL → Download file → Show progress
-    ↓
-[Verification Service]
-    Calculate SHA-256 → Compare with expected
-    ↓
-[Extraction Service]
-    Create version directory → Extract archive
-    ↓
-[Symlink Service]
-    Update 'current' symlink (if requested)
-    ↓
-[Shell Integration]
-    Update PATH (optional)
-    ↓
-Success Message → User
+1. CLI (install.go)
+   ↓ calls
+2. Manager.Install(version)
+   ↓ resolves version
+3. Golang.GetDownloadURL(version)
+   ↓ fetches from API
+4. go.dev API
+   ↓ returns metadata
+5. Downloader.Download(url, installDir, version)
+   ↓ downloads
+6. HTTP GET official Go archive
+   ↓ streams to
+7. Cache (~/.govman/cache/)
+   ↓ verifies
+8. SHA-256 checksum
+   ↓ extracts to
+9. Install directory (~/.govman/versions/go1.25.1/)
+   ↓ success
+10. User notified
 ```
 
 ### Detailed Steps
 
-#### 1. Command Parsing (CLI)
+1. **Command Parsing** (`internal/cli/install.go`):
+   - Parse version argument
+   - Validate input
 
-```go
-// Input: ["install", "1.21.5", "--set-default"]
-cmd.Flags().StringP("version", "v", "", "version to install")
-cmd.Flags().BoolP("set-default", "d", false, "set as default")
+2. **Version Resolution** (`internal/manager/manager.go`):
+   - Resolve "latest" or partial versions
+   - Query API for available versions
 
-// Output: ParsedCommand{
-//   Action: "install"
-//   Version: "1.21.5"
-//   SetDefault: true
-// }
+3. **Download URL Lookup** (`internal/golang/releases.go`):
+   - Fetch release metadata from go.dev
+   - Find appropriate file for OS/architecture
+   - Return download URL
+
+4. **Download** (`internal/downloader/downloader.go`):
+   - Check cache for existing file
+   - Download with progress tracking
+   - Save to cache directory
+
+5. **Verification** (`internal/downloader/downloader.go`):
+   - Calculate SHA-256 of downloaded file
+   - Compare with official checksum
+   - Reject if mismatch
+
+6. **Extraction** (`internal/downloader/downloader.go`):
+   - Extract .tar.gz or .zip
+   - Copy files to install directory
+   - Set appropriate permissions
+
+7. **Completion**:
+   - Remove temporary files
+   - Log success message
+
+## Use Flow
+
+### User Command
+
+```bash
+govman use 1.25.1 --default
 ```
 
-#### 2. Version Resolution (Manager)
-
-```go
-// Input: "1.21.5"
-version := normalizeVersion("1.21.5") // "go1.21.5"
-
-// Check if installed
-if _, err := os.Stat(filepath.Join(cfg.InstallDir, version)); err == nil {
-    return ErrAlreadyInstalled
-}
-
-// Output: Validated version "go1.21.5"
-```
-
-#### 3. Release Information (Golang Service)
-
-```go
-// Fetch releases (cache or API)
-releases, err := fetchReleases()
-
-// Find matching release
-release := findRelease(releases, "go1.21.5")
-// Output: Release{
-//   Version: "go1.21.5"
-//   Files: [...]
-// }
-
-// Find platform-specific file
-file := findFile(release.Files, runtime.GOOS, runtime.GOARCH)
-// Output: File{
-//   Filename: "go1.21.5.linux-amd64.tar.gz"
-//   SHA256: "abc123..."
-//   Size: 67108864
-//   OS: "linux"
-//   Arch: "amd64"
-// }
-```
-
-#### 4. Download (Downloader Service)
-
-```go
-// Build download URL
-url := fmt.Sprintf("%s/%s", cfg.Mirror.URL, file.Filename)
-// "https://go.dev/dl/go1.21.5.linux-amd64.tar.gz"
-
-// Create cache file
-cachePath := filepath.Join(cfg.CacheDir, file.Filename)
-outFile, _ := os.Create(cachePath)
-
-// Download with progress
-resp, _ := http.Get(url)
-defer resp.Body.Close()
-
-// Track progress
-downloaded := int64(0)
-buf := make([]byte, 32*1024)
-for {
-    n, err := resp.Body.Read(buf)
-    if n > 0 {
-        outFile.Write(buf[:n])
-        downloaded += int64(n)
-        progress.Update(downloaded, file.Size)
-    }
-    if err == io.EOF {
-        break
-    }
-}
-
-// Output: File at ~/.govman/cache/go1.21.5.linux-amd64.tar.gz
-```
-
-#### 5. Verification (Downloader Service)
-
-```go
-// Calculate checksum
-hasher := sha256.New()
-file, _ := os.Open(cachePath)
-io.Copy(hasher, file)
-calculated := hex.EncodeToString(hasher.Sum(nil))
-
-// Compare
-if calculated != file.SHA256 {
-    return ErrChecksumMismatch
-}
-
-// Output: Verified checksum matches
-```
-
-#### 6. Extraction (Downloader Service)
-
-```go
-// Create version directory
-versionDir := filepath.Join(cfg.InstallDir, "go1.21.5")
-os.MkdirAll(versionDir, 0755)
-
-// Extract archive
-if strings.HasSuffix(cachePath, ".tar.gz") {
-    extractTarGz(cachePath, versionDir)
-} else {
-    extractZip(cachePath, versionDir)
-}
-
-// Output: Extracted to ~/.govman/versions/go1.21.5/
-```
-
-#### 7. Symlink Update (Manager)
-
-```go
-// If --set-default or first installation
-currentLink := filepath.Join(cfg.InstallDir, "current")
-os.Remove(currentLink)
-os.Symlink(versionDir, currentLink)
-
-// Output: ~/.govman/versions/current → go1.21.5
-```
-
-#### 8. Shell Integration (Optional)
-
-```go
-// Update PATH in shell config
-shell := detectShell()
-shell.ExecutePathCommand(filepath.Join(currentLink, "bin"))
-
-// Output: PATH includes ~/.govman/versions/current/bin
-```
-
-## Version Switching Flow
-
-### Complete Use Sequence
+### Flow Diagram
 
 ```
-User Command: govman use 1.20.5
-    ↓
-[CLI Layer]
-    Parse version argument
-    ↓
-[Manager Layer]
-    Verify version installed → Check symlink
-    ↓
-[Symlink Service]
-    Remove old symlink → Create new symlink
-    ↓
-[Shell Integration]
-    Update PATH (if auto-switch enabled)
-    ↓
-Success Message → User
+1. CLI (use.go)
+   ↓ calls
+2. Manager.Use(version, setDefault=true, setLocal=false)
+   ↓ validates
+3. Check if version installed
+   ↓ if yes
+4. Update configuration (DefaultVersion)
+   ↓ saves
+5. Config file (~/.govman/config.yaml)
+   ↓ creates/updates
+6. Symlink (~/.govman/bin/go → ~/.govman/versions/go1.25.1/bin/go)
+   ↓ outputs
+7. PATH export command (for shell wrapper)
+   ↓ success
+8. User notified
 ```
 
 ### Detailed Steps
 
-#### 1. Version Validation
+1. **Command Parsing** (`internal/cli/use.go`):
+   - Parse version and flags
+   - Determine activation mode
 
-```go
-// Input: "1.20.5"
-version := normalizeVersion("1.20.5") // "go1.20.5"
+2. **Validation** (`internal/manager/manager.go`):
+   - Check if version is installed
+   - Resolve version if needed
 
-// Check installation
-versionPath := filepath.Join(cfg.InstallDir, version)
-if _, err := os.Stat(versionPath); os.IsNotExist(err) {
-    return ErrVersionNotInstalled
-}
+3. **Configuration Update** (if `--default`):
+   - Update `config.DefaultVersion`
+   - Save to `~/.govman/config.yaml`
 
-// Output: Valid installed version "go1.20.5"
+4. **Local Version File** (if `--local`):
+   - Write version to `.govman-goversion`
+   - In current directory
+
+5. **Symlink Creation** (if `--default`):
+   - Create `~/.govman/bin/go` symlink
+   - pointing to version's `bin/go`
+
+6. **PATH Update** (always):
+   - Generate PATH command
+   - Output for shell wrapper to eval
+
+## List Flow
+
+### User Command
+
+```bash
+govman list --remote
 ```
 
-#### 2. Symlink Update
+### Flow Diagram
 
-```go
-// Current symlink path
-currentLink := filepath.Join(cfg.InstallDir, "current")
-
-// Read old target
-oldTarget, _ := os.Readlink(currentLink)
-logger.Info("Switching from %s to %s", filepath.Base(oldTarget), version)
-
-// Remove and recreate
-os.Remove(currentLink)
-os.Symlink(versionPath, currentLink)
-
-// Output: Symlink updated
 ```
-
-#### 3. PATH Update
-
-```go
-// If in same terminal session
-binPath := filepath.Join(currentLink, "bin")
-os.Setenv("PATH", binPath + ":" + os.Getenv("PATH"))
-
-// Output: Updated PATH for current session
+1. CLI (list.go)
+   ↓ calls
+2. Manager.ListRemote(includeUnstable=false)
+   ↓ calls
+3. Golang.GetAvailableVersions(includeUnstable)
+   ↓ checks cache
+4. In-memory cache (if valid)
+   ↓ or fetches from
+5. go.dev API
+   ↓ parses JSON
+6. Release data
+   ↓ sorts versions
+7. Sorted version list
+   ↓ returns to
+8. CLI formatter
+   ↓ displays
+9. User output
 ```
 
 ## Auto-Switch Flow
 
-### Directory-based Version Switching
-
-```
-User: cd /path/to/project
-    ↓
-[Shell Hook]
-    chpwd hook triggered (Zsh) OR PROMPT_COMMAND (Bash)
-    ↓
-[govman_auto_switch function]
-    Read .govman-version file
-    Check current Go version
-    ↓
-[If version differs]
-    Call: govman use "$required_version"
-    ↓
-[Manager Layer]
-    Update symlink to new version
-    ↓
-[Shell]
-    Update PATH
-    ↓
-New version active
-```
-
-### Detailed Steps
-
-#### 1. Hook Execution
+### Trigger
 
 ```bash
-# Zsh: ~/.zshrc
-govman_auto_switch() {
-    if [[ -f .govman-version ]]; then
-        local required_version=$(cat .govman-version 2>/dev/null | tr -d '\n\r')
-        local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
-        if [[ "$current_version" != "$required_version" ]]; then
-            govman use "$required_version" >/dev/null 2>&1
-        fi
-    fi
-}
-add-zsh-hook chpwd govman_auto_switch
+cd /path/to/project  # With .govman-goversion file
 ```
 
-```bash
-# Bash: ~/.bashrc
-govman_auto_switch() {
-    if [[ -f .govman-version ]]; then
-        local required_version=$(cat .govman-version 2>/dev/null | tr -d '\n\r')
-        local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
-        if [[ "$current_version" != "$required_version" ]]; then
-            govman use "$required_version" >/dev/null 2>&1
-        fi
-    fi
-}
-PROMPT_COMMAND="__govman_check_dir_change; $PROMPT_COMMAND"
-```
-
-#### 2. Version File Reading
-
-```go
-// Read .govman-version
-cwd, _ := os.Getwd()
-versionFile := filepath.Join(cwd, ".govman-version")
-
-content, err := ioutil.ReadFile(versionFile)
-if os.IsNotExist(err) {
-    return // No version file, keep current
-}
-
-requestedVersion := strings.TrimSpace(string(content))
-// Output: "1.21.5"
-```
-
-#### 3. Current Version Check
-
-```go
-// Get current version
-current, _ := manager.Current()
-
-// Compare
-if current == requestedVersion {
-    return // Already on correct version
-}
-
-// Switch needed
-```
-
-#### 4. Silent Switch
-
-```bash
-# Shell redirects output to suppress messages
-govman use "$required_version" >/dev/null 2>&1
-
-# Output: Suppressed in shell (no output)
-```
-
-## List Versions Flow
-
-### Remote Versions
+### Flow Diagram
 
 ```
-User Command: govman list --remote
-    ↓
-[CLI Layer]
-    Parse --remote flag
-    ↓
-[Manager Layer]
-    Call ListRemote()
-    ↓
-[Go Releases Service]
-    Check cache validity (1 hour default)
-    ↓
-    If expired:
-        Fetch https://go.dev/dl/?mode=json
-        Parse JSON
-        Cache result
-    Else:
-        Read from cache
-    ↓
-[CLI Layer]
-    Format output → Display table
-    ↓
-User sees available versions
+1. Shell hook (chpwd/PROMPT_COMMAND/etc.)
+   ↓ triggers
+2. govman_auto_switch() function
+   ↓ checks config
+3. ~/.govman/config.yaml (auto_switch.enabled)
+   ↓ if enabled, looks for
+4. .govman-goversion file in current directory
+   ↓ reads version
+5. Required version (e.g., "1.25.1")
+   ↓ checks current
+6. go version output
+   ↓ if different
+7. govman use <required-version>
+   ↓ follows Use Flow
+8. Version switched automatically
 ```
 
-### Local Versions
+## Download Cache Flow
+
+### Cache Hit
 
 ```
-User Command: govman list
-    ↓
-[CLI Layer]
-    No --remote flag
-    ↓
-[Manager Layer]
-    Call ListInstalled()
-    ↓
-[File System]
-    Read ~/.govman/versions directory
-    Filter directories (go*)
-    Get metadata (size, date)
-    ↓
-[Symlink Service]
-    Read 'current' symlink
-    Mark active version
-    ↓
-[CLI Layer]
-    Format output → Display table with marker
-    ↓
-User sees installed versions
+Request version
+   ↓ check cache
+~/.govman/cache/go1.25.1.linux-amd64.tar.gz exists
+   ↓ verify size matches expected
+Cache hit → Skip download → Use cached file
+```
+
+### Cache Miss
+
+```
+Request version
+   ↓ check cache
+File not in cache or size mismatch
+   ↓ download
+HTTP GET from go.dev
+   ↓ save to cache
+~/.govman/cache/go1.25.1.linux-amd64.tar.gz
+   ↓ use for installation
+Extract to install directory
 ```
 
 ## Configuration Flow
 
-### Initial Setup
+### Loading
 
 ```
-User Command: govman init
-    ↓
-[CLI Layer]
-    Detect shell
-    ↓
-[Config Service]
-    Check ~/.govman/config.yaml exists
-    If not:
-        Create with defaults
-        Set install_dir, cache_dir
-    ↓
-[Shell Service]
-    Detect shell (bash/zsh/fish/pwsh)
-    Read shell config file
-    ↓
-    If govman not configured:
-        Append initialization code
-        Add PATH modification
-        Add auto-switch hook
-    ↓
-Success Message → User must reload shell
+1. Application starts
+   ↓ CLI init
+2. Config.Load() called
+   ↓ checks
+3. ~/.govman/config.yaml exists?
+   ↓ if no, create with defaults
+4. Load YAML file
+   ↓ parse
+5. Viper unmarshals to Config struct
+   ↓ expand paths
+6. Resolve ~ in paths
+   ↓ validate
+7. Check path safety
+   ↓ create directories
+8. Ensure install/cache dirs exist
+   ↓ return
+9. Loaded Config available to application
 ```
 
-### Configuration Loading
+### Saving
 
 ```
-Application Start
-    ↓
-[Config Service]
-    Search for config file:
-        1. --config flag
-        2. ~/.govman/config.yaml
-        3. Use defaults
-    ↓
-    Load YAML
-    ↓
-    Parse and validate
-    ↓
-    Expand paths (~, $HOME)
-    ↓
-    Create directories if needed
-    ↓
-Config available to all services
+1. Config.Save() called (e.g., after 'use --default')
+   ↓ set values
+2. Viper.Set() for each field
+   ↓ write
+3. Viper.WriteConfigAs()
+   ↓ saves to
+4. ~/.govman/config.yaml
 ```
 
-## Error Flow
+## Shell Integration Flow
 
-### Download Failure
+### Initialization
 
-```
-Network Error during download
-    ↓
-[Downloader]
-    Retry with exponential backoff
-    Attempts: 3 (configurable)
-    ↓
-    Still failing?
-    ↓
-[Manager]
-    Catch error
-    Clean up partial download
-    ↓
-[CLI]
-    Display error
-    Show troubleshooting hints
-    ↓
-User sees helpful error message
+```bash
+govman init
 ```
 
-### Verification Failure
+### Flow Diagram
 
 ```
-Checksum mismatch
-    ↓
-[Downloader]
-    Log expected vs actual hash
-    ↓
-[Manager]
-    Delete corrupted file
-    Suggest retry
-    ↓
-[CLI]
-    Display verification error
-    Suggest checking network/proxy
-    ↓
-User informed of corruption
+1. CLI (init.go)
+   ↓ detects
+2. Shell.Detect() → Current shell type
+   ↓ gets setup code
+3. Shell.SetupCommands(binPath) → Integration code
+   ↓ reads existing
+4. Shell config file (~/.bashrc, etc.)
+   ↓ removes old
+5. Remove existing GOVMAN sections
+   ↓ appends new
+6. Add new integration code
+   ↓ writes
+7. Updated shell config file
+   ↓ notifies
+8. User to reload shell
 ```
 
-## Data Caching
+## Self-Update Flow
 
-### Release Information Cache
+### User Command
 
-```
-Request for releases
-    ↓
-Check cache:
-    Path: ~/.govman/cache/releases.json
-    Age: < 1 hour (default)
-    ↓
-    If valid cache:
-        Read from disk
-        Parse JSON
-        Return
-    ↓
-    If expired/missing:
-        Fetch from go.dev
-        Parse JSON
-        Write to cache
-        Return
+```bash
+govman selfupdate
 ```
 
-### Download Cache
+### Flow Diagram
 
 ```
-Request to install version
-    ↓
-Check cache:
-    Path: ~/.govman/cache/go1.21.5.linux-amd64.tar.gz
-    ↓
-    If exists:
-        Verify checksum
-        If valid:
-            Skip download
-            Use cached file
-        If invalid:
-            Delete
-            Re-download
-    ↓
-    If not exists:
-        Download
-        Verify
-        Keep in cache
+1. CLI (selfupdate.go)
+   ↓ fetches
+2. GitHub API (latest release)
+   ↓ parses
+3. Release metadata
+   ↓ compares
+4. Current version vs Latest version
+   ↓ if newer available
+5. Construct download URL for platform
+   ↓ downloads
+6. New govman binary (temp file)
+   ↓ backup
+7. Rename current binary to .bak
+   ↓ replace
+8. Move new binary to current location
+   ↓ set permissions
+9. chmod +x
+   ↓ verify
+10. Run new binary --version
+   ↓ cleanup
+11. Remove backup (if successful)
+   ↓ success
+12. User notified
 ```
 
-## Concurrent Operations
+## Error Handling Flow
 
-### Thread Safety
-
-```go
-// Manager uses mutex for thread safety
-type Manager struct {
-    mu     sync.RWMutex
-    config *Config
-}
-
-func (m *Manager) Install(version string) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    // ... installation logic
-}
-```
-
-### Progress Updates
-
-```go
-// Progress bars use channels
-type Progress struct {
-    updateChan chan ProgressUpdate
-}
-
-// Update from download goroutine
-go func() {
-    for {
-        select {
-        case update := <-p.updateChan:
-            p.render(update)
-        }
-    }
-}()
-```
-
-## Data Transformations
-
-### Version Normalization
+### Download Failure Example
 
 ```
-Input          → Normalized
-"1.21.5"       → "go1.21.5"
-"go1.21.5"     → "go1.21.5"
-"1.21"         → "go1.21.0"
-"latest"       → "go1.22.0" (fetched)
-"stable"       → "go1.21.5" (fetched)
+Download attempt
+   ↓ fails (network error)
+Retry logic (up to retry_count times)
+   ↓ all retries failed
+Log error details
+   ↓ clean up
+Remove partial download
+   ↓ return error
+Manager catches error
+   ↓ formats
+CLI formats user-friendly message
+   ↓ display
+User sees: "Failed to download: network timeout"
+   ↓ suggest
+Help message: "Check internet connection"
+   ↓ exit
+Exit code 4 (network error)
 ```
 
-### Path Transformations
+## Data Persistence
+
+### Filesystem Layout
 
 ```
-Input                → Expanded
-"~/.govman"          → "/Users/user/.govman"
-"$HOME/go/versions"  → "/Users/user/go/versions"
-"./versions"         → "/current/dir/versions"
+~/.govman/
+├── config.yaml              # Configuration (persisted)
+├── bin/
+│   └── go → versions/go1.25.1/bin/go  # Symlink (persisted)
+├── versions/
+│   ├── go1.25.1/           # Installed version (persisted)
+│   ├── go1.24.0/           # Installed version (persisted)
+│   └── ...
+└── cache/
+    ├── go1.25.1.linux-amd64.tar.gz  # Download cache (temporary)
+    └── ...
 ```
 
-### Size Formatting
+### Ephemeral Data
+
+- API responses (cached in memory for 10 minutes)
+- Progress bar state
+- Current session PATH modifications
+
+### Persistent Data
+
+- Configuration file
+- Installed Go versions
+- Download cache (until cleaned)
+- Shell configuration (in shell RC files)
+- .govman-goversion project files
+
+## Concurrency
+
+govman is primarily single-threaded for simplicity and safety:
+
+### No Concurrent Operations
+
+- Only one `govman` command runs at a time per user
+- Configuration updates are atomic (write to temp, then rename)
+- No lock files needed (user-space isolation)
+
+### Safe Concurrency
+
+- Multiple users can run govman simultaneously (separate home directories)
+- Download cache uses file system atomicity
+- Symlink updates are atomic at OS level
+
+## API Interactions
+
+### go.dev API
+
+**Endpoint**: `https://go.dev/dl/?mode=json&include=all`
+
+**Request**:
+```
+GET https://go.dev/dl/?mode=json&include=all
+```
+
+**Response**: JSON array of releases
+
+**Caching**: 10 minutes in-memory
+
+### GitHub API (Self-Update)
+
+**Endpoint**: `https://api.github.com/repos/justjundana/govman/releases/latest`
+
+**Request**:
+```
+GET https://api.github.com/repos/justjundana/govman/releases/latest
+```
+
+**Response**: JSON release object
+
+**Caching**: None (explicit user action)
+
+## Data Transformation
+
+### Version String Normalization
 
 ```
-Bytes      → Human Readable
-67108864   → "64.0 MB"
-1073741824 → "1.0 GB"
-1234567    → "1.2 MB"
+User input → "latest"
+   ↓ resolve
+API query → All stable versions
+   ↓ sort
+Semantic version comparison
+   ↓ select
+"1.25.1"
+   ↓ use in
+Installation/switching
 ```
 
-## See Also
+### Path Handling
 
-- [Architecture](architecture.md) - System design
-- [Project Structure](project-structure.md) - Code organization
-- [Architecture Diagrams](architecture-diagrams.md) - Visual representations
-
----
-
-Understanding data flow helps debug issues and optimize performance! 🔄
+```
+Config: install_dir: "~/.govman/versions"
+   ↓ expand
+Absolute: "/home/user/.govman/versions"
+   ↓ validate
+Check no ".." traversal
+   ↓ use in
+File operations
+```

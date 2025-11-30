@@ -1,687 +1,655 @@
-# Troubleshooting Guide
+# Troubleshooting
 
-Solutions to common issues when using **govman**.
-
-## Table of Contents
-
-- [Installation Issues](#installation-issues)
-- [Version Switching Issues](#version-switching-issues)
-- [Auto-Switch Issues](#auto-switch-issues)
-- [Shell Integration Issues](#shell-integration-issues)
-- [Download Issues](#download-issues)
-- [Permission Issues](#permission-issues)
-- [Platform-Specific Issues](#platform-specific-issues)
-- [Configuration Issues](#configuration-issues)
-
----
+Common issues and their solutions.
 
 ## Installation Issues
 
-### "command not found: govman"
+### Permission Denied During Installation
 
-**Cause**: govman binary not in PATH.
+**Symptoms:**
+```
+Error: Permission denied: cannot write to /usr/local/bin
+Error: failed to install: permission denied
+```
 
-**Solutions**:
+**Solution:**
 
-1. **Check if govman is installed:**
-   ```bash
-   ls -la ~/.govman/bin/govman
-   ```
-
-2. **Verify PATH contains govman:**
-   ```bash
-   echo $PATH | grep govman
-   ```
-
-3. **Add to PATH manually:**
-   ```bash
-   # Bash/Zsh
-   echo 'export PATH="$HOME/.govman/bin:$PATH"' >> ~/.bashrc
-   source ~/.bashrc
-   
-   # Fish
-   fish_add_path ~/.govman/bin
-   ```
-
-4. **Re-run installation:**
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-   ```
-
-### Installation Fails with "Permission Denied"
-
-**Cause**: Insufficient permissions.
-
-**Solutions**:
-
-1. **Make binary executable:**
-   ```bash
-   chmod +x ~/.govman/bin/govman
-   ```
-
-2. **Check directory permissions:**
-   ```bash
-   ls -ld ~/.govman/bin
-   # Should show: drwxr-xr-x
-   ```
-
-3. **Fix ownership:**
-   ```bash
-   sudo chown -R $(whoami) ~/.govman
-   ```
-
-### "Certificate verification failed"
-
-**Cause**: Outdated CA certificates.
-
-**Solutions**:
+govman does NOT require sudo. It installs to your home directory:
 
 ```bash
-# macOS
-brew install openssl
+# Correct installation (no sudo):
+curl -sSL https://install.script | bash
 
+# NOT this:
+# sudo curl -sSL https://install.script | bash
+```
+
+If you get permission errors in `~/.govman`:
+```bash
+chmod -R u+w ~/.govman
+```
+
+### curl or wget Not Found
+
+**Symptoms:**
+```
+bash: curl: command not found
+bash: wget: command not found
+```
+
+**Solution:**
+
+Install curl or wget:
+
+```bash
 # Ubuntu/Debian
-sudo apt-get update && sudo apt-get install ca-certificates
+sudo apt-get update
+sudo apt-get install curl
 
-# CentOS/RHEL
-sudo yum install ca-certificates
+# RHEL/CentOS/Fedora
+sudo yum install curl
+
+# macOS (if somehow missing)
+brew install curl
 ```
 
----
+### Installation Script Fails to Download
 
-## Version Switching Issues
+**Symptoms:**
+```
+Failed to download installation script
+Connection refused
+```
 
-### "Go version X is not installed"
+**Solution:**
 
-**Cause**: Trying to use a version that isn't installed.
-
-**Solutions**:
-
-1. **Check installed versions:**
+1. Check internet connection
+2. Verify firewall allows HTTPS to github.com
+3. Try alternative download method:
    ```bash
-   govman list
+   wget https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh
+   bash install.sh
    ```
 
-2. **Install the version:**
-   ```bash
-   govman install 1.21.5
-   ```
+## Shell Integration Issues
 
-3. **Then switch:**
-   ```bash
-   govman use 1.21.5
-   ```
+### govman use Doesn't Update PATH in Current Session
 
-### "Cannot uninstall currently active version"
-
-**Cause**: Attempting to remove the version you're currently using.
-
-**Solutions**:
-
-1. **Switch to different version first:**
-   ```bash
-   govman use 1.20.12
-   ```
-
-2. **Then uninstall:**
-   ```bash
-   govman uninstall 1.21.5
-   ```
-
-### Version Switch Doesn't Persist
-
-**Cause**: Using session-only activation instead of default.
-
-**Solutions**:
-
-1. **Set as default:**
-   ```bash
-   govman use 1.21.5 --default
-   ```
-
-2. **Verify default is set:**
-   ```bash
-   cat ~/.govman/config.yaml | grep default_version
-   ```
-
-3. **Check in new terminal:**
-   ```bash
-   # Open new terminal
-   go version
-   ```
-
----
-
-## Auto-Switch Issues
-
-### Auto-Switch Not Working
-
-**Cause**: Auto-switch disabled or shell integration not loaded.
-
-**Diagnosis**:
-
+**Symptoms:**
 ```bash
-# Check if auto-switch is enabled
-cat ~/.govman/config.yaml | grep -A 2 auto_switch
-
-# Check shell integration
-type govman_auto_switch  # Should show it's a function
+govman use 1.25.1
+go version  # Still shows old version
 ```
 
-**Solutions**:
+**Cause:** Shell wrapper function not loaded.
 
-1. **Enable auto-switch in config:**
+**Solution:**
+
+1. Initialize shell integration:
+   ```bash
+   govman init
+   ```
+
+2. Reload your shell:
+   ```bash
+   source ~/.bashrc  # Bash
+   source ~/.zshrc   # Zsh
+   source ~/.config/fish/config.fish  # Fish
+   . $PROFILE  # PowerShell
+   ```
+
+3. Verify wrapper exists:
+   ```bash
+   type govman  # Should show it's a function
+   ```
+
+### Auto-Switching Not Working
+
+**Symptoms:**
+```bash
+cd project-with-govman-version
+go version  # Doesn't switch automatically
+```
+
+**Diagnosis:**
+
+1. Check if auto-switch function exists:
+   ```bash
+   type govman_auto_switch
+   ```
+
+2. Check config:
+   ```bash
+   cat ~/.govman/config.yaml | grep -A 3 auto_switch
+   ```
+
+3. Verify `.govman-goversion` format:
+   ```bash
+   cat .govman-goversion  # Should contain only version number, e.g., "1.25.1"
+   ```
+
+**Solution:**
+
+1. Ensure shell integration is initialized:
+   ```bash
+   govman init --force
+   source ~/.bashrc  # or appropriate config
+   ```
+
+2. Enable auto-switch in config:
    ```yaml
    auto_switch:
      enabled: true
    ```
 
-2. **Re-initialize shell:**
+3. Test manually:
    ```bash
-   govman init --force
-   source ~/.bashrc  # Or ~/.zshrc, etc.
+   govman_auto_switch
    ```
 
-3. **Test manually:**
-   ```bash
-   govman refresh
-   ```
+### Command Not Found After Installation
 
-### `.govman-version` File Ignored
-
-**Cause**: Invalid file format or content.
-
-**Solutions**:
-
-1. **Check file content:**
-   ```bash
-   cat .govman-version
-   # Should contain just: 1.21.5
-   ```
-
-2. **Fix format (no quotes, no prefix):**
-   ```bash
-   echo "1.21.5" > .govman-version  # ❌ Wrong (has quotes)
-   echo 1.21.5 > .govman-version     # ✅ Correct
-   ```
-
-3. **Remove whitespace:**
-   ```bash
-   echo "1.21.5" | tr -d ' \n\r' > .govman-version
-   ```
-
-4. **Verify version is installed:**
-   ```bash
-   govman list | grep 1.21.5
-   govman install 1.21.5  # If missing
-   ```
-
-### Wrong Version After `cd`
-
-**Cause**: Multiple `.govman-version` files or cached state.
-
-**Solutions**:
-
-1. **Check for parent directory files:**
-   ```bash
-   find . -name ".govman-version" -type f
-   ```
-
-2. **Force refresh:**
-   ```bash
-   govman refresh
-   ```
-
-3. **Verify current:**
-   ```bash
-   govman current
-   go version
-   ```
-
----
-
-## Shell Integration Issues
-
-### Shell Integration Not Loading
-
-**Cause**: Configuration not in shell RC file or syntax error.
-
-**Diagnosis**:
-
+**Symptoms:**
 ```bash
-# Check if configuration exists
-grep -A 5 "GOVMAN" ~/.bashrc  # Or ~/.zshrc, etc.
-
-# Check for syntax errors
-bash -n ~/.bashrc  # For Bash
-zsh -n ~/.zshrc    # For Zsh
+govman: command not found
 ```
 
-**Solutions**:
+**Solution:**
 
-1. **Re-initialize:**
+1. Check if binary exists:
    ```bash
-   govman init --force
+   ls -la ~/.govman/bin/govman
    ```
 
-2. **Manually reload:**
+2. Add to PATH manually:
    ```bash
-   source ~/.bashrc  # Or appropriate RC file
+   export PATH="$HOME/.govman/bin:$PATH"
    ```
 
-3. **Check for conflicts:**
+3. Make permanent (add to shell config):
    ```bash
-   # Look for duplicate GOVMAN sections
-   grep -n "GOVMAN" ~/.bashrc
-   ```
-
-### `govman` Command is Not a Function
-
-**Cause**: Wrapper function not loaded.
-
-**Diagnosis**:
-
-```bash
-type govman
-# Should show: govman is a function
-# If shows: govman is /path/to/binary - wrapper not loaded
-```
-
-**Solutions**:
-
-1. **Reload shell configuration:**
-   ```bash
+   echo 'export PATH="$HOME/.govman/bin:$PATH"' >> ~/.bashrc
    source ~/.bashrc
    ```
 
-2. **Check function definition:**
+4. Or reinitialize:
    ```bash
-   declare -f govman  # Should show function code
+   govman init
    ```
 
-3. **Re-initialize shell:**
-   ```bash
-   govman init --force
-   ```
+## Version Management Issues
 
-### Auto-Switch Triggers Too Often
+### "No Go version is currently active"
 
-**Cause**: Hook firing on every prompt.
+**Symptoms:**
+```bash
+govman current
+# Error: no Go version is currently active
+```
 
-**Solutions**:
+**Solution:**
 
-1. **Disable auto-switch:**
-   ```yaml
-   auto_switch:
-     enabled: false
-   ```
+```bash
+# List installed versions
+govman list
 
-2. **Use manual switching:**
-   ```bash
-   govman use 1.21.5
-   ```
+# If no versions installed:
+govman install latest
 
----
+# Activate a version
+govman use latest --default
+```
+
+### "Go version X is not installed"
+
+**Symptoms:**
+```bash
+govman use 1.25.1
+# Error: Go version 1.25.1 is not installed
+```
+
+**Solution:**
+
+```bash
+# Install the version first
+govman install 1.25.1
+
+# Then use it
+govman use 1.25.1
+```
+
+### Cannot Uninstall Currently Active Version
+
+**Symptoms:**
+```bash
+govman uninstall 1.25.1
+# Error: cannot uninstall currently active version 1.25.1
+```
+
+**Solution:**
+
+Switch to a different version first:
+
+```bash
+# Switch to another installed version
+govman use 1.24.0 --default
+
+# Or install and switch to a new version
+govman install latest
+govman use latest --default
+
+# Now uninstall
+govman uninstall 1.25.1
+```
 
 ## Download Issues
 
 ### Download Fails or Times Out
 
-**Cause**: Network issues, firewall, or slow connection.
+**Symptoms:**
+```
+Error: failed to download: context deadline exceeded
+Error: download failed with status 503
+```
 
-**Solutions**:
+**Solution:**
 
-1. **Increase timeout:**
+1. Check internet connection
+2. Retry (govman auto-retries):
+   ```bash
+   govman install 1.25.1
+   ```
+
+3. Increase timeout:
    ```yaml
+   # ~/.govman/config.yaml
    download:
-     timeout: 1800s  # 30 minutes
-     retry_count: 10
+     Timeout: 600s  # 10 minutes
+     retry_count: 5
    ```
 
-2. **Use mirror:**
+4. Use a mirror if in restricted region:
    ```yaml
    mirror:
      enabled: true
-     url: "https://golang.google.cn/dl/"
+     url: https://golang.google.cn/dl/
    ```
 
-3. **Check connectivity:**
-   ```bash
-   curl -I https://go.dev/dl/
-   ```
+### Checksum Verification Failed
 
-4. **Configure proxy:**
-   ```bash
-   export HTTP_PROXY=http://proxy.example.com:8080
-   export HTTPS_PROXY=http://proxy.example.com:8080
-   ```
+**Symptoms:**
+```
+Error: checksum verification failed
+Error: checksum mismatch: expected abc123, got def456
+```
 
-### "Checksum verification failed"
+**Cause:** Corrupted download.
 
-**Cause**: Corrupted download or man-in-the-middle attack.
+**Solution:**
 
-**Solutions**:
+```bash
+# Clean cache and retry
+govman clean
+govman install 1.25.1
+```
 
-1. **Clear cache and retry:**
-   ```bash
-   govman clean
-   govman install 1.21.5
-   ```
+### Slow Downloads
 
-2. **Check network security:**
-   - Verify you're not behind a corporate proxy that modifies downloads
-   - Check for antivirus interference
-   - Try different network
+**Solution:**
 
-3. **Manual download:**
-   - Download from https://go.dev/dl/
-   - Verify checksum manually
-   - Extract to `~/.govman/versions/`
-
-### Downloads are Slow
-
-**Cause**: Limited bandwidth or server issues.
-
-**Solutions**:
-
-1. **Use mirror closer to your region:**
-   ```yaml
-   mirror:
-     enabled: true
-     url: "https://golang.google.cn/dl/"  # For Asia
-   ```
-
-2. **Adjust connection settings:**
+1. Enable parallel downloads:
    ```yaml
    download:
      parallel: true
-     max_connections: 2  # Lower for slower networks
+     max_connections: 4
    ```
 
-3. **Resume interrupted downloads:**
-   - govman automatically resumes partial downloads
-   - Just run the install command again
+2. Use a geographically closer mirror:
+   ```yaml
+   mirror:
+     enabled: true
+     url: https://golang.google.cn/dl/  # For users in China
+   ```
 
----
+3. Check network congestion
+4. Try at a different time
 
-## Permission Issues
+## PATH and Environment Issues
 
-### "Permission denied" When Creating Directories
+### Multiple Go Installations in PATH
 
-**Cause**: Insufficient permissions in home directory.
+**Symptoms:**
+```bash
+which go
+# /usr/local/go/bin/go  (not govman's)
 
-**Solutions**:
+go version
+# Not the expected version
+```
 
-1. **Fix home directory permissions:**
+**Solution:**
+
+Ensure `~/.govman/bin` appears first in PATH:
+
+```bash
+# Check PATH order
+echo $PATH | tr ':' '\n'
+
+# Prepend govman to PATH in shell config
+export PATH="$HOME/.govman/bin:$PATH"
+
+# Not this:
+# export PATH="$PATH:$HOME/.govman/bin"  # Wrong! Goes at end
+```
+
+### GOPATH/GOROOT Conflicts
+
+**Symptoms:**
+```
+Warning: GOROOT environment variable is set
+go: cannot find GOROOT directory
+```
+
+**Solution:**
+
+1. Unset GOROOT (govman manages it):
    ```bash
-   chmod 755 ~
+   unset GOROOT
    ```
 
-2. **Fix govman directory permissions:**
+2. Remove from shell config if manually set:
    ```bash
-   mkdir -p ~/.govman
-   chmod 755 ~/.govman
+   # Remove these lines from ~/.bashrc
+   # export GOROOT=/usr/local/go
+   # export GOPATH=$HOME/go
    ```
 
-3. **Check ownership:**
-   ```bash
-   ls -ld ~/.govman
-   # Should be owned by you, not root
-   ```
+3. Let Go manage GOPATH automatically
 
-4. **Fix ownership:**
-   ```bash
-   sudo chown -R $(whoami) ~/.govman
-   ```
+### go env Shows Wrong GO ROOT
 
-### "Operation not permitted" on macOS
+**Symptoms:**
+```bash
+go env GOROOT
+# /usr/local/go  (not govman's Go)
+```
 
-**Cause**: macOS Gatekeeper blocking binary.
+**Solution:**
 
-**Solutions**:
+```bash
+# Check which go binary is being used
+which go
 
-1. **Remove quarantine attribute:**
-   ```bash
-   xattr -d com.apple.quarantine ~/.govman/bin/govman
-   ```
+# Should be: ~/.govman/versions/goX.X.X/bin/go
 
-2. **Allow in System Preferences:**
-   - Go to **System Preferences** → **Security & Privacy**
-   - Click "Allow" for govman
+# If not, fix PATH order
+export PATH="$HOME/.govman/bin:$PATH"
+```
 
-3. **Disable Gatekeeper temporarily:**
-   ```bash
-   sudo spctl --master-disable
-   # Run govman
-   sudo spctl --master-enable
-   ```
+## Windows-Specific Issues
 
-### SELinux Issues on Linux
+### "Set-ExecutionPolicy" Error (PowerShell)
 
-**Cause**: SELinux preventing execution.
+**Symptoms:**
+```
+cannot be loaded because running scripts is disabled
+```
 
-**Solutions**:
-
-1. **Check SELinux status:**
-   ```bash
-   getenforce
-   ```
-
-2. **Set proper context:**
-   ```bash
-   chcon -t bin_t ~/.govman/bin/govman
-   ```
-
-3. **Or temporarily disable:**
-   ```bash
-   sudo setenforce 0
-   # Run govman
-   sudo setenforce 1
-   ```
-
----
-
-## Platform-Specific Issues
-
-### macOS: "Developer Cannot be Verified"
-
-**Cause**: Apple's security blocking unsigned binary.
-
-**Solutions**:
-
-1. **Right-click and open:**
-   - Right-click govman binary
-   - Select "Open"
-   - Click "Open" in dialog
-
-2. **Command line:**
-   ```bash
-   xattr -d com.apple.quarantine ~/.govman/bin/govman
-   ```
-
-### Windows: "Windows Defender Blocked This App"
-
-**Cause**: SmartScreen blocking unknown binary.
-
-**Solutions**:
-
-1. **Add exclusion:**
-   ```powershell
-   Add-MpPreference -ExclusionPath "$env:USERPROFILE\.govman"
-   ```
-
-2. **Click "Run anyway":**
-   - Click "More info"
-   - Click "Run anyway"
-
-3. **Disable SmartScreen temporarily:**
-   - Only if you trust the source
-
-### Windows: PowerShell Execution Policy
-
-**Cause**: PowerShell blocking scripts.
-
-**Solutions**:
+**Solution:**
 
 ```powershell
-# Check current policy
-Get-ExecutionPolicy
-
-# Set policy for current user
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-# Or bypass for single session
-powershell -ExecutionPolicy Bypass
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### Linux: "No such file or directory" Despite Binary Existing
+### govman Not Found After Installation (Windows)
 
-**Cause**: Missing shared libraries or wrong architecture.
+**Symptoms:**
+```cmd
+'govman' is not recognized as an internal or external command
+```
 
-**Solutions**:
+**Solution:**
 
-1. **Check architecture:**
-   ```bash
-   uname -m
-   file ~/.govman/bin/govman
+1. Add to PATH manually:
+   - Open "Environment Variables"
+   - Edit user PATH
+   - Add: `%USERPROFILE%\.govman\bin`
+
+2. Restart Command Prompt/PowerShell
+
+3. Or use installer's automatic PATH setup:
+   ```powershell
+   govman init
    ```
 
-2. **Install missing libraries:**
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install libc6
+### Auto-Switch Not Working in Command Prompt
 
-   # CentOS/RHEL
-   sudo yum install glibc
+**Expected:** Command Prompt (cmd.exe) does not support auto-switching.
+
+**Solution:**
+
+Use PowerShell instead, or manually run:
+```cmd
+govman use <version>
+```
+
+## macOS-Specific Issues
+
+### "govman" Cannot Be Opened (macOS Security)
+
+**Symptoms:**
+```
+"govman" cannot be opened because it is from an unidentified developer
+```
+
+**Solution:**
+
+```bash
+# Remove quarantine attribute
+xattr -d com.apple.quarantine ~/.govman/bin/govman
+
+# Or allow in System Preferences
+# System Preferences → Security & Privacy → General → Allow
+```
+
+###Rosetta Issues on Apple Silicon
+
+**Symptoms:**
+```
+Bad CPU type in executable
+```
+
+**Solution:**
+
+govman automatically handles this. If issues persist:
+
+```bash
+# Reinstall govman
+curl -sSL https://install.script | bash
+
+# Verify architecture
+file ~/.govman/bin/govman
+# Should show: Mach-O 64-bit executable arm64
+```
+
+## CI/CD Issues
+
+### govman Not Found in CI
+
+**Cause:** PATH not set or govman not installed.
+
+**Solution:**
+
+```yaml
+#GitHub Actions example
+- name: Install govman
+  run: |
+    curl -sSL https://install.script | bash
+    echo "$HOME/.govman/bin" >> $GITHUB_PATH
+
+- name: Verify
+  run: govman --version
+```
+
+### Permission Errors in Docker
+
+**Solution:**
+
+Run as non-root user:
+
+```dockerfile
+# Create non-root user
+RUN useradd -m govman
+USER govman
+
+# Install to user directory
+RUN curl -sSL https://install.script | bash
+```
+
+## Network and Proxy Issues
+
+### Corporate Proxy Blocks Downloads
+
+**Solution:**
+
+Set proxy environment variables:
+
+```bash
+export HTTP_PROXY=http://proxy.corp.com:8080
+export HTTPS_PROXY=http://proxy.corp.com:8080
+export NO_PROXY=localhost,127.0.0.1,.corp.local
+
+govman install latest
+```
+
+### SSL Certificate Errors
+
+**Symptoms:**
+```
+Error: x509: certificate signed by unknown authority
+```
+
+**Solution:**
+
+1. Update CA certificates:
+   ```bash
+   # Ubuntu
+   sudo apt-get update
+   sudo apt-get install ca-certificates
+
+   # macOS
+   # Usually not needed; check system time is correct
    ```
 
----
+2. If behind corporate proxy with SSL inspection, contact IT
 
-## Configuration Issues
+## Debugging Commands
 
-### Configuration Changes Not Taking Effect
-
-**Cause**: Config not reloaded or using flags.
-
-**Solutions**:
-
-1. **Check config location:**
-   ```bash
-   ls -la ~/.govman/config.yaml
-   ```
-
-2. **Validate YAML syntax:**
-   ```bash
-   # Use online YAML validator or
-   govman --verbose list  # Shows config loading
-   ```
-
-3. **Remove and regenerate:**
-   ```bash
-   mv ~/.govman/config.yaml ~/.govman/config.yaml.backup
-   govman list  # Regenerates with defaults
-   ```
-
-### Custom Config File Not Loaded
-
-**Cause**: Not specifying config path.
-
-**Solutions**:
+### Verbose Mode
 
 ```bash
-# Use --config flag
-govman --config /path/to/config.yaml list
-
-# Or set environment variable
-export GOVMAN_CONFIG=/path/to/config.yaml
-govman list
+govman --verbose install 1.25.1
+govman --verbose list --remote
 ```
 
----
-
-## Debugging Tips
-
-### Enable Verbose Mode
-
-Get detailed information about what govman is doing:
+### Check Configuration
 
 ```bash
-govman --verbose install 1.21.5
-govman --verbose use 1.21.5
+cat ~/.govman/config.yaml
 ```
 
-### Check govman Version
+### Verify Shell Integration
 
 ```bash
-govman --version
+# Check if functions are loaded
+type govman
+type govman_auto_switch
+
+# Check shell config
+grep -A 50 "GOVMAN" ~/.bashrc
 ```
 
-### Check Go Environment
+### Inspect Cache
 
 ```bash
-go env
-go version -v
+ls -lah ~/.govman/cache/
 ```
 
-### Test in Clean Environment
+### Check Symlinks
 
 ```bash
-# Start new shell without config
-bash --norc --noprofile
-# Or
-zsh -f
-
-# Test govman commands
+ls -la ~/.govman/bin/go
 ```
-
-### Check Logs
-
-govman outputs to stderr. Capture for analysis:
-
-```bash
-govman install 1.21.5 2>&1 | tee govman-install.log
-```
-
----
 
 ## Getting Help
 
-### Before Opening an Issue
+### Collect Debug Information
 
-1. ✅ Check this troubleshooting guide
-2. ✅ Search [existing issues](https://github.com/justjundana/govman/issues)
-3. ✅ Try with `--verbose` flag
-4. ✅ Test in clean environment
+When reporting issues, include:
 
-### When Opening an Issue
+```bash
+# govman version
+govman --version
 
-Include:
+# OS and version
+uname -a  # Linux/macOS
+ver       # Windows
 
-- **OS and version**: `uname -a` (Unix) or `systeminfo` (Windows)
-- **Shell**: `echo $SHELL`
-- **govman version**: `govman --version`
-- **Go version**: `go version` (if applicable)
-- **Complete error message**: Use `--verbose`
-- **Steps to reproduce**
-- **Expected vs actual behavior**
+# Shell type and version
+echo $SHELL
+$SHELL --version
 
-### Community Support
+# Go version
+go version
 
-- 📖 [Documentation](https://github.com/justjundana/govman)
-- 💬 [GitHub Discussions](https://github.com/justjundana/govman/discussions)
-- 🐛 [Report Issues](https://github.com/justjundana/govman/issues/new)
+# PATH
+echo $PATH
 
----
+# Config
+cat ~/.govman/config.yaml
 
-## Still Having Issues?
+# Installed versions
+govman list
 
-If this guide didn't solve your problem:
+# Permissions
+ls -la ~/.govman/
+```
 
-1. Check the [Commands Reference](commands.md) for detailed usage
-2. Review [Configuration Guide](configuration.md) for settings
-3. See [Shell Integration](shell-integration.md) for setup issues
-4. Open a [GitHub Issue](https://github.com/justjundana/govman/issues/new) with details
+### Common Log Locations
 
----
+```bash
+# Installation logs (if saved)
+~/.govman/install.log
 
-We're here to help! 🤝
+# Shell config
+~/.bashrc, ~/.zshrc, ~/.config/fish/config.fish, $PROFILE
+```
+
+### Reinstall govman
+
+If all else fails:
+
+```bash
+# Uninstall (keeps Go versions)
+curl -sSL https://uninstall.script | bash  # Choose minimal removal
+
+# Reinstall
+curl -sSL https://install.script | bash
+
+# Reinitialize
+govman init
+source ~/.bashrc
+```
+
+### Reset to Defaults
+
+```bash
+# Backup current config
+cp ~/.govman/config.yaml ~/.govman/config.yaml.backup
+
+# Remove config (will recreate with defaults)
+rm ~/.govman/config.yaml
+
+# Next govman command recreates it
+govman --version
+```

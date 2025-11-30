@@ -1,388 +1,134 @@
-# Architecture
+# Architecture Overview
 
-High-level architecture and design principles of govman.
+High-level architecture and design decisions for govman.
 
-## System Overview
+## Design Philosophy
 
-govman is a command-line tool for managing multiple Go versions with automatic version switching support.
+govman is built with these core principles:
 
-### Design Goals
-
-1. **Simple**: Easy to install and use
-2. **Fast**: Quick downloads, efficient switching
-3. **Reliable**: Verified downloads, atomic operations
-4. **Cross-platform**: Works on Linux, macOS, Windows
-5. **Shell-agnostic**: Supports Bash, Zsh, Fish, PowerShell
+1. **Simplicity**: Easy to use, easy to understand
+2. **Safety**: No root required, safe defaults
+3. **Speed**: Fast downloads, instant switching
+4. **Reliability**: Checksum verification, atomic operations
+5. **Cross-platform**: Works on Linux, macOS, Windows
 
 ## Architecture Layers
 
 ```
-┌─────────────────────────────────────────────────┐
-│              CLI Layer (Cobra)                  │
-│  User Interface, Command Parsing, Output        │
-└───────────────────┬─────────────────────────────┘
-                    │
-┌───────────────────▼─────────────────────────────┐
-│           Manager Layer (Orchestrator)          │
-│  Business Logic, Workflow Coordination          │
-└───┬───────┬──────┬────────┬─────────┬──────────┘
-    │       │      │        │         │
-┌───▼───┐ ┌▼────┐ ┌▼─────┐ ┌▼──────┐ ┌▼────────┐
-│Config │ │Down-│ │Golang│ │Shell  │ │Symlink  │
-│       │ │load │ │API   │ │       │ │         │
-└───────┘ └─────┘ └──────┘ └───────┘ └─────────┘
-                    │
-            ┌───────▼───────┐
-            │  External     │
-            │  Resources    │
-            │  (go.dev API) │
-            └───────────────┘
+┌─────────────────────────────────────┐
+│         User Interface              │  (CLI, Shell Integration)
+├─────────────────────────────────────┤
+│      Application Logic              │  (Commands, Workflows)
+├─────────────────────────────────────┤
+│       Core Services                 │  (Manager, Downloader, Config)
+├─────────────────────────────────────┤
+│        Utilities                    │  (Logger, Progress, Format)
+├─────────────────────────────────────┤
+│    External Dependencies            │  (Cobra, Viper, stdlib)
+└─────────────────────────────────────┘
 ```
 
-### Layer Responsibilities
+### Layer Descriptions
 
-#### 1. CLI Layer (`internal/cli`)
+**User Interface**:
+- CLI commands (`internal/cli/`)
+- Shell integration code generation (`internal/shell/`)
+- User-facing messages and help text
 
-**Purpose**: User interaction and command handling
+**Application Logic**:
+- Command orchestration
+- Input validation
+- Workflow coordination
 
-**Responsibilities**:
-- Parse command-line arguments
-- Validate user input
-- Display formatted output
-- Handle errors gracefully
-- Show progress indicators
+**Core Services**:
+- Version management (`internal/manager/`)
+- Download and extraction (`internal/downloader/`)
+- Configuration (`internal/config/`)
+- Go releases API (`internal/golang/`)
 
-**Key Components**:
-- Root command initialization
-- Subcommand registration
-- Flag parsing
-- Output formatting
-- Help text generation
+**Utilities**:
+- Logging (`internal/logger/`)
+- Progress reporting (`internal/progress/`)
+- String formatting (`internal/util/`)
 
-**Example**:
-```go
-// Command definition
-var installCmd = &cobra.Command{
-    Use:   "install <version>",
-    Short: "Install a Go version",
-    Args:  cobra.ExactArgs(1),
-    Run:   runInstall,
-}
+**External Dependencies**:
+- Cobra (CLI framework)
+- Viper (configuration)
+- Go standard library
 
-func runInstall(cmd *cobra.Command, args []string) {
-    version := args[0]
-    
-    // Call manager
-    if err := manager.Install(version); err != nil {
-        logger.Error("Installation failed: %v", err)
-        os.Exit(1)
-    }
-    
-    logger.Success("Installed Go %s", version)
-}
+## Component Diagram
+
 ```
-
-#### 2. Manager Layer (`internal/manager`)
-
-**Purpose**: Business logic orchestration
-
-**Responsibilities**:
-- Coordinate between services
-- Implement workflows
-- Handle transactions
-- Manage state
-- Error recovery
-
-**Key Operations**:
-- `Install()` - Download, verify, extract, install
-- `Uninstall()` - Remove version and clean up
-- `Use()` - Switch active version
-- `List()` - Query installed/remote versions
-- `Current()` - Get active version
-
-**Example**:
-```go
-func (m *Manager) Install(version string) error {
-    // 1. Validate
-    if m.IsInstalled(version) {
-        return ErrAlreadyInstalled
-    }
-    
-    // 2. Get release info
-    release, err := m.golang.GetRelease(version)
-    if err != nil {
-        return err
-    }
-    
-    // 3. Download
-    if err := m.downloader.Download(release); err != nil {
-        return err
-    }
-    
-    // 4. Extract
-    if err := m.downloader.Extract(release, m.cfg.InstallDir); err != nil {
-        m.downloader.Cleanup(release) // Rollback
-        return err
-    }
-    
-    // 5. Set as current (if first install)
-    if m.shouldSetCurrent() {
-        m.Use(version)
-    }
-    
-    return nil
-}
+┌────────────────────────────────────────────────────────┐
+│                       CLI Layer                        │
+│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐     │
+│  │Install│ │ Use   │ │ List  │ │ Info  │ │ Init  │ ... │
+│  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘     │
+└──────┼───-─────┼────-────┼-────────┼────-────┼─────────┘
+       │         │         │         │         │
+       └──────-─-┴────-────┴─────-───┴───-─────┘
+                           │
+                  ┌────────▼────────┐
+                  │                 │
+                  │    Manager      │
+                  │                 │
+                  └────┬───┬───┬────┘
+                       │   │   │
+           ┌───────────┘   │   └──────────┐
+           │               │              │
+      ┌────▼─────┐  ┌-─────▼─────┐  ┌───-─▼─-──┐
+      │Downloader│  │   Config   │  │  Golang  │
+      └────┬─────┘  └─-──────────┘  └────-┬────┘
+           │                              │
+      ┌────▼─────┐                   ┌───-▼-───┐
+      │ Progress │                   │ go.dev  │
+      └──────────┘                   │   API   │
+                                     └─────────┘
 ```
-
-#### 3. Service Layer
-
-##### Config Service (`internal/config`)
-
-**Purpose**: Configuration management
-
-**Features**:
-- YAML configuration loading
-- Default values
-- Path expansion
-- Validation
-- Directory creation
-
-**Configuration Structure**:
-```yaml
-install_dir: ~/.govman/versions
-cache_dir: ~/.govman/cache
-default_version: "1.21.5"
-
-download:
-  timeout: 300
-  retry: 3
-  verify_checksum: true
-
-mirror:
-  enabled: false
-  url: https://golang.google.cn/dl
-
-```yaml
-auto_switch:
-  enabled: true
-  project_file: .govman-version
-```
-```
-
-##### Downloader Service (`internal/downloader`)
-
-**Purpose**: Download and extract Go distributions
-
-**Features**:
-- HTTP downloads with resume support
-- SHA-256 verification
-- Archive extraction (tar.gz, zip)
-- Progress reporting
-- Retry with backoff
-- Path traversal protection
-
-**Download Flow**:
-```go
-func (d *Downloader) Download(release Release) error {
-    // Build URL
-    url := d.buildURL(release)
-    
-    // Check cache
-    cachePath := d.cachePath(release)
-    if d.cacheValid(cachePath, release.SHA256) {
-        return nil // Already downloaded
-    }
-    
-    // Download with progress
-    req := d.buildRequest(url)
-    resp, _ := d.client.Do(req)
-    defer resp.Body.Close()
-    
-    // Write to cache
-    out, _ := os.Create(cachePath)
-    defer out.Close()
-    
-    progress := progress.New(release.Size)
-    io.Copy(io.MultiWriter(out, progress), resp.Body)
-    
-    // Verify checksum
-    if err := d.verifyChecksum(cachePath, release.SHA256); err != nil {
-        os.Remove(cachePath)
-        return err
-    }
-    
-    return nil
-}
-```
-
-##### Golang API Service (`internal/golang`)
-
-**Purpose**: Interact with Go releases API
-
-**Features**:
-- Fetch available versions
-- Parse release metadata
-- Version comparison
-- Platform-specific file selection
-- Cache management
-
-**API Integration**:
-```go
-func (g *Golang) FetchReleases() ([]Release, error) {
-    // Check cache
-    if cached := g.cache.Get("releases"); cached != nil {
-        return cached, nil
-    }
-    
-    // Fetch from API
-    resp, _ := http.Get("https://go.dev/dl/?mode=json")
-    defer resp.Body.Close()
-    
-    var releases []Release
-    json.NewDecoder(resp.Body).Decode(&releases)
-    
-    // Cache for 1 hour
-    g.cache.Set("releases", releases, time.Hour)
-    
-    return releases, nil
-}
-```
-
-##### Shell Service (`internal/shell`)
-
-**Purpose**: Shell-specific integration
-
-**Features**:
-- Shell detection (Bash, Zsh, Fish, PowerShell)
-- Configuration file management
-- PATH manipulation
-- Auto-switch hooks
-- Initialization code generation
-
-**Shell Interface**:
-```go
-type Shell interface {
-    Name() string
-    ConfigFile() string
-    PathCommand(binPath string) string
-    SetupCommands(binPath string) []string
-    IsAvailable() bool
-}
-```
-
-**Example Implementation**:
-```go
-type BashShell struct{}
-
-func (b *BashShell) SetupCommands(binPath string) []string {
-    return []string{
-        `# govman initialization`,
-        fmt.Sprintf(`export PATH="%s:$PATH"`, binPath),
-        ``,
-        `# govman auto-switch`,
-        `govman_auto_switch() {`,
-        `    if [[ -f .govman-version ]]; then`,
-        `        local required_version=$(cat .govman-version 2>/dev/null)`,
-        `        govman use "$required_version" >/dev/null 2>&1`,
-        `    fi`,
-        `}`,
-        `__govman_check_dir_change() {`,
-        `    if [[ "$PWD" != "$__govman_prev_pwd" ]]; then`,
-        `        __govman_prev_pwd="$PWD"`,
-        `        govman_auto_switch`,
-        `    fi`,
-        `}`,
-        `PROMPT_COMMAND="__govman_check_dir_change; $PROMPT_COMMAND"`,
-    }
-}
-```
-
-##### Symlink Service (`internal/symlink`)
-
-**Purpose**: Manage symbolic links
-
-**Features**:
-- Create symlinks
-- Read symlink targets
-- Cross-platform support
-- Atomic updates
 
 ## Key Design Patterns
 
-### 1. Layered Architecture
+### 1. Facade Pattern
 
-Each layer depends only on layers below it:
-
-```
-CLI → Manager → Services → External
-```
-
-Benefits:
-- Clear separation of concerns
-- Easy to test individual layers
-- Can swap implementations
-
-### 2. Dependency Injection
-
-Services are injected into Manager:
+`Manager` acts as a facade for core services:
 
 ```go
 type Manager struct {
     config     *config.Config
     downloader *downloader.Downloader
-    golang     *golang.Golang
-    shell      *shell.Shell
-    logger     *logger.Logger
-}
-
-func New(cfg *config.Config) *Manager {
-    return &Manager{
-        config:     cfg,
-        downloader: downloader.New(cfg),
-        golang:     golang.New(cfg),
-        shell:      shell.New(cfg),
-        logger:     logger.Get(),
-    }
+    shell      shell.Shell
 }
 ```
 
-Benefits:
-- Easy to mock for testing
-- Configurable behavior
-- Loose coupling
+CLI commands interact with `Manager`, which coordinates lower-level services.
 
-### 3. Strategy Pattern (Shell Integration)
+### 2. Strategy Pattern
 
-Different shells implement common interface:
+Different shell implementations via `Shell` interface:
 
 ```go
 type Shell interface {
     Name() string
+    ConfigFile() string
+    PathCommand(path string) string
     SetupCommands(binPath string) []string
+    // ...
 }
 
-// Select strategy at runtime
-func DetectShell() Shell {
-    shell := os.Getenv("SHELL")
-    switch {
-    case strings.Contains(shell, "bash"):
-        return &BashShell{}
-    case strings.Contains(shell, "zsh"):
-        return &ZshShell{}
-    // ...
-    }
-}
+// Implementations:
+type BashShell struct{}
+type ZshShell struct{}
+type FishShell struct{}
+type PowerShell struct{}
 ```
 
-### 4. Singleton Pattern (Logger)
+### 3. Singleton Pattern
 
 Global logger instance:
 
 ```go
-var (
-    globalLogger *Logger
-    once         sync.Once
-)
+var globalLogger *Logger
+var once sync.Once
 
 func Get() *Logger {
     once.Do(func() {
@@ -392,318 +138,268 @@ func Get() *Logger {
 }
 ```
 
-### 5. Factory Pattern (Progress Bars)
+### 4. Template Method
 
-Create progress bars based on context:
+Download workflow in Downloader:
 
 ```go
-func NewProgress(total int64, mode Mode) Progress {
-    switch mode {
-    case QuietMode:
-        return &SilentProgress{}
-    case VerboseMode:
-        return &DetailedProgress{total: total}
-    default:
-        return &StandardProgress{total: total}
-    }
+func (d *Downloader) Download(url, installDir, version string) error {
+    // Template method defines steps:
+    1. Get file info
+    2. Download file
+    3. Verify checksum
+    4. Extract archive
 }
 ```
 
-### 6. Builder Pattern (HTTP Requests)
+## Data Flow Architecture
 
-Build complex requests:
-
-```go
-func (d *Downloader) buildRequest(url string, resumeFrom int64) *http.Request {
-    req, _ := http.NewRequest("GET", url, nil)
-    req.Header.Set("User-Agent", userAgent())
-    
-    if resumeFrom > 0 {
-        req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
-    }
-    
-    if d.cfg.Download.Timeout > 0 {
-        ctx, _ := context.WithTimeout(context.Background(), 
-            time.Duration(d.cfg.Download.Timeout)*time.Second)
-        req = req.WithContext(ctx)
-    }
-    
-    return req
-}
 ```
-
-## Error Handling Strategy
-
-### Error Wrapping
-
-Always wrap errors with context:
-
-```go
-if err := download(); err != nil {
-    return fmt.Errorf("failed to download: %w", err)
-}
-```
-
-### Error Recovery
-
-Manager handles rollback on failure:
-
-```go
-func (m *Manager) Install(version string) error {
-    // Download
-    if err := m.downloader.Download(release); err != nil {
-        return err
-    }
-    
-    // Extract (with rollback)
-    if err := m.downloader.Extract(release, m.cfg.InstallDir); err != nil {
-        m.downloader.Cleanup(release) // Clean up partial extraction
-        return fmt.Errorf("extraction failed: %w", err)
-    }
-    
-    return nil
-}
-```
-
-### User-Friendly Errors
-
-Logger provides helpful error messages:
-
-```go
-logger.ErrorWithHelp(
-    "Failed to download Go 1.21.5",
-    "Try:\n" +
-    "  1. Check your internet connection\n" +
-    "  2. Verify proxy settings in config\n" +
-    "  3. Try a different mirror",
-    map[string]interface{}{
-        "error": err.Error(),
-        "url":   downloadURL,
-    },
-)
-```
-
-## Concurrency Model
-
-### Thread Safety
-
-Manager uses mutex for critical sections:
-
-```go
-type Manager struct {
-    mu sync.RWMutex
-    // ...
-}
-
-func (m *Manager) Install(version string) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    // ... installation logic
-}
-```
-
-### Concurrent Downloads
-
-Future: Support parallel downloads:
-
-```go
-// Download multiple versions concurrently
-func (m *Manager) InstallMultiple(versions []string) error {
-    var wg sync.WaitGroup
-    errChan := make(chan error, len(versions))
-    
-    for _, version := range versions {
-        wg.Add(1)
-        go func(v string) {
-            defer wg.Done()
-            if err := m.Install(v); err != nil {
-                errChan <- err
-            }
-        }(version)
-    }
-    
-    wg.Wait()
-    close(errChan)
-    
-    // Check for errors
-    for err := range errChan {
-        if err != nil {
-            return err
-        }
-    }
-    
-    return nil
-}
+User Input
+    ↓
+CLI Parsing (Cobra)
+    ↓
+Command Validation
+    ↓
+Manager Orchestration
+    ↓
+Service Execution (Parallel where safe)
+    ↓
+Result Aggregation
+    ↓
+User Output (Formatted by Logger)
 ```
 
 ## State Management
 
-### Version State
+### Application State
 
-Tracked via filesystem:
+- **Method**: Configuration file (`~/.govman/config.yaml`)
+- **Format**: YAML
+- **Persistence**: Disk-based
+- **Updates**: Atomic write (temp file + rename)
+
+### Runtime State
+
+- **Current version**: Resolved from symlink or environment
+- **Session state**: In-memory (not persisted)
+- **Progress**: Ephemeral UI state
+
+### No Global Mutable State
+
+- Configuration passed explicitly
+- No global variables (except logger singleton)
+- Each command execution is isolated
+
+## Error Handling Strategy
+
+### Layered Error Handling
 
 ```
-~/.govman/
-├── versions/
-│   ├── go1.20.5/      ← Installed version
-│   ├── go1.21.5/      ← Installed version
-│   └── current →      ← Symlink to active version
-└── cache/
-    └── go1.21.5.linux-amd64.tar.gz
+Low-level error (e.g., HTTP 404)
+    ↓ wrapped with context
+Mid-level error (e.g., "failed to download")
+    ↓ formatted for user
+High-level error (e.g., "Go 1.25.1 not available for your platform")
+    ↓ displayed with help
+User sees actionable message
 ```
 
-### Configuration State
+### Error Types
 
-Stored in YAML:
+1. **Validation errors**: User input issues
+2. **Network errors**: Download/API failures
+3. **Filesystem errors**: Permission/space issues
+4. **Logic errors**: Invalid state
 
-```yaml
-# ~/.govman/config.yaml
-install_dir: ~/.govman/versions
-cache_dir: ~/.govman/cache
-default_version: "1.21.5"
-```
+All errors include:
+- Clear message
+- Suggested action (via `ErrorWithHelp`)
+- Exit code
 
-### Shell State
+## Security Architecture
 
-Maintained in shell config:
+### Principle of Least Privilege
 
-```bash
-# ~/.bashrc or ~/.zshrc
-export PATH="$HOME/.govman/versions/current/bin:$PATH"
-PROMPT_COMMAND="govman refresh --silent; $PROMPT_COMMAND"
-```
+- **No root required**: All operations in user space
+- **Limited file access**: Only ~/.govman/ and shell configs
+- **No network server**: Client-only architecture
 
-## Performance Considerations
+### Defense in Depth
 
-### 1. Caching
+1. **Input validation**: All user inputs validated
+2. **Path validation**: Prevent directory traversal
+3. **Checksum verification**: SHA-256 for all downloads
+4. **HTTPS only**: Encrypted connections
+5. **Safe defaults**: Secure configuration out of the box
 
-- Release data cached for 1 hour
-- Downloaded archives kept in cache
-- Symlinks for fast switching
+### Trust Model
 
-### 2. Incremental Operations
+**Trusted**:
+- go.dev (official Go releases)
+- github.com (govman releases)
+- User's local system
 
-- Resume interrupted downloads
-- Skip re-download if cached
-- Atomic symlink updates
+**Not trusted**:
+-User input (validated before use)
+- Custom mirror URLs (optional, user-configured)
 
-### 3. Efficient Extraction
+## Concurrency Model
 
-- Stream extraction (no double disk usage)
-- Skip unnecessary files
-- Parallel extraction (future)
+### Single-threaded Command Execution
 
-### 4. Minimal Overhead
+- One command at a time per user
+- No locking needed (user-space isolation)
+- Simple, predictable behavior
 
-- Auto-switch checks are fast (<1ms)
-- Lazy initialization
-- No background processes
+### Safe Parallel Downloading
 
-## Security Considerations
+- HTTP connections can be parallel (configurable)
+- Uses standard library's goroutines
+- Progress reporting thread-safe
 
-### 1. Checksum Verification
+### Atomic Operations
 
-Always verify SHA-256:
+- File writes: temp file + rename
+- Symlink updates: atomic at OS level
+- Configuration updates: single write operation
 
-```go
-if !d.verifyChecksum(file, expectedHash) {
-    return ErrChecksumMismatch
-}
-```
+## Extensibility Points
 
-### 2. Path Traversal Prevention
+### Adding New Commands
 
-Validate all paths:
-
-```go
-func isSafe(extractPath, destination string) bool {
-    rel, err := filepath.Rel(destination, extractPath)
-    return err == nil && !strings.HasPrefix(rel, "..")
-}
-```
-
-### 3. HTTPS Only
-
-All downloads use HTTPS:
-
-```go
-const goDownloadURL = "https://go.dev/dl/"
-```
-
-### 4. Minimal Permissions
-
-Files created with restrictive permissions:
-
-```go
-os.MkdirAll(dir, 0755)  // rwxr-xr-x
-os.Create(file, 0644)    // rw-r--r--
-```
-
-## Extensibility
+1. Create file in `internal/cli/`
+2. Implement `cobra.Command`
+3. Register in `addCommands()`
 
 ### Adding New Shells
 
 1. Implement `Shell` interface
-2. Add detection logic
-3. Register in factory
+2. Add to `Detect()` logic
+3. Add to `getShellByName()`
+
+### Changing Configuration
+
+1. Update `Config` struct in `internal/config/`
+2. Set default in `setDefaults()`
+3. Configuration automatically persists
+
+## Performance Considerations
+
+### Optimization Strategies
+
+1. **Caching**: API responses cached for 10 minutes
+2. **Parallel downloads**: Multiple connections (configurable)
+3. **Resume support**: Incomplete downloads resume
+4. **Minimal I/O**: Only read/write when necessary
+
+### Trade-offs
+
+- **Simplicity over speed**: Single-threaded for safety
+- **Safety over size**: Self-contained binary with dependencies
+- **UX over efficiency**: Progress bars worth the overhead
+
+## Platform Abstractions
+
+### Cross-platform Code
 
 ```go
-type PowerShellShell struct{}
+// Path handling
+filepath.Join()  // Works on all platforms
 
-func (p *PowerShellShell) Name() string {
-    return "pwsh"
+// Symlinks
+os.Symlink()  // Supported on all modern OSes
+
+// Shell detection
+runtime.GOOS  // Conditional logic per platform
+```
+
+### Platform-specific Code
+
+```go
+// Shell integration
+if runtime.GOOS == "windows" {
+    // PowerShell or cmd.exe
+} else {
+    // Bash/Zsh/Fish
 }
 
-func (p *PowerShellShell) SetupCommands(binPath string) []string {
-    return []string{
-        `# govman initialization`,
-        fmt.Sprintf(`$env:PATH = "%s;" + $env:PATH`, binPath),
-    }
+// Binary naming
+if runtime.GOOS == "windows" {
+    name += ".exe"
 }
 ```
 
-### Adding New Commands
+## Testing Architecture
 
-1. Create command file in `internal/cli/`
-2. Implement command logic
-3. Register in `command.go`
+### Test Organization
 
-```go
-// internal/cli/mycommand.go
-var myCmd = &cobra.Command{
-    Use:   "mycommand",
-    Short: "Description",
-    Run:   runMyCommand,
-}
+- Unit tests: `*_test.go` alongside implementation
+- Test package: `package_test` for public API
+- Test helpers: Shared fixtures and mocks
 
-func runMyCommand(cmd *cobra.Command, args []string) {
-    // Implementation
-}
+### Test Coverage Goals
+
+- Core logic: 80%+ coverage
+- Critical paths: 100% coverage (install, use, download)
+- Edge cases: Comprehensive error handling tests
+
+## Deployment Architecture
+
+### Distribution
+
+```
+GitHub Releases
+    ↓ provides
+Pre-built binaries for all platforms
+    ↓ installed via
+Installation scripts (install.sh, install.ps1, install.bat)
+    ↓ placed in
+~/.govman/bin/govman
+    ↓ added to
+User's PATH
 ```
 
-### Adding New Configuration Options
+### Update Mechanism
 
-1. Update `Config` struct
-2. Add default value
-3. Document in `config.yaml.example`
-
-```go
-type Config struct {
-    // ...
-    MyNewOption string `mapstructure:"my_new_option"`
-}
-
-func (c *Config) setDefaults() {
-    viper.SetDefault("my_new_option", "default_value")
-}
+```
+govman selfupdate
+    ↓ queries
+GitHub API (latest release)
+    ↓ downloads
+New binary
+    ↓ replaces
+Old binary (with backup)
+    ↓ verifies
+New version works
+    ↓ removes
+Backup
 ```
 
-## See Also
+## Scalability
 
-- [Project Structure](project-structure.md) - Code organization
-- [Data Flow](data-flow.md) - How data moves
-- [Architecture Diagrams](architecture-diagrams.md) - Visual representation
+### Personal Use (Design Goal)
 
----
+- Manages 5-10 Go versions efficiently
+- Handles daily version switching
+- Fast enough for interactive use
 
-Understanding the architecture helps you contribute effectively! 🏗️
+### Not Designed For
+
+- Enterprise-wide deployment (no central management)
+- Hundreds of installations (filesystem limits)
+- Concurrent multi-user on same account
+
+## Future Architecture Considerations
+
+**Potential Enhancements**:
+- Plugin system for extensibility
+- Remote version cache sharing
+- Integration with IDEs
+- API mode for programmatic access
+
+**Constraints**:
+- Must remain simple
+- No breaking changes to core UX
+- Maintain cross-platform support
+- Keep binary size reasonable

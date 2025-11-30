@@ -1,564 +1,337 @@
-# Architecture Diagrams
+# Diagrams
 
 Visual representations of govman's architecture and workflows.
 
-## System Architecture
+## System Overview
 
-### High-Level Component Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                          User                                │
-└───────────────┬──────────────────────────────────────────────┘
-                │
-                │ Commands
-                ▼
-┌───────────────────────────────────────────────────────────────┐
-│                      CLI Layer                                │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │ install  │ │   use    │ │   list   │ │  init    │  ...   │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘        │
-│       └────────────┴────────────┴─────────────┘              │
-└───────────────────────┬───────────────────────────────────────┘
-                        │
-                        ▼
-┌───────────────────────────────────────────────────────────────┐
-│                    Manager Layer                              │
-│  ┌─────────────────────────────────────────────────────┐     │
-│  │  Orchestrate:                                       │     │
-│  │  - Workflows    - State Management                  │     │
-│  │  - Coordination - Error Recovery                    │     │
-│  └─────────────────────────────────────────────────────┘     │
-└─┬──────┬──────┬───────┬──────┬──────┬──────────────────────┘
-  │      │      │       │      │      │
-  ▼      ▼      ▼       ▼      ▼      ▼
-┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────────┐
-│Cfg │ │Dldr│ │ Go │ │Shll│ │Syml│ │Progress│
-│    │ │    │ │API │ │    │ │ink │ │        │
-└────┘ └─┬──┘ └──┬─┘ └────┘ └────┘ └────────┘
-         │       │
-         ▼       ▼
-    ┌─────────────────┐
-    │  External APIs  │
-    │  - go.dev/dl    │
-    │  - Downloads    │
-    └─────────────────┘
+```mermaid
+graph TB
+    User[User] --> CLI[CLI Commands]
+    CLI --> Manager[Manager]
+    Manager --> Config[Config]
+    Manager --> Downloader[Downloader]
+    Manager --> Shell[Shell Integration]
+    Manager --> Golang[Go Releases API]
+    
+    Downloader --> HTTP[HTTP Client]
+    Downloader --> Progress[Progress Bar]
+    Golang --> GoDevAPI[go.dev API]
+    
+    HTTP --> Cache[Download Cache]
+    HTTP --> Install[Install Directory]
+    
+    Config --> YAML[config.yaml]
+    Shell --> ShellRC[Shell Config Files]
+    
+    style User fill:#e1f5ff
+    style Manager fill:#fff3cd
+    style Downloader fill:#d4edda
+    style Golang fill:#d4edda
 ```
 
 ## Installation Workflow
 
-### Install Command Sequence Diagram
-
-```
-User        CLI          Manager      Golang       Downloader    FileSystem
- │           │              │            │              │             │
- │ install   │              │            │              │             │
- │ 1.21.5    │              │            │              │             │
- ├──────────►│              │            │              │             │
- │           │              │            │              │             │
- │           │ Install()    │            │              │             │
- │           ├─────────────►│            │              │             │
- │           │              │            │              │             │
- │           │              │ GetRelease()              │             │
- │           │              ├───────────►│              │             │
- │           │              │            │              │             │
- │           │              │            │ Fetch API    │             │
- │           │              │            ├─────────────►│             │
- │           │              │            │ (https://    │             │
- │           │              │            │  go.dev/dl)  │             │
- │           │              │            │◄─────────────┤             │
- │           │              │            │ JSON data    │             │
- │           │              │◄───────────┤              │             │
- │           │              │ Release    │              │             │
- │           │              │            │              │             │
- │           │              │ Download() │              │             │
- │           │              ├────────────┼─────────────►│             │
- │           │              │            │              │             │
- │           │              │            │              │ HTTP GET    │
- │           │              │            │              ├────────────►│
- │           │              │            │              │ tar.gz      │
- │           │              │            │              │◄────────────┤
- │           │              │            │              │             │
- │           │              │            │              │ Verify      │
- │           │              │            │              │ SHA-256     │
- │           │              │            │              │             │
- │           │              │◄───────────┼──────────────┤             │
- │           │              │            │              │             │
- │           │              │ Extract()  │              │             │
- │           │              ├────────────┼─────────────►│             │
- │           │              │            │              │             │
- │           │              │            │              │ Extract     │
- │           │              │            │              │ to versions/│
- │           │              │            │              ├────────────►│
- │           │              │            │              │◄────────────┤
- │           │              │◄───────────┼──────────────┤             │
- │           │              │            │              │             │
- │           │              │ UpdateSymlink()           │             │
- │           │              ├───────────────────────────┼────────────►│
- │           │              │            │              │ current →   │
- │           │              │            │              │ go1.21.5    │
- │           │              │◄──────────────────────────┼─────────────┤
- │           │◄─────────────┤            │              │             │
- │           │              │            │              │             │
- │ Success   │              │            │              │             │
- │◄──────────┤              │            │              │             │
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI
+    participant Manager
+    participant Golang
+    participant Downloader
+    participant Filesystem
+    
+    User->>CLI: govman install 1.25.1
+    CLI->>Manager: Install("1.25.1")
+    Manager->>Golang: GetDownloadURL("1.25.1")
+    Golang->>Golang: Fetch from go.dev API
+    Golang-->>Manager: URL + Checksum
+    Manager->>Downloader: Download(url, installDir)
+    Downloader->>Downloader: Check cache
+    Downloader->>Filesystem: Download to cache
+    Downloader->>Downloader: Verify checksum
+    Downloader->>Filesystem: Extract to install dir
+    Downloader-->>Manager: Success
+    Manager-->>CLI: Success
+    CLI-->>User: ✓ Installed Go 1.25.1
 ```
 
 ## Version Switching Workflow
 
-### Use Command Flow
-
-```
-┌─────────┐
-│  Start  │
-└────┬────┘
-     │
-     ▼
-┌──────────────────┐
-│ Parse version    │
-│ govman use 1.20.5│
-└────┬─────────────┘
-     │
-     ▼
-┌──────────────────────┐      ┌─────────────────┐
-│ Version installed?   │─No──►│ Show error      │
-│ Check filesystem     │      │ Suggest install │
-└────┬─────────────────┘      └─────────────────┘
-     │Yes
-     ▼
-┌──────────────────────┐
-│ Read current symlink │
-│ Get active version   │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────┐      ┌─────────────────┐
-│ Same as requested?   │─Yes─►│ Already active  │
-└────┬─────────────────┘      │ No action       │
-     │No                       └─────────────────┘
-     ▼
-┌──────────────────────┐
-│ Remove old symlink   │
-│ os.Remove(current)   │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────┐
-│ Create new symlink   │
-│ current → go1.20.5   │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────┐
-│ Update PATH (shell)  │
-│ Export new bin path  │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────┐
-│ Success              │
-│ Show message         │
-└────┬─────────────────┘
-     │
-     ▼
-┌─────────┐
-│   End   │
-└─────────┘
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI
+    participant Manager
+    participant Config
+    participant Symlink
+    participant Shell
+    
+    User->>CLI: govman use 1.25.1 --default
+    CLI->>Manager: Use("1.25.1", default=true)
+    Manager->>Manager: Verify version installed
+    Manager->>Config: Set DefaultVersion
+    Config->>Config: Save to config.yaml
+    Manager->>Symlink: Create symlink
+    Symlink->>Symlink: ~/.govman/bin/go → versions/go1.25.1/bin/go
+    Manager->>Shell: Generate PATH command
+    Shell-->>Manager: export PATH=...
+    Manager-->>CLI: PATH command
+    CLI-->>User: export PATH=... (for shell wrapper)
+    User->>User: Shell wrapper evals PATH
 ```
 
-## Auto-Switch Mechanism
+## Auto-Switch Workflow
 
-### Directory Change Hook Flow
-
-```
-User Changes Directory
-        │
-        ▼
-┌────────────────────┐
-│ Shell Hook Trigger │
-│ (chpwd/PROMPT_CMD) │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│ govman refresh     │
-│ --silent           │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐      ┌────────────────┐
-│.govman-version     │─No──►│ Keep current   │
-│exists in curr dir? │      │ No action      │
-└────────┬───────────┘      └────────────────┘
-         │Yes
-         ▼
-┌────────────────────┐
-│ Read .govman-version│
-│ version = "1.21.5" │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐      ┌────────────────┐
-│ Already on version?│─Yes─►│ No change      │
-└────────┬───────────┘      └────────────────┘
-         │No
-         ▼
-┌────────────────────┐
-│ Switch to version  │
-│ Update symlink     │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│ Reload PATH        │
-│ (silent mode)      │
-└────────┬───────────┘
-         │
-         ▼
-    New version active
+```mermaid
+flowchart TD
+    Start[User: cd /project] --> Hook{Shell Hook Triggered}
+    Hook -->|Yes| CheckConfig{Auto-switch enabled?}
+    CheckConfig -->|No| End[No Action]
+    CheckConfig -->|Yes| CheckFile{.govman-goversion exists?}
+    CheckFile -->|No| UseDefault[Use default version]
+    CheckFile -->|Yes| ReadFile[Read required version]
+    ReadFile --> CheckCurrent{Current == Required?}
+    CheckCurrent -->|Yes| End
+    CheckCurrent -->|No| Switch[govman use required-version]
+    Switch --> UpdatePATH[Update PATH]
+    UpdatePATH --> End
+    UseDefault --> End
 ```
 
-## Data Flow Architecture
+## Component Dependencies
 
-### Request/Response Flow
-
+```mermaid
+graph TD
+    CLI[internal/cli] --> Manager[internal/manager]
+    CLI --> Logger[internal/logger]
+    CLI --> Shell[internal/shell]
+    
+    Manager --> Config[internal/config]
+    Manager --> Downloader[internal/downloader]
+    Manager --> Golang[internal/golang]
+    Manager --> Logger
+    Manager --> Shell
+    Manager --> Symlink[internal/symlink]
+    
+    Downloader --> Progress[internal/progress]
+    Downloader --> Logger
+    Downloader --> Golang
+    Downloader --> Util[internal/util]
+    
+    Golang --> Logger
+    
+    Config --> Viper[github.com/spf13/viper]
+    CLI --> Cobra[github.com/spf13/cobra]
+    
+    style CLI fill:#e1f5ff
+    style Manager fill:#fff3cd
+    style Config fill:#d4edda
+    style Downloader fill:#d4edda
+    style Golang fill:#d4edda
+    style Logger fill:#f8d7da
+    style Shell fill:#d4edda
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Request Flow                          │
-└──────────────────────────────────────────────────────────┘
 
-User Command
-    │
-    ├─► CLI Layer
-    │       │
-    │       ├─► Parse & Validate
-    │       │
-    │       └─► Manager Layer
-    │               │
-    │               ├─► Business Logic
-    │               │
-    │               └─► Service Layer
-    │                       │
-    │                       ├─► Execute Operation
-    │                       │
-    │                       └─► External Resources
-    │
-    ◄──────────────── Response Flow ─────────────────
-    │
-    ├─► Format Output
-    │
-    └─► Display to User
+## File System Organization
+
+```mermaid
+graph TB
+    Home[~/.govman/] --> Bin[bin/]
+    Home --> Versions[versions/]
+    Home --> Cache[cache/]
+    Home --> ConfigFile[config.yaml]
+    
+    Bin --> GoSymlink[go → versions/go1.25.1/bin/go]
+    
+    Versions --> V1[go1.25.1/]
+    Versions --> V2[go1.24.0/]
+    Versions --> V3[go1.23.5/]
+    
+    V1 --> V1Bin[bin/]
+    V1 --> V1Pkg[pkg/]
+    V1 --> V1Src[src/]
+    
+    Cache --> Archive1[go1.25.1.linux-amd64.tar.gz]
+    Cache --> Archive2[go1.24.0.linux-amd64.tar.gz]
+    
+    style Home fill:#e1f5ff
+    style Bin fill:#fff3cd
+    style Versions fill:#d4edda
+    style Cache fill:#f8d7da
 ```
 
-## Component Interaction
+## State Machine: Version Activation
 
-### Install Operation Components
-
+```mermaid
+stateDiagram-v2
+    [*] --> NoVersion: Fresh install
+    NoVersion --> SessionActive: govman use X
+    NoVersion --> DefaultSet: govman use X --default
+    NoVersion --> LocalSet: govman use X --local
+    
+    SessionActive --> SessionActive: govman use Y (in same session)
+    SessionActive --> DefaultSet: govman use Y --default
+    SessionActive --> LocalSet: govman use Y --local
+    SessionActive --> NoVersion: Shell restart
+    
+    DefaultSet --> SessionActive: govman use Y (session-only)
+    DefaultSet --> DefaultSet: govman use Y --default
+    DefaultSet --> LocalSet: govman use Y --local (in project dir)
+    DefaultSet --> DefaultSet: Shell restart (persists)
+    
+    LocalSet --> SessionActive: govman use Y (session-only)
+    LocalSet --> DefaultSet: govman use Y --default
+    LocalSet --> LocalSet: cd to different project dir
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    Install Operation                         │
-└──────────────────────────────────────────────────────────────┘
 
-InstallCmd ──────► Manager.Install()
-                      │
-                      ├──► Config
-                      │    └─► Get paths, settings
-                      │
-                      ├──► Golang API
-                      │    ├─► Fetch releases
-                      │    └─► Find version
-                      │
-                      ├──► Downloader
-                      │    ├─► Download archive
-                      │    ├─► Verify checksum
-                      │    └─► Extract files
-                      │
-                      ├──► Symlink
-                      │    └─► Update 'current'
-                      │
-                      └──► Logger
-                           └─► Report progress
+## Download Flow
+
+```mermaid
+flowchart TD
+    Start[Request Install] --> Resolve[Resolve Version]
+    Resolve --> GetURL[Get Download URL from API]
+    GetURL --> CheckCache{File in cache?}
+    CheckCache -->|Yes| VerifyCache{Cache valid?}
+    CheckCache -->|No| Download[Download from go.dev]
+    VerifyCache -->|Yes| UseCache[Use cached file]
+    VerifyCache -->|No| Download
+    Download --> SaveCache[Save to cache]
+    SaveCache --> Checksum[Verify SHA-256]
+    UseCache --> Checksum
+    Checksum --> Extract[Extract archive]
+    Extract --> SetPerms[Set permissions]
+    SetPerms --> Success[Installation complete]
 ```
 
 ## Shell Integration Architecture
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                  Shell Integration                         │
-└────────────────────────────────────────────────────────────┘
-
-┌──────────┐
-│   Bash   │
-└────┬─────┘
-     │
-┌────▼─────┐         ┌──────────────────────────────────┐
-│   Zsh    │────────►│     Shell Interface              │
-└────┬─────┘         │  ┌────────────────────────────┐  │
-     │               │  │ Name()                     │  │
-┌────▼─────┐         │  │ ConfigFile()               │  │
-│   Fish   │────────►│  │ PathCommand()              │  │
-└────┬─────┘         │  │ SetupCommands()            │  │
-     │               │  │ IsAvailable()              │  │
-┌────▼─────┐         │  └────────────────────────────┘  │
-│PowerShell│────────►│                                  │
-└──────────┘         └──────────────────────────────────┘
-                                    │
-                                    ▼
-                          ┌──────────────────┐
-                          │ Shell Config     │
-                          │ ┌──────────────┐ │
-                          │ │ PATH setup   │ │
-                          │ │ Auto-switch  │ │
-                          │ │ Hooks        │ │
-                          │ └──────────────┘ │
-                          └──────────────────┘
-```
-
-## State Management
-
-### Version State Diagram
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Version States                         │
-└─────────────────────────────────────────────────────────┘
-
-        ┌─────────────┐
-        │ Not Installed│
-        └──────┬──────┘
-               │ govman install
-               ▼
-        ┌─────────────┐
-        │  Downloading │◄─────┐
-        └──────┬──────┘       │
-               │               │ Retry
-               │ Complete      │ (on error)
-               ▼               │
-        ┌─────────────┐       │
-        │  Verifying  │───────┘
-        └──────┬──────┘
-               │ Valid
-               ▼
-        ┌─────────────┐
-        │  Extracting  │
-        └──────┬──────┘
-               │
-               ▼
-        ┌─────────────┐
-        │  Installed   │
-        └──────┬──────┘
-               │
-               ├──► govman use ──► ┌─────────┐
-               │                    │ Active  │
-               │                    └────┬────┘
-               │                         │
-               │    ◄────────────────────┘
-               │         govman use (other)
-               │
-               └──► govman uninstall ──► ┌─────────────┐
-                                          │Not Installed│
-                                          └─────────────┘
-```
-
-## Configuration Hierarchy
-
-```
-┌────────────────────────────────────────────────────────┐
-│            Configuration Loading Priority              │
-└────────────────────────────────────────────────────────┘
-
-    ┌──────────────────────┐
-    │  Command-line Flags  │  (Highest Priority)
-    └──────────┬───────────┘
-               │ Override
-               ▼
-    ┌──────────────────────┐
-    │ Environment Variables│
-    └──────────┬───────────┘
-               │ Override
-               ▼
-    ┌──────────────────────┐
-    │  Config File YAML    │
-    └──────────┬───────────┘
-               │ Override
-               ▼
-    ┌──────────────────────┐
-    │   Default Values     │  (Lowest Priority)
-    └──────────────────────┘
-
-Final Configuration
-```
-
-## Cache Strategy
-
-### Caching Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│                   Cache Flow                           │
-└────────────────────────────────────────────────────────┘
-
-Request for resource
-        │
-        ▼
-┌───────────────┐
-│ Check Cache   │
-└───────┬───────┘
-        │
-        ├──► ┌─────────────┐     ┌──────────────┐
-        │    │ Cache Hit   │────►│ Validate     │
-        │    │ File exists │     │ Age < TTL    │
-        │    └─────────────┘     └───┬──────────┘
-        │                            │ Valid
-        │                            ▼
-        │                   ┌──────────────────┐
-        │                   │ Return from cache│
-        │                   └──────────────────┘
-        │
-        └──► ┌─────────────┐
-             │ Cache Miss  │
-             │ or Invalid  │
-             └──────┬──────┘
-                    │
-                    ▼
-           ┌────────────────┐
-           │ Fetch Resource │
-           │ from Source    │
-           └────────┬───────┘
-                    │
-                    ▼
-           ┌────────────────┐
-           │ Store in Cache │
-           └────────┬───────┘
-                    │
-                    ▼
-           ┌────────────────┐
-           │ Return Resource│
-           └────────────────┘
-
-Cache Types:
-- Release data: 1 hour TTL
-- Downloaded archives: Indefinite (verified by checksum)
+```mermaid
+graph LR
+    ShellRC[Shell Config File] --> WrapperFunc[govman wrapper function]
+    ShellRC --> AutoSwitch[govman_auto_switch function]
+    ShellRC --> Hook[Shell Hook]
+    
+    Hook -->|bash| PromptCmd[PROMPT_COMMAND]
+    Hook -->|zsh| Chpwd[chpwd hook]
+    Hook -->|fish| PwdEvent[PWD event]
+    Hook -->|powershell| SetLocation[Set-Location override]
+    
+    PromptCmd --> AutoSwitch
+    Chpwd --> AutoSwitch
+    PwdEvent --> AutoSwitch
+    SetLocation --> AutoSwitch
+    
+    AutoSwitch --> CheckFile[Check .govman-goversion]
+    CheckFile --> WrapperFunc
+    
+    WrapperFunc --> Use[govman use]
+    Use --> UpdatePATH[Update PATH in current shell]
 ```
 
 ## Error Handling Flow
 
-```
-┌────────────────────────────────────────────────────────┐
-│               Error Handling Strategy                  │
-└────────────────────────────────────────────────────────┘
-
-Operation Start
-        │
-        ▼
-┌───────────────┐
-│ Try Operation │
-└───────┬───────┘
-        │
-        ├──► Success ──► Continue
-        │
-        └──► Error
-                │
-                ▼
-        ┌───────────────┐
-        │ Log Error     │
-        │ With Context  │
-        └───────┬───────┘
-                │
-                ▼
-        ┌───────────────┐      ┌──────────────┐
-        │ Recoverable?  │─Yes─►│ Retry Logic  │
-        └───────┬───────┘      │ Backoff      │
-                │No             └──────┬───────┘
-                │                      │
-                │              ┌───────▼───────┐
-                │              │ Max Retries?  │
-                │              └───────┬───────┘
-                │                      │ Yes
-                ▼                      │
-        ┌───────────────┐            │
-        │ Cleanup       │◄───────────┘
-        │ Rollback      │
-        └───────┬───────┘
-                │
-                ▼
-        ┌───────────────┐
-        │ Format Error  │
-        │ Add Help Text │
-        └───────┬───────┘
-                │
-                ▼
-        ┌───────────────┐
-        │ Return to User│
-        │ With Guidance │
-        └───────────────┘
+```mermaid
+flowchart TD
+    Operation[Operation] --> Try{Try}
+    Try -->|Success| Return[Return success]
+    Try -->|Error| Wrap[Wrap error with context]
+    Wrap --> CheckRetry{Retryable?}
+    CheckRetry -->|Yes| Retry{Retries left?}
+    CheckRetry -->|No| Log[Log error]
+    Retry -->|Yes| Wait[Wait retry_delay]
+    Retry -->|No| Log
+    Wait --> Try
+    Log --> Format[Format user message]
+    Format --> Help[Add help suggestion]
+    Help --> Display[Display to user]
+    Display --> Exit[Exit with error code]
 ```
 
-## File System Layout
+## Release and Self-Update
 
-```
-~/.govman/
-├── versions/                    # Installed Go versions
-│   ├── go1.20.5/
-│   │   ├── bin/
-│   │   │   ├── go              # Go binary
-│   │   │   └── gofmt           # Go tools
-│   │   ├── src/                # Go source
-│   │   └── pkg/                # Go packages
-│   ├── go1.21.5/
-│   │   └── (same structure)
-│   └── current → go1.21.5      # Symlink to active version
-│
-├── cache/                       # Download cache
-│   ├── go1.20.5.linux-amd64.tar.gz
-│   ├── go1.21.5.linux-amd64.tar.gz
-│   └── releases.json            # Cached release data
-│
-└── config.yaml                  # Configuration file
-```
-
-## Deployment Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│                Distribution Methods                    │
-└────────────────────────────────────────────────────────┘
-
-┌──────────────┐         ┌──────────────┐
-│ GitHub       │         │  Direct      │
-│ Releases     │         │  Download    │
-└──────┬───────┘         └──────┬───────┘
-       │                        │
-       ├────────────┬───────────┤
-       │            │           │
-       ▼            ▼           ▼
-   ┌────────┐  ┌────────┐  ┌────────┐
-   │ Linux  │  │ macOS  │  │Windows │
-   │ Binary │  │ Binary │  │ Binary │
-   └────┬───┘  └────┬───┘  └────┬───┘
-        │           │           │
-        └───────────┴───────────┘
-                    │
-                    ▼
-           ┌────────────────┐
-           │ Install Script │
-           │ - Shell        │
-           │ - PowerShell   │
-           └────────┬───────┘
-                    │
-                    ▼
-           ┌────────────────┐
-           │ Local Install  │
-           │ /usr/local/bin │
-           └────────────────┘
+```mermaid
+sequenceDiagram
+    participant User
+    participant govman
+    participant GitHub
+    participant Binary
+    
+    User->>govman: govman selfupdate
+    govman->>GitHub: GET /repos/.../releases/latest
+    GitHub-->>govman: Release metadata
+    govman->>govman: Compare versions
+    alt New version available
+        govman->>GitHub: Download new binary
+        GitHub-->>govman: Binary file
+        govman->>Binary: Backup current binary
+        govman->>Binary: Replace with new binary
+        govman->>Binary: Set permissions
+        govman->>Binary: Verify new version
+        alt Verification success
+            govman->>Binary: Remove backup
+            govman-->>User: ✓ Updated to vX.X.X
+        else Verification failed
+            govman->>Binary: Restore backup
+            govman-->>User: ✗ Update failed, rolled back
+        end
+    else Already latest
+        govman-->>User: Already on latest version
+    end
 ```
 
-## See Also
+## Platform-Specific Binary Selection
 
-- [Architecture](architecture.md) - Detailed architecture description
-- [Data Flow](data-flow.md) - Data flow documentation
-- [Project Structure](project-structure.md) - Code organization
+```mermaid
+flowchart TD
+    Start[Download Request] --> DetectOS{Detect OS}
+    DetectOS -->|Linux| DetectArchL{Detect Architecture}
+    DetectOS -->|macOS| DetectArchM{Detect Architecture}
+    DetectOS -->|Windows| DetectArchW{Detect Architecture}
+    
+    DetectArchL -->|amd64| LinuxAMD64[linux-amd64]
+    DetectArchL -->|arm64| LinuxARM64[linux-arm64]
+    
+    DetectArchM -->|amd64| DarwinAMD64[darwin-amd64]
+    DetectArchM -->|arm64| CheckVersion{Go version >= 1.16?}
+    CheckVersion -->|Yes| DarwinARM64[darwin-arm64]
+    CheckVersion -->|No| DarwinAMD64Rosetta[darwin-amd64 via Rosetta]
+    
+    DetectArchW -->|amd64| WindowsAMD64[windows-amd64]
+    DetectArchW -->|arm64| WindowsARM64[windows-arm64]
+    
+    LinuxAMD64 --> Download[Download]
+    LinuxARM64 --> Download
+    DarwinAMD64 --> Download
+    DarwinARM64 --> Download
+    DarwinAMD64Rosetta --> Download
+    WindowsAMD64 --> Download
+    WindowsARM64 --> Download
+```
 
----
+## Configuration Loading Sequence
 
-Visual representations make complex systems easier to understand! 📊
+```mermaid
+sequenceDiagram
+    participant App
+    participant Config
+    participant Viper
+    participant Filesystem
+    
+    App->>Config: Load()
+    Config->>Filesystem: Check ~/.govman/config.yaml exists
+    alt Config exists
+        Config->>Viper: ReadInConfig()
+        Viper->>Filesystem: Read YAML
+        Filesystem-->>Viper: YAML content
+        Viper->>Viper: Parse YAML
+        Viper-->>Config: Parsed config
+    else No config
+        Config->>Config: setDefaults()
+        Config->>Viper: Set default values
+    end
+    Config->>Config: expandPaths() - resolve ~
+    Config->>Config: Validate paths
+    Config->>Filesystem: createDirectories()
+    Filesystem-->>Config: Directories created
+    Config-->>App: Loaded config
+```

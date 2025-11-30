@@ -1,471 +1,171 @@
-# Installation Guide
+# Installation
 
-Complete installation instructions for **govman** on all supported platforms.
+govman can be installed on Linux, macOS, and Windows using automated installation scripts.
 
-## System Requirements
+## Linux and macOS
 
-- **Operating Systems**: Windows 10+, macOS 10.13+, Linux (any modern distribution)
-- **Architectures**: AMD64 (x86_64), ARM64
-- **Disk Space**: ~50MB for govman + space for Go versions (~100-150MB per version)
-- **Internet Connection**: Required for initial installation and downloading Go versions
+The installation script automatically detects your platform and installs the appropriate binary.
 
-## Installation Methods
-
-### Quick Installation
-
-#### macOS / Linux / WSL
+### One-Line Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
-#### Windows PowerShell
+### Installation with Options
 
-Open PowerShell as Administrator and run:
+```bash
+# Quiet mode (minimal output)
+curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash -s -- --quiet
 
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-iex (iwr -useb https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.ps1)
-```
+# Install specific version
+curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash -s -- --version v1.0.0
 
-#### Windows Command Prompt
-
-```cmd
-curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.bat -o install.bat && install.bat
+# Show help
+curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash -s -- --help
 ```
 
 ### Manual Installation
 
-#### 1. Download Binary
+1. Download the installation script:
+   ```bash
+   curl -O https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh
+   chmod +x install.sh
+   ```
 
-Visit the [Releases Page](https://github.com/justjundana/govman/releases/latest) and download the appropriate binary:
+2. Run the script:
+   ```bash
+   ./install.sh
+   ```
 
-**macOS:**
-```bash
-# Intel Macs
-curl -LO https://github.com/justjundana/govman/releases/latest/download/govman-darwin-amd64
-mv govman-darwin-amd64 govman
-chmod +x govman
+## Windows
 
-# Apple Silicon (M1/M2/M3)
-curl -LO https://github.com/justjundana/govman/releases/latest/download/govman-darwin-arm64
-mv govman-darwin-arm64 govman
-chmod +x govman
-```
+govman supports both PowerShell and Command Prompt on Windows.
 
-**Linux:**
-```bash
-# AMD64
-curl -LO https://github.com/justjundana/govman/releases/latest/download/govman-linux-amd64
-mv govman-linux-amd64 govman
-chmod +x govman
-
-# ARM64
-curl -LO https://github.com/justjundana/govman/releases/latest/download/govman-linux-arm64
-mv govman-linux-arm64 govman
-chmod +x govman
-```
-
-**Windows:**
-```powershell
-# AMD64
-Invoke-WebRequest -Uri "https://github.com/justjundana/govman/releases/latest/download/govman-windows-amd64.exe" -OutFile "govman.exe"
-
-# ARM64
-Invoke-WebRequest -Uri "https://github.com/justjundana/govman/releases/latest/download/govman-windows-arm64.exe" -OutFile "govman.exe"
-```
-
-#### 2. Move to Installation Directory
-
-**macOS / Linux:**
-```bash
-mkdir -p ~/.govman/bin
-mv govman ~/.govman/bin/
-```
-
-**Windows (PowerShell):**
-```powershell
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.govman\bin"
-Move-Item -Force govman.exe "$env:USERPROFILE\.govman\bin\"
-```
-
-#### 3. Add to PATH
-
-**macOS / Linux (Bash):**
-```bash
-echo 'export PATH="$HOME/.govman/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**macOS / Linux (Zsh):**
-```bash
-echo 'export PATH="$HOME/.govman/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-**macOS / Linux (Fish):**
-```fish
-fish_add_path ~/.govman/bin
-```
-
-**Windows:**
-```powershell
-$path = [Environment]::GetEnvironmentVariable("PATH", "User")
-[Environment]::SetEnvironmentVariable("PATH", "$path;$env:USERPROFILE\.govman\bin", "User")
-```
-
-Then restart your terminal.
-
-### Build from Source
-
-#### Prerequisites
-- Go 1.25 or later
-- Git
-- Make (optional)
-
-#### Steps
-
-```bash
-# Clone repository
-git clone https://github.com/justjundana/govman.git
-cd govman
-
-# Build
-go build -o govman ./cmd/govman
-
-# Or use Make
-make build
-
-# Install to ~/.govman/bin
-mkdir -p ~/.govman/bin
-cp govman ~/.govman/bin/
-
-# Add to PATH (if not already added)
-echo 'export PATH="$HOME/.govman/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-## Platform-Specific Instructions
-
-### macOS
-
-#### Using Homebrew (if available in tap)
-
-```bash
-brew install govman
-```
-
-#### Gatekeeper Issues
-
-If macOS blocks the binary:
-
-```bash
-xattr -d com.apple.quarantine ~/.govman/bin/govman
-```
-
-Or go to **System Preferences → Security & Privacy** and allow the app.
-
-### Linux
-
-#### Permissions
-
-Make sure the binary is executable:
-
-```bash
-chmod +x ~/.govman/bin/govman
-```
-
-#### Shell Configuration
-
-For system-wide installation (requires sudo):
-
-```bash
-sudo mv govman /usr/local/bin/
-```
-
-#### SELinux
-
-If using SELinux, you may need to adjust contexts:
-
-```bash
-chcon -t bin_t ~/.govman/bin/govman
-```
-
-### Windows
-
-#### PATH Configuration
-
-To add govman to PATH permanently:
-
-1. Open **Start Menu** → Search "Environment Variables"
-2. Click **Environment Variables**
-3. Under **User variables**, select **Path** → **Edit**
-4. Click **New** → Add `%USERPROFILE%\.govman\bin`
-5. Click **OK** to save
-
-Or use PowerShell (as Administrator):
+### PowerShell (Recommended)
 
 ```powershell
-[Environment]::SetEnvironmentVariable(
-    "PATH",
-    [Environment]::GetEnvironmentVariable("PATH", "User") + ";$env:USERPROFILE\.govman\bin",
-    "User"
-)
+# One-line installation
+irm https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.ps1 | iex
+
+# Install with options
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.ps1))) -Quiet
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.ps1))) -Version "v1.0.0"
 ```
 
-#### Windows Defender
+### Command Prompt
 
-If Windows Defender blocks the binary, add an exclusion:
+Download the `install.bat` script from the repository and run it:
 
-```powershell
-Add-MpPreference -ExclusionPath "$env:USERPROFILE\.govman\bin\govman.exe"
+```cmd
+install.bat
 ```
 
-#### Execution Policy
+## Installation Directories
 
-If scripts are blocked:
+govman installs to the following directories:
 
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
+- **Linux/macOS**: `~/.govman/`
+  - Binary: `~/.govman/bin/govman`
+  - Go versions: `~/.govman/versions/`
+  - Cache: `~/.govman/cache/`
+  - Config: `~/.govman/config.yaml`
 
-### WSL (Windows Subsystem for Linux)
+- **Windows**: `%USERPROFILE%\.govman\`
+  - Binary: `%USERPROFILE%\.govman\bin\govman.exe`
+  - Go versions: `%USERPROFILE%\.govman\versions\`
+  - Cache: `%USERPROFILE%\.govman\cache\`
+  - Config: `%USERPROFILE%\.govman\config.yaml`
 
-Use the Linux installation method:
+## Post-Installation Steps
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-```
+### 1. Initialize Shell Integration
 
-## Post-Installation
-
-### Verify Installation
-
-```bash
-govman --version
-```
-
-### Initialize Shell Integration
-
-This enables automatic version switching:
+Run the following command to configure your shell:
 
 ```bash
 govman init
 ```
 
-Then restart your terminal or reload your shell configuration.
+This will automatically configure:
+- Bash (`.bashrc`, `.bash_profile`)
+- Zsh (`.zshrc`)
+- Fish (`config.fish`)
+- PowerShell (`$PROFILE`)
 
-### Install Your First Go Version
-
-```bash
-govman install latest
-govman use latest --default
-```
-
-### Verify Go Installation
+### 2. Reload Your Shell
 
 ```bash
-go version
+# Bash
+source ~/.bashrc
+
+# Zsh
+source ~/.zshrc
+
+# Fish
+source ~/.config/fish/config.fish
 ```
 
-## Installation Locations
+Or simply restart your terminal.
 
-govman uses the following directory structure:
-
-```
-~/.govman/
-├── bin/              # govman binary
-├── versions/         # Installed Go versions
-│   ├── go1.21.5/
-│   ├── go1.20.12/
-│   └── ...
-├── cache/           # Downloaded archives
-└── config.yaml      # Configuration file
-```
-
-## Network Configuration
-
-### Using a Proxy
-
-Set environment variables before installation:
+### 3. Verify Installation
 
 ```bash
-export HTTP_PROXY=http://proxy.example.com:8080
-export HTTPS_PROXY=http://proxy.example.com:8080
+govman --version
 ```
 
-### Using a Mirror
+## Platform Support
 
-Edit `~/.govman/config.yaml` after installation:
+govman supports the following platforms:
 
-```yaml
-mirror:
-  enabled: true
-  url: "https://golang.google.cn/dl/"  # China mirror
-```
+| OS      | Architecture | Supported |
+|---------|--------------|-----------|
+| Linux   | amd64        | ✅         |
+| Linux   | arm64        | ✅         |
+| macOS   | amd64        | ✅         |
+| macOS   | arm64 (M1+)  | ✅         |
+| Windows | amd64        | ✅         |
+| Windows | arm64        | ✅         |
 
-### Firewall Requirements
-
-govman needs access to:
-- `https://github.com` - For govman updates
-- `https://go.dev` - For Go version metadata
-- `https://dl.google.com` - For downloading Go distributions
-
-## Upgrading govman
-
-### Automatic Update
-
-```bash
-govman selfupdate
-```
-
-### Manual Update
-
-Download the latest binary and replace the existing one:
-
-```bash
-# Backup current version
-cp ~/.govman/bin/govman ~/.govman/bin/govman.backup
-
-# Download new version (see Manual Installation above)
-# Replace the binary
-mv govman ~/.govman/bin/govman
-```
-
-## Uninstalling govman
-
-### Complete Removal
-
-**macOS / Linux:**
-
-```bash
-# Run uninstall script
-curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/uninstall.sh | bash
-
-# Or manually
-rm -rf ~/.govman
-# Remove from shell config manually (search for GOVMAN sections)
-```
-
-**Windows (PowerShell):**
-
-```powershell
-# Run uninstall script
-iex (iwr -useb https://raw.githubusercontent.com/justjundana/govman/main/scripts/uninstall.ps1)
-
-# Or manually
-Remove-Item -Recurse -Force "$env:USERPROFILE\.govman"
-# Remove from PATH via Environment Variables
-```
-
-### Keep Configuration and Go Versions
-
-Remove only the govman binary:
-
-```bash
-rm ~/.govman/bin/govman
-```
-
-## Troubleshooting Installation
-
-### "command not found: govman"
-
-**Solution:** Make sure `~/.govman/bin` is in your PATH:
-
-```bash
-echo $PATH | grep govman
-```
-
-If not present, add it to your shell configuration and reload.
+## Troubleshooting
 
 ### Permission Denied
 
-**Solution:** Make the binary executable:
+If you encounter permission errors during installation:
 
 ```bash
-chmod +x ~/.govman/bin/govman
+# Make the script executable
+chmod +x install.sh
+
+# Run with appropriate permissions
+./install.sh
 ```
 
-### "Certificate verification failed"
+### curl or wget Not Found
 
-**Solution:** Update CA certificates:
+The installation script requires either `curl` or `wget`:
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get update && sudo apt-get install ca-certificates
+# Install curl (Debian/Ubuntu)
+sudo apt-get install curl
 
-# macOS
-brew install openssl
+# Install wget (Debian/Ubuntu)
+sudo apt-get install wget
 ```
+
+### Existing Installation Detected
+
+If govman is already installed, the installer will notify you and exit. To reinstall:
+
+1. Uninstall first using the uninstall script
+2. Run the installer again
 
 ### Installation Fails on Windows
 
-**Solutions:**
-1. Run PowerShell as Administrator
-2. Check antivirus/Windows Defender settings
-3. Try manual installation method
-4. Verify download integrity
+Windows older than Windows 10 may not support ANSI colors. The installer will still work but without colored output.
 
-### Binary Doesn't Run on macOS
+For PowerShell, ensure you have execution policy configured:
 
-**Solution:** Remove quarantine attribute:
-
-```bash
-xattr -d com.apple.quarantine ~/.govman/bin/govman
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
-
-## Alternative Installation Methods
-
-### Docker
-
-Run govman in a Docker container:
-
-```dockerfile
-FROM golang:1.21
-RUN curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-ENV PATH="/root/.govman/bin:${PATH}"
-```
-
-### CI/CD Integration
-
-#### GitHub Actions
-
-```yaml
-- name: Install govman
-  run: |
-    curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-    echo "$HOME/.govman/bin" >> $GITHUB_PATH
-```
-
-#### GitLab CI
-
-```yaml
-before_script:
-  - curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-  - export PATH="$HOME/.govman/bin:$PATH"
-```
-
-## Getting Help
-
-If you encounter issues during installation:
-
-1. Check the [Troubleshooting Guide](troubleshooting.md)
-2. Search [GitHub Issues](https://github.com/justjundana/govman/issues)
-3. Open a [new issue](https://github.com/justjundana/govman/issues/new) with:
-   - Your OS and version
-   - Installation method used
-   - Complete error message
-   - Output of `uname -a` (Unix) or `systeminfo` (Windows)
-
-## Next Steps
-
-After successful installation:
-
-- 📖 Read the [Quick Start Guide](quick-start.md)
-- ⚙️ Configure govman in [Configuration Guide](configuration.md)
-- 🐚 Set up [Shell Integration](shell-integration.md)
-- 📚 Explore [Commands Reference](commands.md)
-
----
-
-Welcome to govman! 🎉

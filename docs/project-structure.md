@@ -1,404 +1,94 @@
 # Project Structure
 
-Understanding the govman codebase organization and architecture.
+Overview of govman's codebase structure and organization.
 
-## Directory Overview
+## Directory Layout
 
 ```
 govman/
 ├── cmd/
-│   └── govman/              # Main application entry point
-│       └── main.go          # CLI initialization
-│
+│   └── govman/              # Application entry point
+│       └── main.go          # Main function
 ├── internal/                # Private application code
-│   ├── cli/                 # CLI commands and interface
-│   │   ├── cli.go           # Root command and banner
-│   │   ├── command.go       # Command registration
-│   │   ├── clean.go         # Clean cache command
-│   │   ├── current.go       # Show current version
-│   │   ├── info.go          # Version information
-│   │   ├── init.go          # Shell integration setup
-│   │   ├── install.go       # Install/uninstall commands
-│   │   ├── list.go          # List versions
-│   │   ├── refresh.go       # Refresh context
-│   │   ├── selfupdate.go    # Self-update functionality
-│   │   └── use.go           # Version switching
-│   │
+│   ├── cli/                 # CLI commands and subcommands
 │   ├── config/              # Configuration management
-│   │   ├── config.go        # Config struct and loading
-│   │   └── config_test.go   # Config tests
-│   │
-│   ├── downloader/          # Download and extraction
-│   │   ├── downloader.go    # Download orchestration
-│   │   └── downloader_test.go
-│   │
-│   ├── golang/              # Go version management
-│   │   ├── releases.go      # Version API and comparison
-│   │   └── releases_test.go
-│   │
-│   ├── logger/              # Logging system
-│   │   ├── logger.go        # Logger implementation
-│   │   └── logger_test.go
-│   │
+│   ├── downloader/          # Download  and extraction logic
+│   ├── golang/              # Go releases API integration
+│   ├── logger/              # Logging functionality
 │   ├── manager/             # Core version management
-│   │   ├── manager.go       # Manager orchestration
-│   │   └── manager_test.go
-│   │
-│   ├── progress/            # Progress bars
-│   │   ├── progress.go      # Progress bar implementation
-│   │   └── progress_test.go
-│   │
+│   ├── progress/            # Progress bars and indicators
 │   ├── shell/               # Shell integration
-│   │   ├── shell.go         # Shell interface and implementations
-│   │   └── shell_test.go
-│   │
-│   ├── symlink/             # Symlink management
-│   │   ├── symlink.go       # Symlink creation/reading
-│   │   └── symlink_test.go
-│   │
+│   ├── symlink/             # Symlink creation and management
 │   ├── util/                # Utility functions
-│   │   ├── format.go        # Formatting helpers
-│   │   └── format_test.go
-│   │
 │   └── version/             # Version information
-│       ├── version.go       # Build version metadata
-│       └── version_test.go
-│
-├── scripts/                 # Installation scripts
-│   ├── install.sh           # Unix/Linux/macOS installer
-│   ├── install.ps1          # PowerShell installer
-│   ├── install.bat          # Windows CMD installer
-│   ├── uninstall.sh         # Unix uninstaller
-│   ├── uninstall.ps1        # PowerShell uninstaller
-│   └── uninstall.bat        # Windows CMD uninstaller
-│
-├── docs/                    # Documentation
-│   ├── quick-start.md       # Quick start guide
-│   ├── installation.md      # Installation instructions
-│   ├── configuration.md     # Configuration reference
-│   ├── shell-integration.md # Shell setup guide
-│   ├── commands.md          # Commands reference
-│   ├── troubleshooting.md   # Troubleshooting guide
-│   ├── release-notes.md     # Release notes
-│   ├── getting-started.md   # Developer guide
-│   ├── project-structure.md # This file
-│   ├── dependencies.md      # Dependencies documentation
-│   ├── data-flow.md         # Data flow diagrams
-│   ├── architecture.md      # Architecture overview
-│   └── architecture-diagrams.md
-│
-├── go.mod                   # Go module definition
-├── go.sum                   # Dependency checksums
-├── Makefile                 # Build automation
-├── README.md                # Project README
-├── LICENSE.md               # MIT License
-└── CHANGELOG.md             # Version history
+├── scripts/                 # Installation and uninstall scripts
+│   ├── install.sh          # Unix installation
+│   ├── install.ps1         # PowerShell installation
+│   ├── install.bat         # Windows batch installation
+│   ├── uninstall.sh        # Unix uninstallation
+│   ├── uninstall.ps1       # PowerShell uninstallation
+│   └── uninstall.bat       # Windows batch uninstallation
+├── Dockerfile              # Docker build configuration
+├── Makefile                # Build automation
+├── go.mod                  # Go module definition
+├── go.sum                  # Dependency checksums
+└── README.md               # Project documentation
 ```
 
-## Core Components
+## Package Structure
 
-### 1. Entry Point (`cmd/govman`)
+### cmd/govman
 
-**Purpose**: Application initialization  
-**Files**: `main.go`
+**Purpose**: Application entry point
 
-Minimal entry point that:
-- Calls `cli.Execute()`
-- Handles top-level errors
-- Sets exit codes
-
-### 2. CLI Layer (`internal/cli`)
-
-**Purpose**: User interface and command handling  
-**Key Files**:
-- `cli.go` - Root command, banner, config initialization
-- `command.go` - Command registration and global flags
-- `*_cmd.go` - Individual command implementations
+**Files**:
+- `main.go`: Initializes CLI and executes commands
 
 **Responsibilities**:
 - Parse command-line arguments
-- Display user-friendly output
-- Call Manager for business logic
-- Handle errors gracefully
+- Handle errors and exit codes
 
-### 3. Manager (`internal/manager`)
+**Dependencies**: `internal/cli`
 
-**Purpose**: Core business logic orchestration  
-**Key File**: `manager.go`
+### internal/cli
 
-**Main Functions**:
-- `Install()` - Download and install Go versions
-- `Uninstall()` - Remove installed versions
-- `Use()` - Switch between versions
-- `Current()` - Get active version
-- `ListInstalled()` - List local versions
-- `ListRemote()` - Fetch available versions
+**Purpose**: Command-line interface implementation
 
-**Coordinates**:
-- Configuration
-- Downloader
-- Shell integration
-- Symlink management
+**Files**:
+- `cli.go`: Root command and initialization
+- `command.go`: Command registration
+- `install.go`: Install and uninstall commands
+- `use.go`: Version switching command
+- `list.go`: List versions command
+- `current.go`: Display current version
+- `info.go`: Version information
+- `clean.go`: Cache cleanup
+- `init.go`: Shell integration setup
+- `selfupdate.go`: Self-update functionality
+- `refresh.go`: Manual version refresh
 
-### 4. Configuration (`internal/config`)
+**Responsibilities**:
+- Define CLI commands and flags
+- User input validation
+- Command execution flow
+- User-facing error messages
 
-**Purpose**: Configuration management  
-**Key File**: `config.go`
+**Dependencies**: `manager`, `logger`, `shell`, `config`
 
-**Features**:
-- YAML-based configuration
-- Default values
+### internal/config
+
+**Purpose**: Configuration file management
+
+**Files**:
+- `config.go`: Config structure and loading
+
+**Responsibilities**:
+- Load configuration from YAML
+- Provide default values
 - Path expansion and validation
-- Security checks (path traversal prevention)
-- Config file creation and updates
+- Save configuration changes
 
-### 5. Downloader (`internal/downloader`)
-
-**Purpose**: Download and extract Go distributions  
-**Key File**: `downloader.go`
-
-**Capabilities**:
-- HTTP downloads with retry logic
-- Resume interrupted downloads
-- SHA-256 checksum verification
-- Archive extraction (.tar.gz, .zip)
-- Path traversal protection
-- Progress reporting
-
-### 6. Go Releases (`internal/golang`)
-
-**Purpose**: Go version information and comparison  
-**Key File**: `releases.go`
-
-**Functions**:
-- Fetch available versions from go.dev
-- Parse and cache version data
-- Compare semantic versions
-- Generate download URLs
-- Extract version metadata
-
-### 7. Shell Integration (`internal/shell`)
-
-**Purpose**: Shell-specific integration  
-**Key File**: `shell.go`
-
-**Supported Shells**:
-- Bash
-- Zsh
-- Fish
-- PowerShell
-- Command Prompt (limited)
-
-**Features**:
-- Shell detection
-- Configuration file management
-- PATH manipulation
-- Auto-switch hooks
-- Wrapper function generation
-
-### 8. Logger (`internal/logger`)
-
-**Purpose**: Structured logging  
-**Key File**: `logger.go`
-
-**Log Levels**:
-- Quiet (errors only)
-- Normal (standard output)
-- Verbose (debug information)
-
-**Output Types**:
-- Info, Success, Warning, Error
-- Progress indicators
-- Download/Extract/Verify status
-- Timing instrumentation
-
-### 9. Progress (`internal/progress`)
-
-**Purpose**: Progress bars for long operations  
-**Key File**: `progress.go`
-
-**Features**:
-- Real-time progress updates
-- Download speed calculation
-- ETA estimation
-- Byte formatting
-- Multi-progress support
-
-### 10. Symlink (`internal/symlink`)
-
-**Purpose**: Cross-platform symlink management  
-**Key File**: `symlink.go`
-
-**Functions**:
-- Create symlinks
-- Read symlink targets
-- Handle Windows/Unix differences
-
-### 11. Utilities (`internal/util`)
-
-**Purpose**: Helper functions  
-**Key File**: `format.go`
-
-**Helpers**:
-- Byte size formatting (KB, MB, GB)
-- Duration formatting (3m12s, 2h05m)
-
-### 12. Version (`internal/version`)
-
-**Purpose**: Build information  
-**Key File**: `version.go`
-
-**Metadata**:
-- Version number
-- Git commit hash
-- Build date
-- Builder information
-- Go version used
-
-## Code Organization Principles
-
-### 1. Separation of Concerns
-
-Each package has a single, well-defined responsibility:
-- CLI handles user interaction
-- Manager handles business logic
-- Downloader handles downloads
-- Config handles configuration
-
-### 2. Dependency Direction
-
-```
-cmd/govman
-    ↓
-internal/cli
-    ↓
-internal/manager
-    ↓
-internal/{config, downloader, golang, shell, ...}
-```
-
-Higher-level packages depend on lower-level packages, never the reverse.
-
-### 3. Internal Packages
-
-All implementation code is in `internal/` to prevent external imports.
-
-### 4. Test Co-location
-
-Tests are placed alongside the code they test:
-- `manager.go` → `manager_test.go`
-
-### 5. Minimal main.go
-
-The entry point is minimal - just error handling and CLI invocation.
-
-## Design Patterns
-
-### 1. Singleton Pattern (Logger)
-
-```go
-var globalLogger *Logger
-var once sync.Once
-
-func Get() *Logger {
-    once.Do(func() {
-        globalLogger = New()
-    })
-    return globalLogger
-}
-```
-
-### 2. Strategy Pattern (Shell Integration)
-
-```go
-type Shell interface {
-    Name() string
-    ConfigFile() string
-    PathCommand(path string) string
-    SetupCommands(binPath string) []string
-}
-
-type BashShell struct{}
-type ZshShell struct{}
-type FishShell struct{}
-```
-
-### 3. Builder Pattern (Configuration)
-
-```go
-cfg := &Config{}
-cfg.setDefaults()
-cfg.expandPaths()
-cfg.createDirectories()
-return cfg
-```
-
-### 4. Facade Pattern (Manager)
-
-Manager provides a simplified interface to complex subsystems:
-
-```go
-manager := New(config)
-manager.Install(version)  // Coordinates: download, extract, verify
-```
-
-## File Naming Conventions
-
-- **Commands**: `<command>.go` (e.g., `install.go`, `list.go`)
-- **Tests**: `<file>_test.go`
-- **Integration tests**: `<file>_integration_test.go`
-- **Interfaces**: Defined in the main package file
-- **Implementations**: Separate files or inline in main file
-
-## Import Organization
-
-```go
-import (
-    // Standard library
-    "fmt"
-    "os"
-    "path/filepath"
-    
-    // External dependencies
-    "github.com/spf13/cobra"
-    "github.com/spf13/viper"
-    
-    // Internal packages (with aliases)
-    _config "github.com/justjundana/govman/internal/config"
-    _manager "github.com/justjundana/govman/internal/manager"
-)
-```
-
-## Key Interfaces
-
-### Shell Interface
-
-```go
-type Shell interface {
-    Name() string
-    DisplayName() string
-    ConfigFile() string
-    PathCommand(path string) string
-    SetupCommands(binPath string) []string
-    IsAvailable() bool
-    ExecutePathCommand(path string) error
-}
-```
-
-### Logger Interface
-
-Singleton pattern, package-level functions:
-
-```go
-logger.Info("message")
-logger.Error("error message")
-logger.Success("success message")
-```
-
-## Data Structures
-
-### Config
-
+**Key Types**:
 ```go
 type Config struct {
     InstallDir     string
@@ -407,25 +97,51 @@ type Config struct {
     Download       DownloadConfig
     Mirror         MirrorConfig
     AutoSwitch     AutoSwitchConfig
-    // ...
+    Shell          ShellConfig
+    GoReleases     GoReleasesConfig
+    SelfUpdate     SelfUpdateConfig
 }
 ```
 
-### VersionInfo
+**Dependencies**: `viper`
 
-```go
-type VersionInfo struct {
-    Version     string
-    Path        string
-    OS          string
-    Arch        string
-    InstallDate time.Time
-    Size        int64
-}
-```
+### internal/downloader
 
-### Release
+**Purpose**: Download and extract Go archives
 
+**Files**:
+- `downloader.go`: Download orchestration
+
+**Responsibilities**:
+- HTTP downloads with retries
+- Progress reporting
+- SHA-256 checksum verification
+- Archive extraction (.tar.gz, .zip)
+- Cache management
+
+**Key Functions**:
+- `Download()`: Main download orchestration
+- `downloadFile()`: HTTP download with resume
+- `verifyChecksum()`: SHA-256 verification
+- `extractArchive()`: Archive extraction
+
+**Dependencies**: `golang`, `progress`, `logger`, `config`
+
+### internal/golang
+
+**Purpose**: Go releases API integration
+
+**Files**:
+- `releases.go` Go releases data fetching and parsing
+
+**Responsibilities**:
+- Fetch available Go versions from go.dev API
+- Parse release metadata
+- Version comparison and sorting
+- Cache release information
+- Get download URLs for specific versions
+
+**Key Types**:
 ```go
 type Release struct {
     Version string
@@ -442,80 +158,294 @@ type File struct {
 }
 ```
 
-## Testing Structure
+**Key Functions**:
+- `GetAvailableVersions()`: List all versions
+- `GetDownloadURL()`: Get archive URL
+- `CompareVersions()`: Version comparison
 
-### Unit Tests
+**Dependencies**: `net/http`, `encoding/json`
 
-- Located alongside source files
-- Test individual functions
-- Use table-driven tests
+### internal/logger
 
-### Integration Tests
+**Purpose**: Logging and user output
 
-- Tagged with `//go:build integration`
-- Test component interactions
-- Require `go test -tags=integration`
+**Files**:
+- `logger.go`: Logging implementation
 
-### Test Helpers
+**Responsibilities**:
+- Formatted console output
+- Log levels (quiet, normal, verbose)
+- Colored output support
+- Progress indicators
+- Error formatting with help messages
 
-Common patterns:
-- `setupTest()` - Initialize test environment
-- `cleanupTest()` - Clean up after tests
-- Table-driven tests for multiple cases
+**Key Functions**:
+- `Info()`, `Success()`, `Warning()`, `Error()`
+- `Verbose()`, `Debug()`
+- `Progress()`, `Download()`, `Extract()`, `Verify()`
+- `ErrorWithHelp()`
 
-## Build Process
+**Dependencies**: `viper`
 
-### Development Build
+### internal/manager
 
-```bash
-go build -o govman ./cmd/govman
-```
+**Purpose**: Core version management logic
 
-### Production Build
+**Files**:
+- `manager.go`: Manager implementation
 
-```bash
-go build -ldflags="-s -w -X 'github.com/justjundana/govman/internal/version.Version=v1.0.0'" \
-    -o govman ./cmd/govman
-```
+**Responsibilities**:
+- Install Go versions
+- Uninstall versions
+- Switch between versions
+- List installed/remote versions
+- Version resolution (latest, partial versions)
+- Symlink management
+- Project-local version files
 
-### Multi-Platform Build
-
-```bash
-GOOS=linux GOARCH=amd64 go build -o govman-linux-amd64 ./cmd/govman
-GOOS=darwin GOARCH=arm64 go build -o govman-darwin-arm64 ./cmd/govman
-GOOS=windows GOARCH=amd64 go build -o govman-windows-amd64.exe ./cmd/govman
-```
-
-## Error Handling
-
-### Pattern
-
+**Key Type**:
 ```go
-if err := doSomething(); err != nil {
-    _logger.ErrorWithHelp(
-        "Failed to do something",
-        "Try this workaround...",
-        details
-    )
-    return fmt.Errorf("context: %w", err)
+type Manager struct {
+    config     *config.Config
+    downloader *downloader.Downloader
+    shell      shell.Shell
 }
 ```
 
-### Error Wrapping
+**Key Functions**:
+- `Install()`, `Uninstall()`: Version installation
+- `Use()`: Version activation
+- `Current()`, `CurrentGlobal()`: Get active version
+- `ListInstalled()`, `ListRemote()`: Version listing
+- `ResolveVersion()`: Version resolution
+- `Clean()`: Cache cleanup
 
-Always wrap errors with context using `%w`:
+**Dependencies**: All other internal packages
 
+### internal/progress
+
+**Purpose**: Progress bars for downloads
+
+**Files**:
+- `progress.go`: Progress bar implementation
+
+**Responsibilities**:
+- Display progress bars
+- Calculate download speed
+- Estimate time remaining (ETA)
+- Update display efficiently
+
+**Key Type**:
 ```go
-return fmt.Errorf("failed to download: %w", err)
+type ProgressBar struct {
+    total       int64
+    current     int64
+    width       int
+    description string
+}
 ```
 
-## See Also
+**Dependencies**: `util` (for formatting)
 
-- [Architecture](architecture.md) - System design
-- [Data Flow](data-flow.md) - How data moves
-- [Dependencies](dependencies.md) - External packages
-- [Developer Guide](getting-started.md) - Development setup
+### internal/shell
 
----
+**Purpose**: Shell integration and auto-switching
 
-Understanding the structure helps you navigate and contribute effectively! 🗺️
+**Files**:
+- `shell.go`: Shell detection and configuration
+
+**Responsibilities**:
+- Detect user's shell
+- Generate shell integration code
+- Support multiple shells (Bash, Zsh, Fish, PowerShell, Cmd)
+- PATH command generation
+- Configuration file modification
+
+**Key Interfaces/Types**:
+```go
+type Shell interface {
+    Name() string
+    DisplayName() string
+    ConfigFile() string
+    PathCommand(path string) string
+    SetupCommands(binPath string) []string
+    IsAvailable() bool
+    ExecutePathCommand(path string) error
+}
+```
+
+**Implementations**:
+- `BashShell`
+- `ZshShell`
+- `FishShell`
+- `PowerShell`
+- `CmdShell`
+
+**Key Functions**:
+- `Detect()`: Auto-detect shell
+- `InitializeShell()`: Setup integration
+- `GetShellInstructions()`: Manual setup guide
+
+**Dependencies**: `os`, `template`
+
+### internal/symlink
+
+**Purpose**: Symlink creation
+
+**Files**:
+- `symlink.go`: Symlink utilities
+
+**Responsibilities**:
+- Create symlinks pointing to Go binaries
+- Remove existing symlinks
+- Cross-platform symlink support
+
+**Key Functions**:
+- `Create()`: Create or update symlink
+
+**Dependencies**: Standard library only
+
+### internal/util
+
+**Purpose**: Utility functions
+
+**Files**:
+- `format.go`: Formatting helpers
+
+**Responsibilities**:
+- Format byte sizes (KB, MB, GB)
+- Format durations
+- Common string operations
+
+**Key Functions**:
+- `FormatBytes()`: Human-readable file sizes
+- `FormatDuration()`: Human-readable durations
+
+**Dependencies**: Standard library only
+
+### internal/version
+
+**Purpose**: Version information embedding
+
+**Files**:
+- `version.go`: Build version info
+
+**Responsibilities**:
+- Store version number
+- Build metadata (commit, date, builder)
+- Version display formatting
+
+**Key Variables**:
+```go
+var (
+    Version = "dev"
+    Commit  = "none"
+    Date    = "unknown"
+    BuildBy = "unknown"
+)
+```
+
+**Set at build time** via `-ldflags`.
+
+**Dependencies**: Standard library only
+
+## Scripts Directory
+
+### install.sh (Unix)
+
+- Bash installation script
+- Platform detection (Linux/macOS, amd64/arm64)
+- Binary download from GitHub releases
+- PATH configuration
+- Shell integration setup
+
+### install.ps1 (PowerShell)
+
+- PowerShell installation script
+- Windows platform detection
+- Binary download
+- User PATH update via registry
+- PowerShell profile configuration
+
+### install.bat (Windows Batch)
+
+- Command Prompt installation script
+- Simplified Windows installation
+- Limited functionality compared to PowerShell version
+
+### uninstall.sh (Unix)
+
+- Bash uninstall script
+- Two removal modes: minimal and complete
+- Shell configuration cleanup
+- PATH removal
+
+### uninstall.ps1 (PowerShell)
+
+- PowerShell uninstall script
+- Registry PATH cleanup
+- Profile configuration removal
+
+### uninstall.bat (Windows Batch)
+
+- Command Prompt uninstall script
+- Windows uninstallation
+
+## Build Files
+
+### Makefile
+
+Build automation for Unix-like systems:
+
+```makefile
+build          # Build for current platform
+install        # Install to ~/.govman/bin
+clean          # Clean built artifacts
+test           # Run tests
+test-coverage  # Run tests with coverage
+lint           # Run linters
+fmt            # Format code
+vet            # Run go vet
+release        # Build for all platforms
+```
+
+### Dockerfile
+
+Container build configuration for testing/development.
+
+## Dependency Management
+
+### go.mod
+
+Defines Go module and dependencies:
+- `github.com/spf13/cobra`: CLI framework
+- `github.com/spf13/viper`: Configuration management
+
+### go.sum
+
+Cryptographic checksums of dependencies for verification.
+
+## Code Organization Principles
+
+1. **Internal packages**: All application code is in `internal/` (not importable by other projects)
+2. **Single responsibility**: Each package has a clear, focused purpose
+3. **Dependency direction**: Flow from `cmd` → `cli` → `manager` → core packages
+4. **Minimal dependencies**: Limited external dependencies
+5. **Standard library first**: Prefer standard library over third-party packages
+6. **Cross-platform**: Code works on Linux, macOS, Windows
+
+## Testing Structure
+
+Each package has corresponding test files:
+- `package_test.go`: Tests for `package.go`
+- Test files are co-located with implementation
+- Use `package_test` to test public API
+- Use `package` to test internals
+
+## Configuration Files
+
+Runtime configuration stored in:
+- `~/.govman/config.yaml`: User configuration
+- `~/.govman/versions/`: Installed Go versions
+- `~/.govman/cache/`: Download cache
+- `.govman-goversion`: Project version file

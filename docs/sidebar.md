@@ -1,19 +1,32 @@
 - Getting Started
   - [Quick Start](quick-start.md)
   - [Installation](installation.md)
+  - [Requirements](requirements.md)
+  - [Upgrade & Uninstall](upgrade-uninstall.md)
   - [Configuration](configuration.md)
   - [Shell Integration](shell-integration.md)
+  - [FAQ](faq.md)
+
 - Usage
   - [Commands Reference](commands.md)
+  - [Examples](examples.md)
   - [Troubleshooting](troubleshooting.md)
+
 - Project Information
   - [Release Notes](release-notes.md)
+  - [Versioning Policy](versioning.md)
+  - [Security](security.md)
+
 - Developer Guides
-  - [Getting Started](getting-started.md)
+  - [Developer Getting Started](getting-started.md)
   - [Project Structure](project-structure.md)
   - [Dependencies](dependencies.md)
   - [Data Flow](data-flow.md)
   - [Architecture Overview](architecture.md)
   - [Architecture Diagrams](architecture-diagrams.md)
   - [Internals Troubleshooting](internals-troubleshooting.md)
+  - [Performance](performance.md)
+  - [Glossary](glossary.md)
+  - [Migration Guide](migration-guide.md)
   - [Developer Onboarding](developer-onboarding.md)
+  - [Contributing](contributing.md)

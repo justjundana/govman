@@ -1,813 +1,453 @@
 # Commands Reference
 
-Complete reference for all **govman** commands and their options.
-
-## Command Overview
-
-| Command | Description |
-|---------|-------------|
-| [`init`](#govman-init) | Initialize shell integration |
-| [`install`](#govman-install) | Install Go versions |
-| [`uninstall`](#govman-uninstall) | Remove Go versions |
-| [`use`](#govman-use) | Switch Go versions |
-| [`current`](#govman-current) | Show active version |
-| [`list`](#govman-list) | List Go versions |
-| [`info`](#govman-info) | Show version details |
-| [`clean`](#govman-clean) | Clean download cache |
-| [`refresh`](#govman-refresh) | Re-evaluate directory context |
-| [`selfupdate`](#govman-selfupdate) | Update govman itself |
+Complete reference for all govman commands and options.
 
 ## Global Flags
 
-Available for all commands:
+These flags work with all commands:
 
 ```bash
---config string    Config file (default: ~/.govman/config.yaml)
---verbose          Verbose output
---quiet            Quiet output (errors only)
---help, -h         Help for any command
---version          Show version information
+--config string   # Config file path (default: ~/.govman/config.yaml)
+--verbose         # Enable verbose output
+--quiet           # Suppress all output except errors
+--help, -h        # Show help
+--version         # Show govman version
 ```
 
----
+## Commands
 
-## govman init
+### govman
+
+Display help and version information.
+
+```bash
+govman            # Show banner and usage
+govman --version  # Show version
+govman --help     # Show help
+```
+
+###govman init
 
 Initialize shell integration for automatic version switching.
-
-### Usage
 
 ```bash
 govman init [flags]
 ```
 
-### Flags
+**Flags:**
+- `--force, -f`: Force re-initialization (overwrite existing configuration)
+- `--shell string`: Target specific shell (bash, zsh, fish, powershell)
 
+**Examples:**
 ```bash
--f, --force              Force re-initialization (overwrite existing config)
-    --shell string       Target specific shell (bash, zsh, fish, powershell)
-```
-
-### Description
-
-Sets up your shell environment for govman:
-- Adds govman to PATH
-- Configures environment variables
-- Sets up automatic version switching
-- Adds directory change hooks
-
-### Examples
-
-```bash
-# Auto-detect shell and initialize
 govman init
-
-# Force re-initialization
 govman init --force
-
-# Initialize specific shell
 govman init --shell zsh
-govman init --shell bash
-govman init --shell fish
-govman init --shell powershell
 ```
 
-### What It Does
+**What it does:**
+- Detects or uses specified shell
+- Adds integration code to shell config file
+- Sets up PATH and environment variables
+- Enables automatic version switching
 
-1. Detects your current shell (or uses --shell flag)
-2. Adds configuration to shell RC file:
-   - Bash: `~/.bashrc` or `~/.bash_profile`
-   - Zsh: `~/.zshrc`
-   - Fish: `~/.config/fish/config.fish`
-   - PowerShell: `$PROFILE`
-3. Sets up PATH management
-4. Enables auto-switching based on `.govman-version` files
-
-### Post-Initialization
-
-Reload your shell:
-
-```bash
-# Bash
-source ~/.bashrc
-
-# Zsh
-source ~/.zshrc
-
-# Fish
-source ~/.config/fish/config.fish
-
-# PowerShell
-. $PROFILE
-```
-
----
-
-## govman install
+### govman install
 
 Install one or more Go versions.
 
-### Usage
-
 ```bash
-govman install <version>... [flags]
+govman install [version...] [flags]
 ```
 
-### Arguments
+**Arguments:**
+- `version`: Go version to install (`latest`, `1.25.1`, `1.25`, etc.)
+- Can install multiple versions: `govman install 1.25.1 1.24.0`
 
+**Examples:**
 ```bash
-<version>    Go version to install (e.g., 1.21.5, latest)
+govman install latest              # Latest stable
+govman install 1.25.1              # Specific version
+govman install 1.25                # Latest 1.25.x patch
+govman install 1.25.1 1.24.0       # Multiple versions
+govman install 1.25rc1             # Pre-release
 ```
 
-### Description
+**Features:**
+- Lightning-fast parallel downloads with resume capability
+- Automatic integrity verification and checksum validation
+- Smart caching to avoid re-downloading
+- Batch installation with progress tracking
 
-Downloads and installs Go versions from official releases:
-- Validates checksums (SHA-256)
-- Supports resume for interrupted downloads
-- Caches downloads for offline installation
-- Installs to `~/.govman/versions/`
+### govman uninstall
 
-### Examples
-
-```bash
-# Install latest stable version
-govman install latest
-
-# Install specific version
-govman install 1.21.5
-
-# Install multiple versions
-govman install 1.21.5 1.20.12 1.19.13
-
-# Install pre-release version
-govman install 1.22rc1
-```
-
-### Version Formats
-
-- `latest` - Latest stable release
-- `1.21.5` - Specific version
-- `1.21` - Latest patch of 1.21.x
-- `1.22rc1` - Pre-release version
-- `1.22beta1` - Beta release
-
-### What It Does
-
-1. Resolves version (if using `latest` or partial version)
-2. Checks if already installed (skips if present)
-3. Downloads archive from `go.dev`
-4. Verifies SHA-256 checksum
-5. Extracts to `~/.govman/versions/go<version>/`
-6. Cleans up temporary files
-
-### Installation Output
+Remove one or more installed Go versions.
 
 ```bash
-$ govman install 1.21.5
-Starting installation of 1 Go version(s)...
-Progress: Preparing downloads and verifying version availability
-[1/1] Installing Go 1.21.5...
-Download: Downloading: go1.21.5.darwin-arm64.tar.gz
-Downloading go1.21.5.darwin-arm64.tar.gz [████████████████] 100% (67.2 MB/67.2 MB) 15.2 MB/s
-Verify: Verifying checksum...
-Success: Checksum verified
-Extract: Extracting archive...
-Success: Successfully installed Go 1.21.5
-──────────────────────────────────────────────────
-Success: Successfully installed 1 version(s):
-  • Go 1.21.5
-All installations completed successfully!
-Activate it with: govman use 1.21.5
+govman uninstall [version...] [flags]
 ```
 
----
+**Aliases:** `remove`, `rm`
 
-## govman uninstall
+**Arguments:**
+- `version`: Go version(s) to uninstall
+- Can uninstall multiple versions: `govman uninstall 1.24.1 1.24.2 1.24.3`
 
-Remove an installed Go version.
-
-### Usage
-
+**Examples:**
 ```bash
-govman uninstall <version> [flags]
+govman uninstall 1.24.0              # Single version
+govman uninstall 1.24.1 1.24.2       # Multiple versions
+govman remove 1.23.0
+govman rm 1.22.0
+govman rm 1.21.1 1.22.0 1.23.0       # Batch removal
 ```
 
-### Arguments
+**Features:**
+- Batch uninstallation with progress tracking for each version
+- Displays total disk space freed across all versions
+- Continues processing remaining versions if one fails
+- Comprehensive summary output showing successes and failures
 
-```bash
-<version>    Go version to uninstall (e.g., 1.21.5)
-```
+**Safety features:**
+- Prevents removal of currently active version
+- Confirms version exists before removal
+- Automatic recalculation of disk space
 
-### Aliases
-
-```bash
-govman remove <version>
-govman rm <version>
-```
-
-### Description
-
-Completely removes an installed Go version:
-- Deletes installation directory
-- Frees up disk space
-- Cannot uninstall currently active version
-
-### Examples
-
-```bash
-# Uninstall specific version
-govman uninstall 1.21.5
-
-# Using aliases
-govman remove 1.21.5
-govman rm 1.21.5
-```
-
-### Safety Features
-
-- ✅ Prevents removal of active version
-- ✅ Shows disk space to be freed
-- ✅ Confirms version exists before removal
-- ✅ Preserves other installed versions
-
-### What It Does
-
-1. Checks if version is installed
-2. Verifies it's not currently active
-3. Removes `~/.govman/versions/go<version>/` directory
-4. Reports freed disk space
-
----
-
-## govman use
+### govman use
 
 Switch to a specific Go version.
-
-### Usage
 
 ```bash
 govman use <version> [flags]
 ```
 
-### Arguments
+**Arguments:**
+- `version`: Go version to activate (`1.25.1`, `latest`, `default`)
 
+**Flags:**
+- `--default, -d`: Set as system-wide default (persistent)
+- `--local, -l`: Set as project-local version (creates `.govman-goversion`)
+
+**Examples:**
 ```bash
-<version>    Go version to activate (e.g., 1.21.5, default)
+govman use 1.25.1                 # Session-only
+govman use 1.25.1 --default       # System default
+govman use 1.25.1 --local         # Project-specific
+govman use latest                 # Use latest installed
+govman use default                # Use system default
 ```
 
-### Flags
-
-```bash
--d, --default    Set as system-wide default version
--l, --local      Set as project-local version (.govman-version file)
-```
-
-### Description
-
-Activates a Go version with different scopes:
+**Activation modes:**
 - **Session-only**: Temporary, current terminal only
-- **System default**: Permanent across all terminals
-- **Project-local**: Automatic for specific project
+- **System default**: Permanent across all new sessions
+- **Project-local**: Tied to specific directory
 
-### Examples
+### govman current
 
-```bash
-# Switch for current session only
-govman use 1.21.5
-
-# Set as system default
-govman use 1.21.5 --default
-
-# Set for current project
-govman use 1.21.5 --local
-
-# Switch to configured default
-govman use default
-```
-
-### Activation Modes
-
-#### Session-Only (No Flags)
-
-```bash
-govman use 1.21.5
-```
-
-- ✅ Affects current terminal only
-- ❌ Not preserved in new terminals
-- ❌ Not saved to config
-- **Use case**: Quick testing
-
-#### System Default (--default)
-
-```bash
-govman use 1.21.5 --default
-```
-
-- ✅ Affects all new terminals
-- ✅ Saved to `~/.govman/config.yaml`
-- ✅ Creates/updates symlink
-- **Use case**: Primary development version
-
-#### Project-Local (--local)
-
-```bash
-govman use 1.21.5 --local
-```
-
-- ✅ Creates `.govman-version` file
-- ✅ Auto-switches when entering directory
-- ✅ Team-sharable (commit to git)
-- **Use case**: Project-specific versions
-
-### What It Does
-
-**Session-only:**
-1. Updates PATH for current terminal
-2. Makes Go 1.21.5 available immediately
-
-**System default:**
-1. Updates `~/.govman/config.yaml`
-2. Creates symlink: `~/.govman/bin/go` → `versions/go1.21.5/bin/go`
-3. Updates PATH
-
-**Project-local:**
-1. Creates `.govman-version` with version number
-2. Auto-switches when entering directory (if shell integration enabled)
-
----
-
-## govman current
-
-Display currently active Go version information.
-
-### Usage
+Display current Go version information.
 
 ```bash
 govman current [flags]
 ```
 
-### Description
-
-Shows detailed information about the active Go version:
-- Version number
-- Installation path
-- Platform (OS/architecture)
-- Installation date
-- Disk usage
-- Activation method
-
-### Examples
-
+**Examples:**
 ```bash
-# Show current version
 govman current
 ```
 
-### Output
+**Output includes:**
+- Version number and release status
+- Installation path and size
+- Platform architecture details
+- Installation date and source
+- Activation method
 
-```bash
+**Example output:**
+```
 Current Go Environment:
 ──────────────────────────────────────────────────
-Version:         Go 1.21.5
-Install Path:    /Users/username/.govman/versions/go1.21.5
-Platform:        darwin/arm64
-Installed:       2024-01-15 10:30:45 PST
-Disk Usage:      147.3 MB
+Version:         Go 1.25.1
+Install Path:    /home/user/.govman/versions/go1.25.1
+Platform:        linux/amd64
+Installed:       2025-01-15 14:30:45 MST
+Disk Usage:      404 MB
 Activation:      system-default
 ──────────────────────────────────────────────────
 Run 'go version' to verify your Go installation
 ```
 
-### Activation Methods
-
-- `session-only` - Temporary terminal activation
-- `project-local` - Via `.govman-version` file
-- `system-default` - Via default configuration
-
----
-
-## govman list
+### govman list
 
 List installed or available Go versions.
-
-### Usage
 
 ```bash
 govman list [flags]
 ```
 
-### Flags
+**Aliases:** `ls`
 
+**Flags:**
+- `--remote, -r`: List available versions from official releases
+- `--stable-only`: Show only stable versions (remote only)
+- `--beta`: Include beta/rc versions (remote only)
+- `--pattern string`: Filter versions using glob patterns (remote only)
+
+**Examples:**
 ```bash
--r, --remote          List available versions from Go's official releases
-    --stable-only     Show only stable versions (remote only)
-    --beta            Include beta/rc versions (remote only)
-    --pattern string  Filter versions using glob patterns (remote only)
+govman list                        # Installed versions
+govman list --remote               # Available stable versions
+govman list --remote --beta        # Include pre-releases
+govman list --remote --pattern "1.25*"  # Filter by pattern
 ```
 
-### Aliases
-
-```bash
-govman ls
+**Installed versions output:**
 ```
-
-### Description
-
-Lists Go versions either:
-- **Local**: Installed on your system
-- **Remote**: Available for installation
-
-### Examples
-
-```bash
-# List installed versions
-govman list
-
-# List available versions
-govman list --remote
-
-# List only stable versions
-govman list --remote --stable-only
-
-# Include pre-releases
-govman list --remote --beta
-
-# Filter by pattern
-govman list --remote --pattern "1.21*"
-govman list --remote --pattern "1.2?"
-```
-
-### Output: Installed Versions
-
-```bash
 Installed Go Versions (3 total):
 ────────────────────────────────────────────────────────────
-→ Active   1.21.5 [default]        147.3 MB   installed: 2024-01-15
-  Installed 1.20.12                143.8 MB   installed: 2024-01-10
-  Installed 1.19.13                139.2 MB   installed: 2024-01-05
+→ Active %-25s     89 MB   installed: 2025-01-15
+  Installed 1.24.0 [default]        103 MB  installed: 2024-12-01
+  Installed 1.23.5                   98 MB  installed: 2024-11-10
 ────────────────────────────────────────────────────────────
-Total disk usage: 430.3 MB across 3 versions
-Currently active: Go 1.21.5
+Total disk usage: 290 MB across 3 versions
+Currently active: Go 1.25.1
 ```
 
-### Output: Remote Versions
+### govman info
 
-```bash
-Available Go stable versions (10 total, 2 already installed):
-────────────────────────────────────────────────────────────
-✓ Installed 1.21.5         installed
-  Available 1.21.4         available
-  Available 1.21.3         available
-✓ Installed 1.20.12        installed
-  Available 1.20.11        available
-  Available 1.20.10        available
-  Available 1.19.13        available
-────────────────────────────────────────────────────────────
-2 versions already installed (marked with ✓)
-Install any version with: govman install <version>
-```
-
----
-
-## govman info
-
-Show detailed information about a specific Go version.
-
-### Usage
+Display detailed information about a specific Go version.
 
 ```bash
 govman info <version> [flags]
 ```
 
-### Arguments
+**Arguments:**
+- `version`: Go version to query
 
+**Examples:**
 ```bash
-<version>    Go version to inspect (e.g., 1.21.5)
+govman info 1.25.1
 ```
 
-### Description
-
-Displays comprehensive details about an installed Go version:
-- Version and status
-- Platform information
-- Installation path
+**Output includes:**
+- Version number and status (installed/active)
+- Platform architecture
+- Complete installation path
 - Installation date and age
 - Disk usage
-- Activation suggestions
+- Binary locations
+- Suggested actions
 
-### Examples
+### govman clean
 
-```bash
-# Show info for specific version
-govman info 1.21.5
-```
-
-### Output
-
-```bash
-Go Version Information:
-════════════════════════════════════════════════════════════
-Version:            Go 1.21.5 (Currently Active)
-Platform:           darwin/arm64
-Installation Path:  /Users/username/.govman/versions/go1.21.5
-Installed On:       Monday, January 15, 2024 at 10:30:45 PST
-Disk Usage:         147.3 MB
-Age:                15 days old
-════════════════════════════════════════════════════════════
-This version is currently active in your environment
-Run 'go version' to verify, or 'go env' to see full environment
-```
-
-### For Inactive Versions
-
-```bash
-Go Version Information:
-════════════════════════════════════════════════════════════
-Version:            Go 1.20.12 (Installed)
-Platform:           darwin/arm64
-Installation Path:  /Users/username/.govman/versions/go1.20.12
-Installed On:       Monday, January 10, 2024 at 14:22:33 PST
-Disk Usage:         143.8 MB
-Age:                20 days old
-════════════════════════════════════════════════════════════
-Activate this version with: govman use 1.20.12
-Set as default with: govman use 1.20.12 --default
-Set for this project: govman use 1.20.12 --local
-```
-
----
-
-## govman clean
-
-Clean download cache to free disk space.
-
-### Usage
+Clean download cache and optimize disk usage.
 
 ```bash
 govman clean [flags]
 ```
 
-### Description
-
-Removes cached download files:
-- Downloaded Go archives (.tar.gz, .zip)
-- Temporary extraction directories
-- Incomplete or corrupted downloads
-- Cache metadata
-
-**Safe operation:**
-- ✅ Installed Go versions remain untouched
-- ✅ Your projects and configurations preserved
-- ✅ Only temporary cache files removed
-
-### Examples
-
+**Examples:**
 ```bash
-# Clean cache
 govman clean
 ```
 
-### What It Does
+**What gets cleaned:**
+- Downloaded Go archive files (.tar.gz, .zip)
+- Temporary extraction directories
+- Incomplete or corrupted downloads
+- Obsolete cache metadata
 
-1. Scans `~/.govman/cache/` for removable files
-2. Removes all cached archives
-3. Removes temporary files
-4. Reports freed disk space
+**What's preserved:**
+- Installed Go versions
+- Configuration files
+- Project `.govman-goversion` files
 
-### Output
-
-```bash
-Cleaning download cache and temporary files...
-Progress: Scanning cache directories for removable files
-Success: Cache cleanup completed successfully
-Disk space has been optimized
-Your installed Go versions remain untouched and ready to use
-Future downloads will rebuild cache as needed
-```
-
-### When to Use
-
-- After installing multiple versions
-- When disk space is low
-- Before backing up your system
-- Periodically for maintenance
-
----
-
-## govman refresh
-
-Re-evaluate current directory for version switching.
-
-### Usage
-
-```bash
-govman refresh [flags]
-```
-
-### Description
-
-Manually triggers version switching based on current directory:
-- Checks for `.govman-version` file
-- Switches to specified version if found
-- Falls back to default version if not found
-
-Equivalent to the auto-switch that happens automatically with shell integration.
-
-### Examples
-
-```bash
-# Refresh version based on current directory
-govman refresh
-```
-
-### Behavior
-
-**If `.govman-version` exists:**
-```bash
-$ govman refresh
-Found local version file: .govman-version
-Switching to Go 1.21.5
-Success: Now using Go 1.21.5 for this session
-```
-
-**If no `.govman-version`:**
-```bash
-$ govman refresh
-No local version file found
-Switching to default Go version
-Success: Now using Go 1.20.12 for this session
-```
-
-### Use Cases
-
-- After creating/modifying `.govman-version`
-- When auto-switch doesn't trigger
-- Testing version switching behavior
-- Debugging shell integration issues
-
----
-
-## govman selfupdate
+### govman selfupdate
 
 Update govman to the latest version.
-
-### Usage
 
 ```bash
 govman selfupdate [flags]
 ```
 
-### Flags
+**Flags:**
+- `--check`: Check for updates without installing
+- `--force`: Force update even if already on latest
+- `--prerelease`: Include pre-release versions
 
+**Examples:**
 ```bash
-    --check        Check for updates without installing
-    --force        Force update even if already on latest
-    --prerelease   Include pre-release versions
+govman selfupdate                  # Update to latest
+govman selfupdate --check          # Check only
+govman selfupdate --prerelease     # Include beta/rc
+govman selfupdate --force          # Force reinstall
 ```
 
-### Description
+**Features:**
+- Automatic platform detection
+- Safe backup and rollback on failure
+- Integrity verification
+- Release notes display
 
-Automatically updates govman:
-- Checks GitHub for latest release
-- Downloads appropriate binary for your platform
-- Creates backup of current version
-- Replaces binary safely with rollback support
+### govman refresh
 
-### Examples
-
-```bash
-# Check for updates
-govman selfupdate --check
-
-# Update to latest stable
-govman selfupdate
-
-# Force reinstall current version
-govman selfupdate --force
-
-# Include pre-release versions
-govman selfupdate --prerelease
-```
-
-### Check for Updates
+Manually trigger version switching based on current directory.
 
 ```bash
-$ govman selfupdate --check
-Checking for govman updates...
-Version Information:
-  Current: v1.0.0
-  Latest:  v1.1.0
-  Released: November 01, 2025
-
-A new version is available: v1.0.0 → v1.1.0
-Release Notes:
-────────────────────────────────────────
-### New Features
-- Added support for Go 1.26
-- Improved download performance
-- Enhanced error messages
-────────────────────────────────────────
-Run 'govman selfupdate' to install this version
+govman refresh [flags]
 ```
 
-### Update Process
-
+**Examples:**
 ```bash
-$ govman selfupdate
-Checking for govman updates...
-Version Information:
-  Current: v1.0.0
-  Latest:  v1.1.0
-  Released: November 01, 2025
-
-Download: Downloading v1.1.0...
-Success: Update completed successfully!
+govman refresh
 ```
 
-### Safety Features
+**Purpose:**
+- Re-evaluate current directory for `.govman-goversion`
+- Switch to appropriate version (local or default)
+- Useful after adding/removing `.govman-goversion` files
 
-- ✅ Creates backup before updating
-- ✅ Rolls back on failure
-- ✅ Verifies download integrity
-- ✅ Platform-specific binaries
+**Behavior:**
+- If `.govman-goversion` exists: switch to that version
+- If no `.govman-goversion`: switch to default version
+- Equivalent to auto-switch that happens on `cd`
 
----
+## Version Resolution
+
+govman supports flexible version specifications:
+
+| Input      | Resolves To                    | Example       |
+|------------|--------------------------------|---------------|
+| `latest`   | Latest stable release          | 1.25.1        |
+| `1.25`     | Latest 1.25.x patch            | 1.25.1        |
+| `1.25.1`   | Exact version                  | 1.25.1        |
+| `1.25rc1`  | Specific pre-release           | 1.25rc1       |
+| `default`  | Configured default version     | (from config) |
 
 ## Exit Codes
 
-govman uses standard exit codes:
+| Code | Meaning                              |
+|------|--------------------------------------|
+| 0    | Success                              |
+| 1    | General error                        |
+| 2    | Invalid arguments or usage           |
+| 3    | Version not found or not installed   |
+| 4    | Network or download error            |
+| 5    | Checksum verification failed         |
+| 6    | Permission denied                    |
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | General error |
-| `2` | Invalid arguments |
+## Environment Variables
 
-### Examples
-
-```bash
-# Check exit code
-govman install 1.21.5
-echo $?  # 0 on success
-
-# Use in scripts
-if govman use 1.21.5; then
-    echo "Switched successfully"
-else
-    echo "Failed to switch"
-fi
-```
-
-## Output Control
-
-### Quiet Mode
-
-Suppress all output except errors:
+govman respects these environment variables:
 
 ```bash
-govman --quiet install 1.21.5
+HTTP_PROXY        # HTTP proxy server
+HTTPS_PROXY       # HTTPS proxy server
+NO_PROXY          # Proxy bypass list
+GOVMAN_CONFIG     # Custom config file path
 ```
 
-### Verbose Mode
-
-Show detailed debug information:
+## Configuration File Commands
 
 ```bash
-govman --verbose install 1.21.5
+# View current config
+cat ~/.govman/config.yaml
+
+# Edit config
+nano ~/.govman/config.yaml
+
+# Reset to defaults
+rm ~/.govman/config.yaml
+govman --version  # Recreates with defaults
 ```
 
-Output includes:
-- Internal progress messages
-- Timing information
-- Detailed error traces
-- Configuration values
+## Shell Integration Commands
 
-## Shell Completion
-
-Enable shell completion for command suggestions:
+These are shell functions/aliases created by `govman init`:
 
 ```bash
-# Bash
-govman completion bash > /etc/bash_completion.d/govman
-
-# Zsh
-govman completion zsh > /usr/local/share/zsh/site-functions/_govman
-
-# Fish
-govman completion fish > ~/.config/fish/completions/govman.fish
-
-# PowerShell
-govman completion powershell > govman.ps1
+govman_auto_switch           # Manually trigger auto-switch
+type govman                  # Show wrapper function
+type govman_auto_switch      # Show auto-switch function
 ```
 
-## See Also
+## Common Command Combinations
 
-- [Quick Start](quick-start.md) - Get started with govman
-- [Configuration](configuration.md) - Configure govman
-- [Shell Integration](shell-integration.md) - Set up auto-switching
-- [Troubleshooting](troubleshooting.md) - Common issues
+### Install and Activate
 
----
+```bash
+govman install latest && govman use latest --default
+```
 
-Happy Go development! 🚀
+### List and Install Specific Version
+
+```bash
+govman list --remote --pattern "1.25*"
+govman install 1.25.1
+govman use 1.25.1 --default
+```
+
+### View Then Remove Old Version
+
+```bash
+govman list
+govman info 1.23.0
+govman uninstall 1.23.0
+```
+
+### Update All Components
+
+```bash
+govman selfupdate                    # Update govman
+govman list --remote                 # Check for new Go versions
+govman install 1.26.0                # Install new version
+govman use 1.26.0 --default          # Activate it
+```
+
+### Check Current Setup
+
+```bash
+govman current                       # Current version info
+govman list                          # All installed versions
+go version                           # Verify active version
+go env                               # Full Go environment
+```
+
+## Tips & Tricks
+
+### Quick Installation Workflow
+
+```bash
+# One-liner: install and activate latest
+govman install latest && govman use latest --default && go version
+```
+
+### Project Setup
+
+```bash
+# Set version for project
+cd /path/to/project
+govman use 1.25.1 --local
+git add .govman-goversion
+git  commit -m "Set Go version"
+```
+
+### Batch Management
+
+```bash
+# Install multiple versions
+govman install 1.25.1 1.24.0 1.23.5
+
+# Uninstall multiple versions
+govman uninstall 1.23.5 1.22.0 1.21.1
+
+# List with status
+govman list | grep -E "(Active|default)"
+```
+
+### Cleanup Routine
+
+```bash
+# Free up disk space
+govman list                              # See what's installed
+govman uninstall 1.23.0 1.22.0 1.21.0    # Remove multiple old versions
+govman clean                             # Clean download cache
+```
