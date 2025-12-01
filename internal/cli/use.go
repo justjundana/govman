@@ -59,9 +59,29 @@ Examples:
 			mgr := _manager.New(getConfig())
 
 			if version != "default" {
+				// Check if version is an alias like "latest", "stable", etc.
+				// Aliases have no dots in them (except for partial versions like "1.24")
+				isAlias := version == "latest" || version == "stable"
 				isPartialVersion := strings.Count(version, ".") == 1
 
-				if isPartialVersion {
+				if isAlias {
+					// Alias (e.g., "latest"): resolve to installed version first
+					installedVersions, _ := mgr.ListInstalled()
+					if len(installedVersions) > 0 {
+						// For "latest", use the newest installed version
+						if version == "latest" || version == "stable" {
+							version = installedVersions[0] // installed versions are sorted in descending order
+							_logger.Verbose("Resolved alias to installed version %s", version)
+						}
+					} else {
+						// No versions installed, resolve from remote
+						resolved, err := mgr.ResolveVersion(version)
+						if err != nil {
+							return fmt.Errorf("failed to resolve version %s: %w", version, err)
+						}
+						version = resolved
+					}
+				} else if isPartialVersion {
 					// Partial version (e.g., "1.24"): use flexible matching
 					installedVersions, _ := mgr.ListInstalled()
 					if len(installedVersions) > 0 {

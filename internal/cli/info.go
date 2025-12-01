@@ -34,6 +34,25 @@ Perfect for debugging installation issues and verifying setups.`,
 			version := args[0]
 			mgr := _manager.New(getConfig())
 
+			// Resolve alias to concrete version if needed
+			originalVersion := version
+			if version == "latest" || version == "stable" {
+				installedVersions, _ := mgr.ListInstalled()
+				if len(installedVersions) > 0 {
+					version = installedVersions[0] // installed versions are sorted in descending order
+					_logger.Verbose("Resolved alias %s to installed version %s", originalVersion, version)
+				}
+			} else if strings.Count(version, ".") == 1 {
+				// Partial version: resolve to best match
+				installedVersions, _ := mgr.ListInstalled()
+				if len(installedVersions) > 0 {
+					if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+						_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
+						version = matchedVersion
+					}
+				}
+			}
+
 			_logger.Verbose("Gathering comprehensive version information for Go %s", version)
 			info, err := mgr.Info(version)
 			if err != nil {
