@@ -12,14 +12,6 @@ import (
 	_util "github.com/justjundana/govman/internal/util"
 )
 
-// min returns the smaller of two integers a and b.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // newListCmd creates the 'list' Cobra command to display installed or remote Go versions.
 // Flags: --remote, --stable-only, --beta, and --pattern control the output. Returns a *cobra.Command.
 func newListCmd() *cobra.Command {
