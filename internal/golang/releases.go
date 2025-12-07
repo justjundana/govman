@@ -342,39 +342,55 @@ func extractPrereleaseNumber(prerelease string) int {
 
 // fetchReleasesWithConfig fetches releases JSON, caches results with expiry, and returns parsed data.
 // Parameters: apiURL, cacheDuration. Returns []Release or an error.
+// Uses double-checked locking to avoid TOCTOU race condition.
 func fetchReleasesWithConfig(apiURL string, cacheDuration time.Duration) ([]Release, error) {
+	// First check with read lock (fast path)
 	cacheMutex.RLock()
 	if time.Now().Before(cacheExpiry) && releasesCache != nil {
-		defer cacheMutex.RUnlock()
-		return releasesCache, nil
+		result := releasesCache
+		cacheMutex.RUnlock()
+		return result, nil
 	}
 	cacheMutex.RUnlock()
 
+	// Acquire write lock and recheck (double-checked locking)
+	cacheMutex.Lock()
+	// Recheck after acquiring write lock to avoid duplicate fetches
+	if time.Now().Before(cacheExpiry) && releasesCache != nil {
+		result := releasesCache
+		cacheMutex.Unlock()
+		return result, nil
+	}
+
+	// Fetch releases while holding write lock
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
 	resp, err := client.Get(apiURL)
 	if err != nil {
+		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to fetch releases: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to fetch releases: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var releases []Release
 	if err := json.Unmarshal(body, &releases); err != nil {
+		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to parse releases: %w", err)
 	}
 
-	cacheMutex.Lock()
 	releasesCache = releases
 	cacheExpiry = time.Now().Add(cacheDuration)
 	cacheMutex.Unlock()
