@@ -13,10 +13,9 @@ import (
 )
 
 var (
-	cfgFile  string
-	cfg      *_config.Config
-	cfgMutex sync.Mutex
-	cfgOnce  sync.Once
+	cfgFile string
+	cfg     *_config.Config
+	cfgOnce sync.Once
 )
 
 var rootCmd = &cobra.Command{
@@ -105,8 +104,7 @@ func initConfig() error {
 
 // getConfig returns the loaded configuration instance.
 // No parameters; returns a pointer to Config.
+// Thread-safe after initConfig completes via sync.Once.
 func getConfig() *_config.Config {
-	cfgMutex.Lock()
-	defer cfgMutex.Unlock()
 	return cfg
 }
