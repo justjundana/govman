@@ -66,7 +66,10 @@ Examples:
 
 				if isAlias {
 					// Alias (e.g., "latest"): resolve to installed version first
-					installedVersions, _ := mgr.ListInstalled()
+					installedVersions, err := mgr.ListInstalled()
+					if err != nil {
+						_logger.Verbose("Failed to list installed versions: %v", err)
+					}
 					if len(installedVersions) > 0 {
 						// For "latest", use the newest installed version
 						if version == "latest" || version == "stable" {
@@ -83,7 +86,10 @@ Examples:
 					}
 				} else if isPartialVersion {
 					// Partial version (e.g., "1.24"): use flexible matching
-					installedVersions, _ := mgr.ListInstalled()
+					installedVersions, err := mgr.ListInstalled()
+					if err != nil {
+						_logger.Verbose("Failed to list installed versions: %v", err)
+					}
 					if len(installedVersions) > 0 {
 						if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
 							_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
@@ -108,7 +114,10 @@ Examples:
 					// Full version (e.g., "1.24.1"): check exact match first
 					if !mgr.IsInstalled(version) {
 						// Exact version not found, try flexible matching as fallback
-						installedVersions, _ := mgr.ListInstalled()
+						installedVersions, err := mgr.ListInstalled()
+						if err != nil {
+							_logger.Verbose("Failed to list installed versions: %v", err)
+						}
 						if len(installedVersions) > 0 {
 							if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
 								_logger.Verbose("Exact version %s not found, using %s (closest match)", version, matchedVersion)
