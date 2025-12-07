@@ -28,6 +28,11 @@ type GitHubRelease struct {
 	Prerelease  bool      `json:"prerelease"`
 }
 
+// selfUpdateHTTPClient is a shared HTTP client for connection reuse
+var selfUpdateHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 // newSelfUpdateCmd creates the 'selfupdate' Cobra command.
 // It defines flags: checkOnly (only check for updates), force (reinstall even if on latest),
 // and prerelease (include pre-release versions). Returns the configured *cobra.Command that runs runSelfUpdate.
@@ -139,8 +144,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	_logger.Download("Downloading %s...", latest.TagName)
 
 	_logger.Verbose("Downloading binary")
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(downloadURL)
+	resp, err := selfUpdateHTTPClient.Get(downloadURL)
 	if err != nil {
 		_logger.ErrorWithHelp("Failed to download binary", "Check your internet connection and try again.", "")
 		return fmt.Errorf("failed to download binary: %w", err)
@@ -208,8 +212,7 @@ func getLatestRelease(includePrerelease bool) (*GitHubRelease, error) {
 		url = cfg.SelfUpdate.GitHubReleasesURL
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := selfUpdateHTTPClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
