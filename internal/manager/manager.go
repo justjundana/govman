@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -17,6 +18,10 @@ import (
 	_symlink "github.com/justjundana/govman/internal/symlink"
 	_util "github.com/justjundana/govman/internal/util"
 )
+
+// versionFormatRegex validates Go version format for security.
+// Matches: 1.25.4, 1.25, 1.25rc1, 1.25.4-beta1, latest, stable
+var versionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
 
 type Manager struct {
 	config     *_config.Config
@@ -37,6 +42,11 @@ func New(cfg *_config.Config) *Manager {
 // Install downloads and installs the specified Go version.
 // version may be an exact string or "latest". Returns an error if resolution, download, or installation fails.
 func (m *Manager) Install(version string) error {
+	// Validate version format for security
+	if !versionFormatRegex.MatchString(version) {
+		return fmt.Errorf("invalid version format: %s", version)
+	}
+
 	timer := _logger.StartTimer("version resolution")
 	resolvedVersion, err := m.ResolveVersion(version)
 	if err != nil {
