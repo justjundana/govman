@@ -105,7 +105,13 @@ func (pb *ProgressBar) render() {
 	}
 
 	percentage := float64(pb.current) / float64(pb.total) * 100
+	if percentage > 100 {
+		percentage = 100
+	}
 	filledWidth := int(float64(pb.width) * float64(pb.current) / float64(pb.total))
+	if filledWidth > pb.width {
+		filledWidth = pb.width
+	}
 
 	// String building using Builder with pre-allocated capacity
 	var bar strings.Builder
