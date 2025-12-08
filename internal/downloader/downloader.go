@@ -54,12 +54,16 @@ func (d *Downloader) Download(url, installDir, version string) error {
 	if err != nil {
 		return fmt.Errorf("failed to download: %w", err)
 	}
-	defer os.Remove(archivePath)
+
+	// Note: We intentionally don't delete the archive here to preserve the cache.
+	// Users can run 'govman clean' to manage cache when needed.
 
 	_logger.InternalProgress("Verifying checksum")
 	timer = _logger.StartTimer("checksum verification")
 	if err := d.verifyChecksum(archivePath, fileInfo.Sha256); err != nil {
 		_logger.StopTimer(timer)
+		// Remove corrupted file from cache
+		os.Remove(archivePath)
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 	_logger.StopTimer(timer)
