@@ -264,6 +264,20 @@ func (d *Downloader) extractTarGz(archivePath, installDir string) error {
 			continue
 		}
 
+		if header.Typeflag == tar.TypeSymlink {
+			// Validate symlink target for security
+			linkTarget := header.Linkname
+			if strings.Contains(linkTarget, "..") {
+				return fmt.Errorf("unsafe symlink target in archive: %s -> %s", header.Name, linkTarget)
+			}
+			// Remove existing symlink if any
+			os.Remove(targetPath)
+			if err := os.Symlink(linkTarget, targetPath); err != nil {
+				return fmt.Errorf("failed to create symlink %s -> %s: %w", targetPath, linkTarget, err)
+			}
+			continue
+		}
+
 		if header.Typeflag == tar.TypeReg {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 				return fmt.Errorf("failed to create parent directory: %w", err)
