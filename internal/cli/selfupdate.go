@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -195,6 +196,22 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	if err := os.Chmod(currentBinary, 0755); err != nil {
 		_logger.ErrorWithHelp("Failed to set executable permissions", "You may need to manually set executable permissions on the binary.", "")
 		return fmt.Errorf("failed to set executable permission for new binary: %w", err)
+	}
+
+	// Clean up backup files after successful update
+	_logger.Verbose("Cleaning up backup files")
+	os.Remove(backupBinary) // Remove the current backup
+
+	// Clean up any old backup files
+	dir := filepath.Dir(currentBinary)
+	baseName := filepath.Base(currentBinary)
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
+			oldBackup := filepath.Join(dir, entry.Name())
+			os.Remove(oldBackup)
+			_logger.Verbose("Removed old backup: %s", entry.Name())
+		}
 	}
 
 	_logger.Success("Update completed successfully!")
