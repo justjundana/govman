@@ -189,6 +189,7 @@ func (c *Config) createDirectories() error {
 }
 
 // Save writes the current Config to disk at configPath using viper.
+// Uses atomic write (temp file + rename) to prevent corruption on crash.
 // Returns an error if the config directory cannot be created or the file cannot be written.
 func (c *Config) Save() error {
 	configDir := filepath.Dir(c.configPath)
@@ -208,8 +209,18 @@ func (c *Config) Save() error {
 	viper.Set("go_releases", c.GoReleases)
 	viper.Set("self_update", c.SelfUpdate)
 
-	if err := viper.WriteConfigAs(c.configPath); err != nil {
+	// Write to temp file first for atomic save
+	// Use .yaml extension so viper can recognize the config type
+	tempFile := c.configPath + ".tmp.yaml"
+	if err := viper.WriteConfigAs(tempFile); err != nil {
+		os.Remove(tempFile) // Clean up on failure
 		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	// Atomic rename to final path
+	if err := os.Rename(tempFile, c.configPath); err != nil {
+		os.Remove(tempFile) // Clean up on failure
+		return fmt.Errorf("failed to save config file: %w", err)
 	}
 
 	return nil
