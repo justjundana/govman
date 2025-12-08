@@ -169,7 +169,9 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 // Returns the version string or an error if none is active or validation fails.
 func (m *Manager) Current() (string, error) {
 	sessionVersion, err := m.getCurrentSessionVersion()
-	if err == nil && sessionVersion != "" {
+	if err != nil {
+		_logger.Verbose("Could not get session version: %v", err)
+	} else if sessionVersion != "" {
 		if !m.IsInstalled(sessionVersion) {
 			_logger.Warning("Session version %s is active but not managed by GOVMAN", sessionVersion)
 		}
