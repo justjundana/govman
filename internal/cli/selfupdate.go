@@ -218,6 +218,11 @@ func getLatestRelease(includePrerelease bool) (*GitHubRelease, error) {
 	}
 	defer resp.Body.Close()
 
+	// Validate HTTP status code before processing response
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, resp.Status)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -231,12 +236,7 @@ func getLatestRelease(includePrerelease bool) (*GitHubRelease, error) {
 		if len(releases) == 0 {
 			return nil, fmt.Errorf("no releases found")
 		}
-
-		for _, release := range releases {
-			if includePrerelease || !release.Prerelease {
-				return &release, nil
-			}
-		}
+		// When including prereleases, return the first (latest) release
 		return &releases[0], nil
 	}
 
