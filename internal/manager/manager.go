@@ -190,7 +190,10 @@ func (m *Manager) Current() (string, error) {
 
 	// Check if there's a raw local version that doesn't have a matching installed version
 	if rawLocalVersion := m.getLocalVersionRaw(); rawLocalVersion != "" {
-		installedVersions, _ := m.ListInstalled()
+		installedVersions, err := m.ListInstalled()
+		if err != nil {
+			_logger.Verbose("Failed to list installed versions: %v", err)
+		}
 		if len(installedVersions) > 0 {
 			return "", fmt.Errorf("no installed version matches %s (from %s) - install a version with matching major.minor (e.g., 'govman install %s')",
 				rawLocalVersion, m.config.AutoSwitch.ProjectFile, rawLocalVersion)
@@ -252,19 +255,14 @@ func (m *Manager) CurrentGlobal() (string, error) {
 			symlinkPath, err)
 	}
 
-	targetDir := filepath.Dir(target)
-	targetDir = filepath.Dir(targetDir)
-	versionDir := filepath.Base(targetDir)
-
-	if !strings.HasPrefix(versionDir, "go") {
-		return "", fmt.Errorf("invalid symlink target format: expected version directory to start with 'go' but found %s - the symlink may be corrupted. Target path: %s",
-			versionDir, target)
+	// Use regex to extract version from the symlink target path
+	// This is more robust than path manipulation across platforms
+	versionRegex := regexp.MustCompile(`go(\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?)`)
+	matches := versionRegex.FindStringSubmatch(target)
+	if len(matches) < 2 {
+		return "", fmt.Errorf("could not extract version from symlink target: %s - the symlink may be corrupted", target)
 	}
-
-	version := versionDir[2:]
-	if version == "" {
-		return "", fmt.Errorf("could not extract version from symlink target %s - the symlink may be corrupted", target)
-	}
+	version := matches[1]
 
 	expectedVersionDir := m.config.GetVersionDir(version)
 	if _, err := os.Stat(expectedVersionDir); err != nil {
