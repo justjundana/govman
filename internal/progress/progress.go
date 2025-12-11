@@ -14,6 +14,7 @@ const (
 	defaultBarWidth = 50
 	fillChar        = "█"
 	emptyChar       = "░"
+	updateThreshold = 100 * time.Millisecond // Throttle interval for render updates
 )
 
 type ProgressBar struct {
@@ -62,7 +63,7 @@ func (pb *ProgressBar) Add(n int64) {
 	}
 
 	now := time.Now()
-	if now.Sub(pb.lastUpdate) > 100*time.Millisecond || pb.current == pb.total {
+	if now.Sub(pb.lastUpdate) > updateThreshold || pb.current == pb.total {
 		pb.render()
 		pb.lastUpdate = now
 	}
