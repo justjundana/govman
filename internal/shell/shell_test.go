@@ -1085,13 +1085,12 @@ func TestInitializePowerShellReadError(t *testing.T) {
 }
 
 func TestInitializeCmdShellTemplateErrors(t *testing.T) {
-	shell := &CmdShell{}
 	tempDir := t.TempDir()
 
 	// Test with a path that contains null byte - this should cause an error
 	invalidPath := filepath.Join(tempDir, "path with\x00null")
 
-	err := initializeCmdShell(shell, invalidPath, false)
+	err := initializeCmdShell(invalidPath, false)
 	if err == nil {
 		t.Error("Expected error when creating wrapper with invalid path")
 	}

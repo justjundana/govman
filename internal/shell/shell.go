@@ -19,6 +19,15 @@ var (
 	configRemovalRegex = regexp.MustCompile(`(?ms)^[#\s]*(REM\s+)?GOVMAN - Go Version Manager.*?^[#\s]*(REM\s+)?END GOVMAN.*?$\n?`)
 )
 
+// configMarkers are strings used to detect existing govman configuration.
+// These must be kept in sync with the output of SetupCommands functions.
+var configMarkers = []string{
+	"GOVMAN - Go Version Manager",
+	"govman_auto_switch",
+	"Invoke-GovmanAutoSwitch",
+	"__govman_cd_hook",
+}
+
 type Shell interface {
 	Name() string
 	DisplayName() string
@@ -886,7 +895,7 @@ func InitializeShell(shell Shell, binPath string, force bool) error {
 	case "powershell":
 		return initializePowerShell(shell, binPath, force)
 	case "cmd":
-		return initializeCmdShell(shell, binPath, force)
+		return initializeCmdShell(binPath, force)
 	default:
 		return initializeUnixShell(shell, binPath, force)
 	}
@@ -997,7 +1006,7 @@ func initializePowerShell(shell Shell, binPath string, force bool) error {
 }
 
 // initializeCmdShell creates a batch wrapper for Command Prompt.
-func initializeCmdShell(shell Shell, binPath string, force bool) error {
+func initializeCmdShell(binPath string, force bool) error {
 	wrapperPath := filepath.Join(binPath, "govman.bat")
 
 	// Check if wrapper exists
@@ -1141,14 +1150,7 @@ exit /b %errorlevel%
 
 // containsGovmanConfig checks if content contains govman configuration.
 func containsGovmanConfig(content string) bool {
-	markers := []string{
-		"GOVMAN - Go Version Manager",
-		"govman_auto_switch",
-		"Invoke-GovmanAutoSwitch",
-		"__govman_cd_hook",
-	}
-
-	for _, marker := range markers {
+	for _, marker := range configMarkers {
 		if strings.Contains(content, marker) {
 			return true
 		}
