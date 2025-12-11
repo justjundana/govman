@@ -156,7 +156,13 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
-	defer os.Remove(tempFile.Name())
+	tempFilePath := tempFile.Name()
+	defer func() {
+		// Only remove temp file if it still exists (wasn't renamed)
+		if _, err := os.Stat(tempFilePath); err == nil {
+			os.Remove(tempFilePath)
+		}
+	}()
 
 	_, err = io.Copy(tempFile, resp.Body)
 	if err != nil {
