@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	cobra "github.com/spf13/cobra"
@@ -10,6 +11,9 @@ import (
 	_logger "github.com/justjundana/govman/internal/logger"
 	_manager "github.com/justjundana/govman/internal/manager"
 )
+
+// versionFormatRegex validates Go version format
+var versionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
 
 // newRefreshCmd creates the 'refresh' Cobra command to re-evaluate the current directory for a .govman-goversion file.
 // Returns a *cobra.Command whose RunE switches to the local version if present, otherwise to the default; errors if the required version isn't installed.
@@ -38,6 +42,18 @@ Behavior:
 			filename := cfg.AutoSwitch.ProjectFile
 			if data, err := os.ReadFile(filename); err == nil {
 				version := strings.TrimSpace(string(data))
+
+				// Validate version format
+				if version == "" {
+					_logger.Warning("Empty version file: %s", filename)
+					_logger.Info("Switching to default Go version")
+					return mgr.Use("default", false, false)
+				}
+
+				if !versionFormatRegex.MatchString(version) {
+					_logger.ErrorWithHelp("Invalid version format in %s: %s", "Version should be like '1.25', '1.25.4', or 'latest'", filename, version)
+					return fmt.Errorf("invalid version format: %s", version)
+				}
 
 				_logger.Info("Found local version file: %s", filename)
 				_logger.Info("Switching to Go %s", version)
