@@ -12,6 +12,47 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.1.1
+
+**Release Date:** January 01, 2026
+
+**Highlights:**
+- 🐛 **Critical:** Fixed version alias resolution bug affecting `use`, `info`, and `uninstall` commands
+- 🐛 **Critical:** Added HTTP status validation for GitHub API in selfupdate
+- 🔒 Added version format validation for enhanced security
+- 🏎️ Performance and code quality improvements from comprehensive code audit
+
+**Bug Fixes:**
+- **Critical:** Fixed version alias resolution bug in `use`, `info`, and `uninstall` commands
+  - `govman use latest` would fail after `govman install latest` with "version latest not installed"
+  - All commands now resolve aliases and partial versions to actual installed versions before processing
+- **Critical:** Added HTTP status code validation in `getLatestRelease` (selfupdate.go)
+  - Previously, 404/500 responses caused confusing JSON parsing errors
+  - Now provides clear error: "GitHub API returned status 404: Not Found"
+- Simplified redundant prerelease logic in selfupdate
+- Fixed download cache - archives no longer deleted after extraction (use `govman clean` to manage cache)
+- Added atomic config writes to prevent corruption on crash
+- Added percentage/width clamping in progress bar for edge cases
+- Clean up backup files after successful selfupdate (removes `.bak.*` accumulation)
+- Improved symlink version extraction using regex (more robust across platforms)
+- Fixed tar extraction not handling symlinks (validates targets for security)
+- Implemented atomic symlink creation to eliminate TOCTOU race condition
+- Added version format validation in `refresh` command for `.govman-goversion` files
+- Improved selfupdate temp file cleanup (checks existence before removal after rename)
+
+**Internal Changes:**
+- Removed redundant `min` function (Go 1.21+ built-in)
+- Simplified config loading by removing unnecessary mutex
+- Added shared HTTP client for selfupdate operations (connection reuse)
+- Eliminated TOCTOU race condition in releases cache with double-checked locking
+- Improved error logging throughout CLI commands
+- Extracted `configMarkers` slices to package-level constant for maintainability
+- Removed unused `shell` parameter from `initializeCmdShell` function
+- Added package documentation for `progress` package
+- Extracted update throttle interval to named constant `updateThreshold`
+
+---
+
 ### v1.1.0
 
 **Release Date:** December 01, 2025

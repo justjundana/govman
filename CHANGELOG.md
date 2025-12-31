@@ -5,16 +5,35 @@ All notable changes to GOVMAN (Go Version Manager) will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- _No unreleased features yet_
+## [1.1.1] - 2026-01-01
 
 ### Changed
-- _No unreleased changes yet_
+- Removed redundant `min` function from CLI list command (Go 1.21+ has built-in `min`)
+- Simplified configuration loading by removing unnecessary `cfgMutex`
+- Replaced per-request HTTP client with shared client in selfupdate for connection reuse
+- Improved download caching - archives now preserved for reuse
+- Extracted `configMarkers` to package-level constant in shell integration
+- Removed unused `shell` parameter from `initializeCmdShell` function
+- Added package documentation for `progress` package
+- Extracted magic number `100ms` to named constant `updateThreshold`
 
 ### Fixed
-- _No unreleased fixes yet_
+- **Critical:** Fixed version alias resolution bug in `use`, `info`, and `uninstall` commands
+  - `govman use latest` would fail after `govman install latest`
+  - All commands now resolve aliases and partial versions before processing
+- **Critical:** Added HTTP status code validation in selfupdate before parsing GitHub API response
+- Simplified redundant prerelease logic in `getLatestRelease` function
+- Eliminated TOCTOU race condition in releases cache using double-checked locking
+- Improved error logging - errors now logged at verbose level instead of silently ignored
+- Implemented atomic config file writes using temp file + rename pattern
+- Added guards for progress bar calculations to prevent edge case issues
+- Fixed download cache - archives now preserved instead of deleted after extraction
+- Clean up backup files after successful selfupdate
+- Improved symlink version extraction using regex pattern matching
+- Fixed tar extraction not handling symlinks (with security validation)
+- Implemented atomic symlink creation using temp symlink + rename pattern
+- Added version format validation to `refresh` command with helpful error messages
+- Improved selfupdate temp file cleanup (avoids removing successfully renamed files)
 
 ## [1.1.0] - 2025-12-01
 
