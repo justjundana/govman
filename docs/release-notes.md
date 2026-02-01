@@ -12,6 +12,28 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.2.0
+
+**Release Date:** February 01, 2026
+
+**Highlights:**
+- 🎯 **New:** Wildcard pattern support for batch install/uninstall operations
+- 📦 Install or uninstall multiple versions matching a pattern (e.g., `1.14.*`)
+- ✅ Confirmation prompt for batch operations with `-y` flag to skip
+
+**Features:**
+- Wildcard pattern support for `install` and `uninstall` commands
+  - `govman install '1.14.*'` - Install all stable versions matching the pattern
+  - `govman uninstall '1.14.*'` - Uninstall all installed versions matching the pattern
+  - Shows list of matching versions and asks for confirmation before proceeding
+  - Use `-y` or `--yes` flag to skip confirmation: `govman install '1.14.*' -y`
+  - **Important:** Quote the pattern (`'1.14.*'`) to prevent shell glob expansion!
+- `--unstable` flag for `install` command
+  - Include beta/rc versions when using wildcard patterns
+  - Example: `govman install '1.22.*' --unstable` includes `1.22rc1`, `1.22beta1`, etc.
+
+---
+
 ### v1.1.1
 
 **Release Date:** January 01, 2026

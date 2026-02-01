@@ -5,6 +5,23 @@ All notable changes to GOVMAN (Go Version Manager) will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [1.2.0] - 2026-02-01
+
+### 🎯 Minor Release - Wildcard Pattern Support & Batch Operations
+
+This release adds wildcard pattern support for batch install/uninstall operations, allowing users to manage multiple versions matching a pattern with a single command. Includes confirmation prompts and optional unstable version support.
+
+### Added
+- Wildcard pattern support for `install` and `uninstall` commands
+  - `govman install '1.14.*'` - Install all stable 1.14.x versions
+  - `govman uninstall '1.14.*'` - Uninstall all installed 1.14.x versions
+  - Confirmation prompt before batch operations (skip with `-y` flag)
+  - **Note:** Quote the pattern to prevent shell glob expansion!
+- `--unstable` flag for `install` command to include beta/rc versions in pattern expansion
+- `-y` / `--yes` flag for both `install` and `uninstall` to skip confirmation prompts
+- New utility functions: `IsWildcardPattern()`, `MatchVersionPattern()` for pattern matching
+
 ## [1.1.1] - 2026-01-01
 
 ### Changed
