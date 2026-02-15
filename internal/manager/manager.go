@@ -450,6 +450,12 @@ func (m *Manager) getLocalVersionRaw() string {
 	return strings.TrimSpace(string(data))
 }
 
+// GetLocalVersionRaw returns the raw version string from the project's autoswitch file.
+// Returns an empty string if the file does not exist or cannot be read.
+func (m *Manager) GetLocalVersionRaw() string {
+	return m.getLocalVersionRaw()
+}
+
 // getLocalVersion reads the project's autoswitch file and returns the best matching installed version.
 // It uses flexible version matching based on major.minor version (e.g., "1.25" matches "1.25.4").
 // Returns an empty string if the file does not exist or no matching version is installed.
