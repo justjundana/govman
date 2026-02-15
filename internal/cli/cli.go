@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -24,6 +25,7 @@ var rootCmd = &cobra.Command{
 	Long:    createLongDescription(),
 	Version: _version.BuildVersion(),
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		cleanupOldBackups()
 		return initConfig()
 	},
 }
@@ -107,4 +109,29 @@ func initConfig() error {
 // Thread-safe after initConfig completes via sync.Once.
 func getConfig() *_config.Config {
 	return cfg
+}
+
+// cleanupOldBackups removes leftover .bak files from previous self-updates.
+// On Windows, the update process cannot delete the running binary's backup,
+// so this routine handles cleanup on the next startup.
+func cleanupOldBackups() {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+
+	dir := filepath.Dir(exePath)
+	baseName := filepath.Base(exePath)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
+			oldBackup := filepath.Join(dir, entry.Name())
+			os.Remove(oldBackup) // Best-effort, ignore errors
+		}
+	}
 }
