@@ -257,8 +257,7 @@ func (m *Manager) CurrentGlobal() (string, error) {
 
 	// Use regex to extract version from the symlink target path
 	// This is more robust than path manipulation across platforms
-	versionRegex := regexp.MustCompile(`go(\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?)`)
-	matches := versionRegex.FindStringSubmatch(target)
+	matches := _golang.VersionExtractRegex.FindStringSubmatch(target)
 	if len(matches) < 2 {
 		return "", fmt.Errorf("could not extract version from symlink target: %s - the symlink may be corrupted", target)
 	}

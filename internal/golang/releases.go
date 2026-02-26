@@ -20,6 +20,13 @@ var (
 	releasesCache []Release
 	cacheMutex    sync.RWMutex
 	cacheExpiry   time.Time
+
+	// Pre-compiled regex patterns to avoid repeated compilation
+	versionParseRegex     = regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?(?:-?(rc\d+|beta\d+|alpha\d+))?$`)
+	prereleaseNumberRegex = regexp.MustCompile(`\d+$`)
+
+	// VersionExtractRegex extracts a Go version from paths like ".../go1.25.4/bin/go"
+	VersionExtractRegex = regexp.MustCompile(`go(\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?)`)
 )
 
 const (
@@ -244,8 +251,7 @@ type versionParts struct {
 func parseVersion(version string) versionParts {
 	var parts versionParts
 
-	re := regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?(?:-?(rc\d+|beta\d+|alpha\d+))?$`)
-	matches := re.FindStringSubmatch(version)
+	matches := versionParseRegex.FindStringSubmatch(version)
 
 	if len(matches) == 0 {
 		return parts
@@ -332,8 +338,7 @@ func getPrereleaseRank(prerelease string) int {
 // extractPrereleaseNumber extracts trailing digits from a prerelease tag.
 // Parameter prerelease. Returns the numeric suffix, or 0 if absent.
 func extractPrereleaseNumber(prerelease string) int {
-	re := regexp.MustCompile(`\d+$`)
-	match := re.FindString(prerelease)
+	match := prereleaseNumberRegex.FindString(prerelease)
 	if num, err := strconv.Atoi(match); err == nil {
 		return num
 	}
