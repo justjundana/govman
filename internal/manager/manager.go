@@ -19,9 +19,9 @@ import (
 	_util "github.com/justjundana/govman/internal/util"
 )
 
-// versionFormatRegex validates Go version format for security.
+// VersionFormatRegex validates Go version format for security.
 // Matches: 1.25.4, 1.25, 1.25rc1, 1.25.4-beta1, latest, stable
-var versionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
+var VersionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
 
 type Manager struct {
 	config     *_config.Config
@@ -43,7 +43,7 @@ func New(cfg *_config.Config) *Manager {
 // version may be an exact string or "latest". Returns an error if resolution, download, or installation fails.
 func (m *Manager) Install(version string) error {
 	// Validate version format for security
-	if !versionFormatRegex.MatchString(version) {
+	if !VersionFormatRegex.MatchString(version) {
 		return fmt.Errorf("invalid version format: %s", version)
 	}
 
@@ -365,7 +365,7 @@ func (m *Manager) Clean() error {
 // ResolveVersion resolves aliases and partial versions to a concrete version.
 // "latest" becomes the newest stable; "major.minor" expands to the latest patch. Returns the resolved version or an error.
 func (m *Manager) ResolveVersion(version string) (string, error) {
-	if version == "latest" {
+	if version == "latest" || version == "stable" {
 		versions, err := m.ListRemote(false)
 		if err != nil {
 			return "", err
