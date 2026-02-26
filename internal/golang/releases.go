@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -404,15 +405,20 @@ func fetchReleasesWithConfig(apiURL string, cacheDuration time.Duration) ([]Rele
 }
 
 // getDirSize walks a directory and sums file sizes.
-// Parameter path. Returns total size in bytes or an error (errors during walk are ignored).
+// Uses filepath.WalkDir for better performance (avoids unnecessary os.Stat calls).
+// Parameter path. Returns total size in bytes or an error.
 func getDirSize(path string) (int64, error) {
 	var size int64
 
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
+		if !d.IsDir() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
 			size += info.Size()
 		}
 		return nil
