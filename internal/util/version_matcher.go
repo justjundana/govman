@@ -2,6 +2,7 @@ package util
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	_golang "github.com/justjundana/govman/internal/golang"
@@ -177,11 +178,7 @@ func isDigit(c byte) bool {
 
 // sortVersionsDescending sorts versions in descending order (newest first).
 func sortVersionsDescending(versions []string) {
-	for i := 0; i < len(versions)-1; i++ {
-		for j := i + 1; j < len(versions); j++ {
-			if _golang.CompareVersions(versions[i], versions[j]) < 0 {
-				versions[i], versions[j] = versions[j], versions[i]
-			}
-		}
-	}
+	sort.Slice(versions, func(i, j int) bool {
+		return _golang.CompareVersions(versions[i], versions[j]) > 0
+	})
 }
