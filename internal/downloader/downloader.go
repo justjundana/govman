@@ -19,6 +19,10 @@ import (
 	_progress "github.com/justjundana/govman/internal/progress"
 )
 
+// maxExtractFileSize is the maximum size allowed per file during archive extraction (2 GB).
+// This prevents zip bomb attacks from exhausting disk space.
+const maxExtractFileSize = 2 << 30 // 2 GB
+
 type Downloader struct {
 	config *_config.Config
 	client *http.Client
@@ -288,7 +292,7 @@ func (d *Downloader) extractTarGz(archivePath, installDir string) error {
 				return fmt.Errorf("failed to create file %s: %w", targetPath, err)
 			}
 
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			if _, err := io.Copy(outFile, io.LimitReader(tarReader, maxExtractFileSize)); err != nil {
 				outFile.Close()
 				return fmt.Errorf("failed to write file %s: %w", targetPath, err)
 			}
@@ -354,7 +358,7 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 			return fmt.Errorf("failed to create file %s: %w", targetPath, err)
 		}
 
-		if _, err := io.Copy(dstFile, srcFile); err != nil {
+		if _, err := io.Copy(dstFile, io.LimitReader(srcFile, maxExtractFileSize)); err != nil {
 			srcFile.Close()
 			dstFile.Close()
 			return fmt.Errorf("failed to write file %s: %w", targetPath, err)
