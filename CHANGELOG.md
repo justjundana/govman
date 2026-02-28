@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.0] - 2026-03-01
+
+### 🚀 Minor Release - Prune Command & Shell Performance
+
+This release introduces a new `prune` command for cleaning up unused Go versions, optimizes auto-switch shell hooks for better performance, hardens `.govman-goversion` parsers across all shells, and fixes backup cleanup issues on Windows.
+
+### Added
+- New `prune` command to remove unused Go versions
+  - Automatically identifies and removes Go versions that are no longer in use
+  - Helps keep the system clean by freeing disk space from stale installations
+### Changed
+- Optimized auto-switch shell hook to skip `go version` call when unnecessary
+  - Reduces shell startup and directory-change overhead
+  - Hook now only invokes `go version` when a version switch is actually needed
+- Updated `Makefile` to use dynamic `$(HOME)` path instead of hardcoded static path for `install-local` target
+- Replaced `filepath.Walk` with `filepath.WalkDir` in `getDirSize` for better performance
+  - Avoids unnecessary `os.Stat` calls on directory entries
+- Deduplicated `versionFormatRegex` across `cli/refresh.go` and `manager/manager.go`
+  - Exported as `VersionFormatRegex` from manager package for reuse
+  - Removed duplicate definition and unused `regexp` import from CLI refresh command
+- Updated `Makefile` to use dynamic `$(HOME)` path instead of hardcoded static path for `install-local` target
+
+### Fixed
+- Hardened `.govman-goversion` parsers for edge cases across all shells
+  - Improved robustness when handling malformed or unexpected file content
+  - Better handling of whitespace, empty lines, and special characters
+- Gracefully handle backup cleanup on Windows with startup routine in selfupdate
+  - Resolves issues where locked backup files could not be removed immediately
+  - Adds a deferred cleanup mechanism via startup routine
+- Added `stable` alias support to `Manager.ResolveVersion`
+  - `govman install stable` now works like `govman install latest`
+  - Previously only `latest` was handled, `stable` was silently ignored
+- **Critical:** Fixed `govman refresh` not actually switching Go version
+  - Shell wrapper function only intercepted `govman use`, not `govman refresh`
+  - `refresh` output was printed to stdout but never eval'd in the current shell
+  - Added `refresh` to wrapper intercept in all shells: Bash, Zsh, Fish, PowerShell
+
 ## [1.2.0] - 2026-02-01
 
 ### 🎯 Minor Release - Wildcard Pattern Support & Batch Operations

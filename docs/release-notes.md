@@ -12,6 +12,58 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.3.0
+
+**Release Date:** March 01, 2026
+
+**Highlights:**
+- 🚀 **New:** `prune` command to remove unused Go versions
+- ⚡ **Performance:** Optimized auto-switch hook to skip unnecessary `go version` calls
+- ⚡ **Performance:** Replaced `filepath.Walk` with `filepath.WalkDir` for faster directory size calculation
+- 🧹 **Refactor:** Deduplicated `versionFormatRegex` across CLI and manager packages
+- 🛡️ Hardened `.govman-goversion` parsers for edge cases across all shells
+- 🐛 Fixed backup cleanup issues on Windows selfupdate
+- 🐛 Added `stable` alias support to `ResolveVersion`
+- 🐛 **Critical:** Fixed `govman refresh` not actually switching Go version
+- 🛠️ **Refactor:** Updated `Makefile` to use dynamic `$(HOME)` path for local installation
+
+**Features:**
+- New `prune` command to remove unused Go versions
+  - Automatically identifies Go versions that are no longer referenced by any project
+  - Removes stale installations to free up disk space
+  - Provides summary of freed disk space after cleanup
+
+**Performance:**
+- Optimized auto-switch shell hook to skip `go version` call when unnecessary
+  - Reduces overhead on shell startup and directory changes
+  - Hook now only invokes `go version` when a version switch is actually needed
+- Replaced `filepath.Walk` with `filepath.WalkDir` in `getDirSize`
+  - `WalkDir` avoids unnecessary `os.Stat` calls on each directory entry
+  - Improves `govman info <version>` response time for large installations
+
+**Refactoring:**
+- Deduplicated `versionFormatRegex` across `cli/refresh.go` and `manager/manager.go`
+  - Exported as `VersionFormatRegex` from manager package for reuse
+  - Removed duplicate definition and unused `regexp` import
+- Updated `Makefile` to use dynamic `$(HOME)` path instead of hardcoded static path for `install-local` target
+
+**Bug Fixes:**
+- Hardened `.govman-goversion` parsers for edge cases across all shells
+  - Improved robustness when handling malformed or unexpected file content
+  - Better handling of whitespace, empty lines, and special characters
+- Gracefully handle backup cleanup on Windows with startup routine in selfupdate
+  - Resolves issues where locked backup files could not be removed immediately after update
+  - Adds a deferred cleanup mechanism via a startup routine
+- Added `stable` alias support to `Manager.ResolveVersion`
+  - `govman install stable` now correctly resolves to the latest stable version
+  - Previously, `stable` was accepted by the regex validator but silently passed through unresolved
+- **Critical:** Fixed `govman refresh` not actually switching Go version
+  - Shell wrapper function only intercepted `govman use`, not `govman refresh`
+  - `refresh` output was printed to stdout but never eval'd in the current shell
+  - Added `refresh` to wrapper intercept in all shells: Bash, Zsh, Fish, PowerShell
+
+---
+
 ### v1.2.0
 
 **Release Date:** February 01, 2026
