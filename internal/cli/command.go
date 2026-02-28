@@ -41,6 +41,7 @@ func addCommands() {
 		newListCmd(),
 		newInfoCmd(),
 		newCleanCmd(),
+		newPruneCmd(),
 		newSelfUpdateCmd(),
 		newRefreshCmd(),
 	)

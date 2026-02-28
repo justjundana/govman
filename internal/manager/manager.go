@@ -19,9 +19,9 @@ import (
 	_util "github.com/justjundana/govman/internal/util"
 )
 
-// versionFormatRegex validates Go version format for security.
+// VersionFormatRegex validates Go version format for security.
 // Matches: 1.25.4, 1.25, 1.25rc1, 1.25.4-beta1, latest, stable
-var versionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
+var VersionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
 
 type Manager struct {
 	config     *_config.Config
@@ -43,7 +43,7 @@ func New(cfg *_config.Config) *Manager {
 // version may be an exact string or "latest". Returns an error if resolution, download, or installation fails.
 func (m *Manager) Install(version string) error {
 	// Validate version format for security
-	if !versionFormatRegex.MatchString(version) {
+	if !VersionFormatRegex.MatchString(version) {
 		return fmt.Errorf("invalid version format: %s", version)
 	}
 
@@ -257,8 +257,7 @@ func (m *Manager) CurrentGlobal() (string, error) {
 
 	// Use regex to extract version from the symlink target path
 	// This is more robust than path manipulation across platforms
-	versionRegex := regexp.MustCompile(`go(\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?)`)
-	matches := versionRegex.FindStringSubmatch(target)
+	matches := _golang.VersionExtractRegex.FindStringSubmatch(target)
 	if len(matches) < 2 {
 		return "", fmt.Errorf("could not extract version from symlink target: %s - the symlink may be corrupted", target)
 	}
@@ -366,7 +365,7 @@ func (m *Manager) Clean() error {
 // ResolveVersion resolves aliases and partial versions to a concrete version.
 // "latest" becomes the newest stable; "major.minor" expands to the latest patch. Returns the resolved version or an error.
 func (m *Manager) ResolveVersion(version string) (string, error) {
-	if version == "latest" {
+	if version == "latest" || version == "stable" {
 		versions, err := m.ListRemote(false)
 		if err != nil {
 			return "", err
@@ -448,6 +447,12 @@ func (m *Manager) getLocalVersionRaw() string {
 	}
 
 	return strings.TrimSpace(string(data))
+}
+
+// GetLocalVersionRaw returns the raw version string from the project's autoswitch file.
+// Returns an empty string if the file does not exist or cannot be read.
+func (m *Manager) GetLocalVersionRaw() string {
+	return m.getLocalVersionRaw()
 }
 
 // getLocalVersion reads the project's autoswitch file and returns the best matching installed version.

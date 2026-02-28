@@ -394,11 +394,12 @@ install: build ## Install to GOPATH/bin
 	go install $(LDFLAGS) -tags=$(BUILD_TAGS) $(MAIN_PACKAGE)
 	@echo "$(GREEN)✅ govman installed to $$(go env GOPATH)/bin/govman$(RESET)"
 
-install-local: build ## Install to /usr/local/bin (requires sudo)
-	@echo "$(CYAN)📦 Installing govman to /usr/local/bin...$(RESET)"
-	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
-	sudo chmod +x /usr/local/bin/$(BINARY_NAME)
-	@echo "$(GREEN)✅ govman installed to /usr/local/bin/govman$(RESET)"
+install-local: build ## Install to ~/.govman/bin
+	@echo "$(CYAN)📦 Installing govman to $(HOME)/.govman/bin...$(RESET)"
+	@mkdir -p $(HOME)/.govman/bin
+	cp $(BUILD_DIR)/$(BINARY_NAME) $(HOME)/.govman/bin/
+	chmod +x $(HOME)/.govman/bin/$(BINARY_NAME)
+	@echo "$(GREEN)✅ govman installed to $(HOME)/.govman/bin/$(RESET)"
 
 uninstall: ## Remove govman from system
 	@echo "$(CYAN)🗑️  Uninstalling govman...$(RESET)"

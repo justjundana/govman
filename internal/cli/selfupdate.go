@@ -205,18 +205,24 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	}
 
 	// Clean up backup files after successful update
-	_logger.Verbose("Cleaning up backup files")
-	os.Remove(backupBinary) // Remove the current backup
+	// On Windows, the running process locks the backup file, so we skip
+	// cleanup here and let the startup routine handle it on next run.
+	if runtime.GOOS == "windows" {
+		_logger.Verbose("Skipping backup cleanup on Windows - will clean up on next startup")
+	} else {
+		_logger.Verbose("Cleaning up backup files")
+		os.Remove(backupBinary)
 
-	// Clean up any old backup files
-	dir := filepath.Dir(currentBinary)
-	baseName := filepath.Base(currentBinary)
-	entries, _ := os.ReadDir(dir)
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
-			oldBackup := filepath.Join(dir, entry.Name())
-			os.Remove(oldBackup)
-			_logger.Verbose("Removed old backup: %s", entry.Name())
+		// Clean up any old backup files
+		dir := filepath.Dir(currentBinary)
+		baseName := filepath.Base(currentBinary)
+		entries, _ := os.ReadDir(dir)
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), baseName+".bak.") {
+				oldBackup := filepath.Join(dir, entry.Name())
+				os.Remove(oldBackup)
+				_logger.Verbose("Removed old backup: %s", entry.Name())
+			}
 		}
 	}
 
