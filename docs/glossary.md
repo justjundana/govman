@@ -171,6 +171,9 @@ Download and set up a Go version in the install directory.
 ### Uninstall
 Remove an installed Go version from the install directory.
 
+### Prune
+Remove all unused Go versions to reclaim disk space, while keeping the active, default, and local-project versions.
+
 ###Use
 Activate a specific Go version (make it the active version).
 

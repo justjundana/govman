@@ -36,7 +36,7 @@ govman init [flags]
 
 **Flags:**
 - `--force, -f`: Force re-initialization (overwrite existing configuration)
-- `--shell string`: Target specific shell (bash, zsh, fish, powershell)
+- `--shell string`: Target specific shell (bash, zsh, fish, powershell, pwsh)
 
 **Examples:**
 ```bash
@@ -70,13 +70,19 @@ govman install 1.25.1              # Specific version
 govman install 1.25                # Latest 1.25.x patch
 govman install 1.25.1 1.24.0       # Multiple versions
 govman install 1.25rc1             # Pre-release
+govman install '1.14.*'            # All 1.14.x versions (quote the pattern!)
 ```
+
+**Flags:**
+- `--unstable`: Include unstable versions (beta, rc, alpha) when using wildcard patterns
+- `--yes, -y`: Skip confirmation prompt for batch operations
 
 **Features:**
 - Lightning-fast parallel downloads with resume capability
 - Automatic integrity verification and checksum validation
 - Smart caching to avoid re-downloading
 - Batch installation with progress tracking
+- Wildcard pattern support for installing ranges of versions
 
 ### govman uninstall
 
@@ -92,10 +98,14 @@ govman uninstall [version...] [flags]
 - `version`: Go version(s) to uninstall
 - Can uninstall multiple versions: `govman uninstall 1.24.1 1.24.2 1.24.3`
 
+**Flags:**
+- `--yes, -y`: Skip confirmation prompt for batch operations
+
 **Examples:**
 ```bash
 govman uninstall 1.24.0              # Single version
 govman uninstall 1.24.1 1.24.2       # Multiple versions
+govman uninstall '1.14.*'            # All 1.14.x versions (quote the pattern!)
 govman remove 1.23.0
 govman rm 1.22.0
 govman rm 1.21.1 1.22.0 1.23.0       # Batch removal
@@ -203,7 +213,7 @@ govman list --remote --pattern "1.25*"  # Filter by pattern
 ```
 Installed Go Versions (3 total):
 ────────────────────────────────────────────────────────────
-→ Active %-25s     89 MB   installed: 2025-01-15
+→ Active 1.25.1                    89 MB   installed: 2025-01-15
   Installed 1.24.0 [default]        103 MB  installed: 2024-12-01
   Installed 1.23.5                   98 MB  installed: 2024-11-10
 ────────────────────────────────────────────────────────────
@@ -233,9 +243,28 @@ govman info 1.25.1
 - Complete installation path
 - Installation date and age
 - Disk usage
-- Binary locations
-- Suggested actions
 
+### govman prune
+
+Remove all unused Go versions to reclaim disk space.
+
+```bash
+govman prune [flags]
+```
+
+**Flags:**
+- `--yes, -y`: Skip confirmation prompt
+
+**What it keeps (Protected):**
+- Currently active version
+- System default version
+- Project-local version (from .govman-goversion)
+
+**Examples:**
+```bash
+govman prune       # Interactive confirmation
+govman prune --yes # Skip confirmation
+```
 ### govman clean
 
 Clean download cache and optimize disk usage.
@@ -327,12 +356,7 @@ govman supports flexible version specifications:
 | Code | Meaning                              |
 |------|--------------------------------------|
 | 0    | Success                              |
-| 1    | General error                        |
-| 2    | Invalid arguments or usage           |
-| 3    | Version not found or not installed   |
-| 4    | Network or download error            |
-| 5    | Checksum verification failed         |
-| 6    | Permission denied                    |
+| 1    | Error (General failure)              |
 
 ## Environment Variables
 
@@ -342,7 +366,6 @@ govman respects these environment variables:
 HTTP_PROXY        # HTTP proxy server
 HTTPS_PROXY       # HTTPS proxy server
 NO_PROXY          # Proxy bypass list
-GOVMAN_CONFIG     # Custom config file path
 ```
 
 ## Configuration File Commands

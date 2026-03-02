@@ -12,9 +12,9 @@ The heart of govman, coordinating all version management operations.
 
 ```go
 type Manager struct {
-    config     *config.Config
-    downloader *downloader.Downloader
-    shell      shell.Shell
+	config     *_config.Config
+	downloader *_downloader.Downloader
+	shell      _shell.Shell
 }
 ```
 
@@ -209,14 +209,14 @@ func Detect() Shell {
     shellEnv := os.Getenv("SHELL")
     
     if strings.Contains(shellEnv, "bash") {
-        return &BashShell{}
-    } else if strings.Contains(shellEnv, "zsh") {
-        return &ZshShell{}
-    } else if strings.Contains(shellEnv, "fish") {
-        return &FishShell{}
-    }
-    
-    return &BashShell{} // Default
+		return &_shell.BashShell{}
+	} else if strings.Contains(shellEnv, "zsh") {
+		return &_shell.ZshShell{}
+	} else if strings.Contains(shellEnv, "fish") {
+		return &_shell.FishShell{}
+	}
+
+	return &_shell.BashShell{} // Default
 }
 ```
 

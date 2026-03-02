@@ -8,17 +8,20 @@ Visual representations of govman's architecture and workflows.
 graph TB
     User[User] --> CLI[CLI Commands]
     CLI --> Manager[Manager]
+    CLI --> Logger[Logger]
+    CLI --> Shell[Shell Integration]
+    
     Manager --> Config[Config]
     Manager --> Downloader[Downloader]
-    Manager --> Shell[Shell Integration]
+    Manager --> Shell
     Manager --> Golang[Go Releases API]
+    Manager --> Symlink[Symlink Manager]
     
     Downloader --> HTTP[HTTP Client]
     Downloader --> Progress[Progress Bar]
-    Golang --> GoDevAPI[go.dev API]
+    Downloader --> Golang
     
-    HTTP --> Cache[Download Cache]
-    HTTP --> Install[Install Directory]
+    Golang --> GoDevAPI[go.dev API]
     
     Config --> YAML[config.yaml]
     Shell --> ShellRC[Shell Config Files]
@@ -112,11 +115,13 @@ graph TD
     Manager --> Logger
     Manager --> Shell
     Manager --> Symlink[internal/symlink]
+    Manager --> Util[internal/util]
     
     Downloader --> Progress[internal/progress]
     Downloader --> Logger
     Downloader --> Golang
-    Downloader --> Util[internal/util]
+    Downloader --> Util
+    Downloader --> Config
     
     Golang --> Logger
     

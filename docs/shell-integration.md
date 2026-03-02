@@ -142,7 +142,7 @@ export GOTOOLCHAIN=local
 # Wrapper function for automatic PATH execution
 govman() {
     local govman_bin="$HOME/.govman/bin/govman"
-    if [[ "$1" == "use" && "$#" -ge 2 && "$2" != "--help" && "$2" != "-h" ]]; then
+    if [[ ("$1" == "use" && "$#" -ge 2 && "$2" != "--help" && "$2" != "-h") || "$1" == "refresh" ]]; then
         local output
         output="$("$govman_bin" "$@" 2>&1)"
         local exit_code=$?
@@ -175,26 +175,44 @@ govman_auto_switch() {
         return 0
     fi
 
-    if [[ -f .govman-goversion ]]; then
-        local required_version=$(cat .govman-goversion 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -n "$required_version" ]]; then
-            if ! command -v go > /dev/null 2>&1; then
-                echo "Go not found. Switching to Go $required_version..."
-                govman use "$required_version" > /dev/null 2>&1 || {
-                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
-                }
-                return
-            fi
+    # Check file exists and is non-empty (-s), handle permission errors
+    if [[ -s .govman-goversion ]]; then
+        local required_version
+        required_version=$(cat .govman-goversion 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ $? -ne 0 ]] || [[ -z "$required_version" ]]; then
+            return 0
+        fi
 
-            # Improved version extraction with validation
-            local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')
-            if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi
-            if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then
-                echo "Auto-switching to Go $required_version (required by .govman-goversion)"
-                govman use "$required_version" > /dev/null 2>&1 || {
-                    echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
-                }
-            fi
+        # Validate version format (e.g., 1.25, 1.25.1, 1.25rc1)
+        if [[ ! "$required_version" =~ ^[0-9]+\.[0-9]+(\.?[0-9]*)(-?(rc|beta|alpha)[0-9]*)?$ ]]; then
+            echo "Warning: Invalid version format in .govman-goversion: $required_version" >&2
+            return 0
+        fi
+
+        # Skip go version call if we already matched this version
+        if [[ "$required_version" == "$__govman_last_version" ]]; then
+            return 0
+        fi
+
+        if ! command -v go > /dev/null 2>&1; then
+            echo "Go not found. Switching to Go $required_version..."
+            govman use "$required_version" > /dev/null 2>&1 || {
+                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
+            }
+            return
+        fi
+
+        # Improved version extraction with validation
+        local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')
+        if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi
+        if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then
+            echo "Auto-switching to Go $required_version (required by .govman-goversion)"
+            govman use "$required_version" > /dev/null 2>&1 || {
+                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2
+            }
+            __govman_last_version="$required_version"
+        elif [[ -n "$current_version" ]]; then
+            __govman_last_version="$required_version"
         fi
     fi
 }
@@ -249,7 +267,7 @@ set -l homegobin "$HOME/go/bin"; if test -d "$homegobin"; fish_add_path -p "$hom
 # Wrapper function for automatic PATH execution
 function govman
     set govman_bin "$HOME/.govman/bin/govman"
-    if test "$argv[1]" = "use"; and test (count $argv) -ge 2; and test "$argv[2]" != "--help"; and test "$argv[2]" != "-h"
+    if test "$argv[1]" = "refresh"; or begin; test "$argv[1]" = "use"; and test (count $argv) -ge 2; and test "$argv[2]" != "--help"; and test "$argv[2]" != "-h"; end
         set output ($govman_bin $argv 2>&1)
         set exit_code $status
         if test $exit_code -eq 0
@@ -265,7 +283,7 @@ function govman
                 echo $line >&2
             end
             return $exit_code
-        end
+        fi
     end
     $govman_bin $argv
 end
@@ -294,22 +312,27 @@ $env:GOTOOLCHAIN = "local"
 
 # Wrapper function for automatic PATH execution
 function govman {
-    $govmanBin = "$env:USERPROFILE\.govman\bin\govman.exe"
-    if ($args.Count -ge 2 -and $args[0] -eq "use" -and $args[1] -ne "--help" -and $args[1] -ne "-h") {
-        $output = & $govmanBin $args 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0) {
-            $exportCmd = $output -split "`n" | Where-Object { $_ -match '^\$env:PATH' }
-            if ($exportCmd) {
-                Invoke-Expression $exportCmd
-                Write-Host "✓ Go version switched successfully"
+    $govman_bin = "$env:USERPROFILE\.govman\bin\govman.exe"
+    if (($args[0] -eq 'refresh') -or ($args.Count -ge 2 -and $args[0] -eq 'use' -and $args[1] -ne '--help' -and $args[1] -ne '-h')) {
+        try {
+            $output = & $govman_bin @args 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $pathCmd = $output | Where-Object { $_ -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$' } | Select-Object -First 1
+                if ($pathCmd -and $pathCmd -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$') {
+                    Invoke-Expression $pathCmd
+                    Write-Host '✓ Go version switched successfully' -ForegroundColor Green
+                    return
+                }
+            } else {
+                $output | ForEach-Object { Write-Error $_ }
                 return
             }
-        } else {
-            Write-Error $output
+        } catch {
+            Write-Error $_.Exception.Message
             return
         }
     }
-    & $govmanBin $args
+    & $govman_bin @args
 }
 
 # Auto-switch function

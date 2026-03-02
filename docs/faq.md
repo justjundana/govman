@@ -259,8 +259,10 @@ govman uninstall 1.25.1
 # Remove download cache only (keeps installed versions)
 govman clean
 
-# Remove unused Go versions
-govman list
+# Remove all unused Go versions (keeps active/default/local versions)
+govman prune
+
+# Remove specific Go versions
 govman uninstall 1.old.0
 ```
 

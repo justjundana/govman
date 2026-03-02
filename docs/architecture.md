@@ -94,9 +94,9 @@ govman is built with these core principles:
 
 ```go
 type Manager struct {
-    config     *config.Config
-    downloader *downloader.Downloader
-    shell      shell.Shell
+	config     *_config.Config
+	downloader *_downloader.Downloader
+	shell      _shell.Shell
 }
 ```
 
@@ -108,12 +108,15 @@ Different shell implementations via `Shell` interface:
 
 ```go
 type Shell interface {
-    Name() string
-    ConfigFile() string
-    PathCommand(path string) string
-    SetupCommands(binPath string) []string
-    // ...
+	Name() string
+	DisplayName() string
+	ConfigFile() string
+	PathCommand(path string) string
+	SetupCommands(binPath string) []string
+	IsAvailable() bool
+	ExecutePathCommand(path string) error
 }
+```
 
 // Implementations:
 type BashShell struct{}

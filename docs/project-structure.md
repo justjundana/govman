@@ -66,6 +66,7 @@ govman/
 - `init.go`: Shell integration setup
 - `selfupdate.go`: Self-update functionality
 - `refresh.go`: Manual version refresh
+- `prune.go`: Remove unused versions command
 
 **Responsibilities**:
 - Define CLI commands and flags
@@ -91,15 +92,18 @@ govman/
 **Key Types**:
 ```go
 type Config struct {
-    InstallDir     string
-    CacheDir       string
-    DefaultVersion string
-    Download       DownloadConfig
-    Mirror         MirrorConfig
-    AutoSwitch     AutoSwitchConfig
-    Shell          ShellConfig
-    GoReleases     GoReleasesConfig
-    SelfUpdate     SelfUpdateConfig
+	InstallDir     string           `mapstructure:"install_dir"`
+	CacheDir       string           `mapstructure:"cache_dir"`
+	DefaultVersion string           `mapstructure:"default_version"`
+	Download       DownloadConfig   `mapstructure:"download"`
+	Mirror         MirrorConfig     `mapstructure:"mirror"`
+	AutoSwitch     AutoSwitchConfig `mapstructure:"auto_switch"`
+	Shell          ShellConfig      `mapstructure:"shell"`
+	GoReleases     GoReleasesConfig `mapstructure:"go_releases"`
+	SelfUpdate     SelfUpdateConfig `mapstructure:"self_update"`
+	Quiet          bool             `mapstructure:"quiet"`
+	Verbose        bool             `mapstructure:"verbose"`
+	configPath     string
 }
 ```
 
@@ -206,9 +210,9 @@ type File struct {
 **Key Type**:
 ```go
 type Manager struct {
-    config     *config.Config
-    downloader *downloader.Downloader
-    shell      shell.Shell
+	config     *_config.Config
+	downloader *_downloader.Downloader
+	shell      _shell.Shell
 }
 ```
 
@@ -264,13 +268,13 @@ type ProgressBar struct {
 **Key Interfaces/Types**:
 ```go
 type Shell interface {
-    Name() string
-    DisplayName() string
-    ConfigFile() string
-    PathCommand(path string) string
-    SetupCommands(binPath string) []string
-    IsAvailable() bool
-    ExecutePathCommand(path string) error
+	Name() string
+	DisplayName() string
+	ConfigFile() string
+	PathCommand(path string) string
+	SetupCommands(binPath string) []string
+	IsAvailable() bool
+	ExecutePathCommand(path string) error
 }
 ```
 

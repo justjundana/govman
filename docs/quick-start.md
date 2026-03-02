@@ -87,6 +87,9 @@ govman info 1.25.1
 # Uninstall a version
 govman uninstall 1.24.0
 
+# Remove unused versions
+govman prune
+
 # Clean download cache
 govman clean
 

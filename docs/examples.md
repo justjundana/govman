@@ -303,7 +303,10 @@ govman use 1.24.0 --default
 # Check disk usage
 govman list  # Shows size of each version
 
-# Remove multiple old versions at once
+# Remove all unused versions at once
+govman prune
+
+# Or remove specific old versions
 govman uninstall 1.23.0 1.22.0 1.21.1
 
 # Clean download cache
