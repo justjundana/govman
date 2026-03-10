@@ -16,10 +16,9 @@ import (
 // Flags: --remote, --stable-only, --beta, and --pattern control the output. Returns a *cobra.Command.
 func newListCmd() *cobra.Command {
 	var (
-		remote     bool
-		stableOnly bool
-		beta       bool
-		pattern    string
+		remote  bool
+		beta    bool
+		pattern string
 	)
 
 	cmd := &cobra.Command{
@@ -43,7 +42,7 @@ Pro Tips:
 			mgr := _manager.New(getConfig())
 
 			if remote {
-				return listRemoteVersions(mgr, !stableOnly || beta, pattern)
+				return listRemoteVersions(mgr, beta, pattern)
 			}
 
 			return listInstalledVersions(mgr)
@@ -51,7 +50,6 @@ Pro Tips:
 	}
 
 	cmd.Flags().BoolVarP(&remote, "remote", "r", false, "List available versions from Go's official releases")
-	cmd.Flags().BoolVar(&stableOnly, "stable-only", false, "Show only stable, production-ready versions (remote only)")
 	cmd.Flags().BoolVar(&beta, "beta", false, "Include beta/rc versions for early testing (remote only)")
 	cmd.Flags().StringVar(&pattern, "pattern", "", "Filter versions using glob patterns like '1.25*' or '1.2?' (remote only)")
 
