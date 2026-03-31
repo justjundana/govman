@@ -141,6 +141,20 @@ func (d *Downloader) downloadFile(url string, fileInfo *_golang.File) (string, e
 		return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
 	}
 
+	// If we requested resume (Range header) but server responded with 200 OK
+	// instead of 206 Partial Content, the server is sending the full file.
+	// Truncate the existing partial file to avoid data corruption.
+	if currentSize > 0 && resp.StatusCode == http.StatusOK {
+		_logger.Verbose("Server does not support resume, restarting download from scratch")
+		if err := file.Truncate(0); err != nil {
+			return "", fmt.Errorf("failed to truncate file for fresh download: %w", err)
+		}
+		if _, err := file.Seek(0, 0); err != nil {
+			return "", fmt.Errorf("failed to seek to beginning of file: %w", err)
+		}
+		currentSize = 0
+	}
+
 	totalSize := fileInfo.Size
 	if resp.StatusCode == http.StatusPartialContent {
 		totalSize = currentSize + resp.ContentLength

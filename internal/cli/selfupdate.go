@@ -13,6 +13,7 @@ import (
 
 	cobra "github.com/spf13/cobra"
 
+	_golang "github.com/justjundana/govman/internal/golang"
 	_logger "github.com/justjundana/govman/internal/logger"
 	_version "github.com/justjundana/govman/internal/version"
 )
@@ -103,14 +104,15 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		_logger.Info("  Released: %s", latest.PublishedAt.Format("January 2, 2006"))
 	}
 
-	if !force && latest.TagName == current {
+	// Compare versions using SemVer-aware comparison (handles v prefix differences)
+	if !force && _golang.CompareVersions(latest.TagName, current) == 0 {
 		_logger.Success("You are already using the latest version!")
 		_logger.Info("Use --force to reinstall the current version")
 		return nil
 	}
 
 	if checkOnly {
-		if latest.TagName != current {
+		if _golang.CompareVersions(latest.TagName, current) != 0 {
 			_logger.Info("A new version is available: %s → %s", current, latest.TagName)
 			if latest.Body != "" {
 				_logger.Info("Release Notes:")
@@ -151,6 +153,11 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Validate HTTP status code before processing the response body
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download binary: HTTP %d (%s)", resp.StatusCode, resp.Status)
+	}
 
 	tempFile, err := os.CreateTemp("", "govman-update-*.bin")
 	if err != nil {

@@ -69,11 +69,9 @@ Examples:
 				localVersion := mgr.GetLocalVersionRaw()
 				if localVersion != "" {
 					// Find the best matching installed version for partial versions
-					for _, v := range installed {
-						if v == localVersion || strings.HasPrefix(v, localVersion) {
-							if _, exists := protected[v]; !exists {
-								protected[v] = "project-local (.govman-goversion)"
-							}
+					if matchedVersion, err := _util.FindBestMatchingVersion(localVersion, installed); err == nil {
+						if _, exists := protected[matchedVersion]; !exists {
+							protected[matchedVersion] = "project-local (.govman-goversion)"
 						}
 					}
 				}

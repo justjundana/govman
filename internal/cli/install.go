@@ -127,7 +127,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVar(&includeUnstable, "unstable", false, "Show only unstable versions (beta, rc) when using wildcard patterns")
+	cmd.Flags().BoolVar(&includeUnstable, "unstable", false, "Include unstable versions (beta, rc) when using wildcard patterns")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip confirmation prompt for batch operations")
 
 	return cmd

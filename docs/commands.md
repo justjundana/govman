@@ -74,7 +74,7 @@ govman install '1.14.*'            # All 1.14.x versions (quote the pattern!)
 ```
 
 **Flags:**
-- `--unstable`: Include unstable versions (beta, rc, alpha) when using wildcard patterns
+- `--unstable`: Include unstable versions (beta, rc) when using wildcard patterns
 - `--yes, -y`: Skip confirmation prompt for batch operations
 
 **Features:**
@@ -197,14 +197,13 @@ govman list [flags]
 
 **Flags:**
 - `--remote, -r`: List available versions from official releases
-- `--stable-only`: Show only stable versions (remote only)
 - `--beta`: Include beta/rc versions (remote only)
 - `--pattern string`: Filter versions using glob patterns (remote only)
 
 **Examples:**
 ```bash
 govman list                        # Installed versions
-govman list --remote               # Available stable versions
+govman list --remote               # Available stable versions (default)
 govman list --remote --beta        # Include pre-releases
 govman list --remote --pattern "1.25*"  # Filter by pattern
 ```

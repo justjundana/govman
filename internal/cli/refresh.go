@@ -9,6 +9,7 @@ import (
 
 	_logger "github.com/justjundana/govman/internal/logger"
 	_manager "github.com/justjundana/govman/internal/manager"
+	_util "github.com/justjundana/govman/internal/util"
 )
 
 // newRefreshCmd creates the 'refresh' Cobra command to re-evaluate the current directory for a .govman-goversion file.
@@ -52,6 +53,27 @@ Behavior:
 				}
 
 				_logger.Info("Found local version file: %s", filename)
+
+				// Resolve aliases (latest/stable) to concrete version
+				if version == "latest" || version == "stable" {
+					resolvedVersion, err := mgr.ResolveVersion(version)
+					if err != nil {
+						_logger.ErrorWithHelp("Failed to resolve version alias '%s'", "Check your internet connection or specify an exact version.", version)
+						return fmt.Errorf("failed to resolve version %s: %w", version, err)
+					}
+					_logger.Verbose("Resolved alias %s to %s", version, resolvedVersion)
+					version = resolvedVersion
+				} else if strings.Count(version, ".") == 1 {
+					// Resolve partial version (e.g., "1.25") to best matching installed version
+					installedVersions, err := mgr.ListInstalled()
+					if err == nil && len(installedVersions) > 0 {
+						if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+							_logger.Verbose("Resolved partial version %s to installed version %s", version, matchedVersion)
+							version = matchedVersion
+						}
+					}
+				}
+
 				_logger.Info("Switching to Go %s", version)
 
 				if !mgr.IsInstalled(version) {

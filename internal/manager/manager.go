@@ -434,7 +434,7 @@ func (m *Manager) createSymlink(version string) error {
 // Returns an error if the file write fails.
 func (m *Manager) setLocalVersion(version string) error {
 	filename := m.config.AutoSwitch.ProjectFile
-	return os.WriteFile(filename, []byte(version), 0644)
+	return os.WriteFile(filename, []byte(version+"\n"), 0644)
 }
 
 // getLocalVersionRaw reads the project's autoswitch file and returns the raw version string.

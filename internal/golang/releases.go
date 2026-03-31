@@ -367,36 +367,37 @@ func fetchReleasesWithConfig(apiURL string, cacheDuration time.Duration) ([]Rele
 		cacheMutex.Unlock()
 		return result, nil
 	}
+	// Release the write lock before making the HTTP request
+	// to avoid blocking other goroutines during potentially slow network calls
+	cacheMutex.Unlock()
 
-	// Fetch releases while holding write lock
+	// Fetch releases outside the lock
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
 	resp, err := client.Get(apiURL)
 	if err != nil {
-		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to fetch releases: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to fetch releases: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var releases []Release
 	if err := json.Unmarshal(body, &releases); err != nil {
-		cacheMutex.Unlock()
 		return nil, fmt.Errorf("failed to parse releases: %w", err)
 	}
 
+	// Acquire write lock only to update the cache
+	cacheMutex.Lock()
 	releasesCache = releases
 	cacheExpiry = time.Now().Add(cacheDuration)
 	cacheMutex.Unlock()
