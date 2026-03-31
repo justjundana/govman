@@ -12,6 +12,57 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.3.1
+
+**Release Date:** April 01, 2026
+
+**Highlights:**
+- 🐛 **Critical:** Fixed `refresh` command failing with aliases and partial versions
+- 🐛 **Critical:** Fixed selfupdate binary download not validating HTTP status code
+- 🐛 **Critical:** Fixed download resume producing corrupted archives
+- 🐛 Fixed selfupdate version comparison using string equality instead of SemVer
+- 🐛 Fixed `prune` using overly broad version matching for local version protection
+- 🐛 Fixed misleading indentation in Bash/Zsh/Fish auto-switch hooks
+- 🐛 Fixed `.govman-goversion` file missing trailing newline
+- ⚡ Moved HTTP request outside write lock in releases cache
+- 🧹 `list --remote` now defaults to stable versions (consistent with `install`)
+
+**Bug Fixes:**
+- **Critical:** Fixed `refresh` command failing with aliases (`latest`/`stable`) and partial versions (`1.25`)
+  - Now resolves aliases via `ResolveVersion()` and partial versions via `FindBestMatchingVersion()`
+  - Consistent with `use`, `info`, and `install` commands
+- **Critical:** Fixed selfupdate binary download not validating HTTP status code
+  - A 404 or error response would silently corrupt the binary
+  - Now validates status code before writing response body to temp file
+- **Critical:** Fixed download resume producing corrupted archives
+  - When a `Range` header was sent but server responded with `200 OK` instead of `206 Partial Content`, the full file was appended to the existing partial file
+  - Now truncates the file and restarts download from scratch when server does not support resume
+- Fixed selfupdate version comparison using string equality instead of SemVer
+  - `v1.3.0` vs `1.3.0` would incorrectly report updates available
+  - Now uses `CompareVersions` with prefix normalization for reliable comparison
+- Fixed `prune` command using overly broad `strings.HasPrefix` for local version protection
+  - Version `1.2` in `.govman-goversion` would incorrectly protect `1.20.x`, `1.21.x`, etc.
+  - Now uses `FindBestMatchingVersion` for precise major.minor matching
+- Fixed misleading indentation in auto-switch hooks for Bash, Zsh, and Fish shells
+  - Go version check and switch logic blocks appeared to be inside a non-existent block
+  - Corrected indentation to properly align with the parent `if` block
+- Fixed `.govman-goversion` file not ending with trailing newline
+  - `setLocalVersion` now writes version with `\n` suffix per text file conventions
+- Removed duplicate "Updated Makefile" entry from v1.3.0 CHANGELOG
+
+**Performance:**
+- Moved HTTP request outside write lock in releases cache (`fetchReleasesWithConfig`)
+  - Previously blocked all goroutines for up to 30 seconds during slow network requests
+  - Now releases write lock before making HTTP call and re-acquires only to update cache
+
+**Changes:**
+- `list --remote` now defaults to showing only stable versions, consistent with `install` behavior
+  - Removed redundant `--stable-only` flag since stable is now the default
+  - Use `--beta` flag to include pre-release versions
+- Corrected `install` command's `--unstable` flag description from "Show only" to "Include unstable versions"
+
+---
+
 ### v1.3.0
 
 **Release Date:** March 01, 2026

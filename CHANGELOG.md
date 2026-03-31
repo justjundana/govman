@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.1] - 2026-04-01
+
+### 🔧 Patch Release - Bug Fixes & Code Quality Improvements
+
+This release focuses on fixing bugs, improving code quality, and ensuring consistent behavior across commands. No new features are added.
+
+### Changed
+- `list --remote` now defaults to showing only stable versions, consistent with `install` behavior
+  - Removed redundant `--stable-only` flag since stable is now the default
+  - Use `--beta` flag to include pre-release versions
+- `install` command's `--unstable` flag description corrected from "Show only" to "Include unstable versions"
+
+### Fixed
+- **Critical:** Fixed `refresh` command failing with aliases (`latest`/`stable`) and partial versions (`1.25`)
+  - Now resolves aliases via `ResolveVersion()` and partial versions via `FindBestMatchingVersion()`
+  - Consistent with `use`, `info`, and `install` commands
+- **Critical:** Fixed selfupdate binary download not validating HTTP status code
+  - A 404 or error response would silently corrupt the binary
+  - Now validates status code before writing response body to temp file
+- **Critical:** Fixed download resume producing corrupted archives
+  - When a `Range` header was sent but server responded with `200 OK` instead of `206 Partial Content`, the full file was appended to the existing partial file
+  - Now truncates the file and restarts download from scratch when server does not support resume
+- Fixed selfupdate version comparison using string equality instead of SemVer
+  - `v1.3.0` vs `1.3.0` would incorrectly report updates available
+  - Now uses `CompareVersions` with prefix normalization
+- Fixed `prune` command using overly broad `strings.HasPrefix` for local version protection
+  - Version `1.2` in `.govman-goversion` would incorrectly protect `1.20.x`, `1.21.x`, etc.
+  - Now uses `FindBestMatchingVersion` for precise major.minor matching
+- Fixed misleading indentation in auto-switch hooks for Bash, Zsh, and Fish shells
+  - Go version check and switch logic appeared to be inside a non-existent block
+- Fixed `.govman-goversion` file not ending with trailing newline
+  - `setLocalVersion` now writes version with `\n` suffix per text file conventions
+- Removed duplicate "Updated Makefile" entry from v1.3.0 CHANGELOG
+
+### Performance
+- Moved HTTP request outside write lock in releases cache (`fetchReleasesWithConfig`)
+  - Previously blocked all goroutines for up to 30 seconds during slow network requests
+  - Now only acquires write lock when updating the cache
+
 ## [1.3.0] - 2026-03-01
 
 ### 🚀 Minor Release - Prune Command & Shell Performance
@@ -26,7 +65,6 @@ This release introduces a new `prune` command for cleaning up unused Go versions
 - Deduplicated `versionFormatRegex` across `cli/refresh.go` and `manager/manager.go`
   - Exported as `VersionFormatRegex` from manager package for reuse
   - Removed duplicate definition and unused `regexp` import from CLI refresh command
-- Updated `Makefile` to use dynamic `$(HOME)` path instead of hardcoded static path for `install-local` target
 
 ### Fixed
 - Hardened `.govman-goversion` parsers for edge cases across all shells

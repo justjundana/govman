@@ -60,8 +60,8 @@ if fileExists(cachePath) && sizeMatches(cachePath, expectedSize) {
 
 **Resume Support**:
 - Uses HTTP Range header for partial downloads
-- Appends to existing partial file
-- Continues from last byte received
+- Continues from last byte received when server responds with `206 Partial Content`
+- If server does not support resume (responds with `200 OK`), truncates the partial file and restarts the download to avoid data corruption
 
 **Parallel Downloads** (configurable):
 - Multiple HTTP connections
