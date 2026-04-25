@@ -1856,3 +1856,29 @@ func TestInitializeShellWithExistingConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestAutoSwitchPartialVersionComparison verifies the fix for BUG-4:
+// Shell auto-switch scripts must use compare_version to handle partial version
+// matching (e.g. required "1.25" should match current "1.25.3").
+func TestAutoSwitchPartialVersionComparison(t *testing.T) {
+	testCases := []struct {
+		name    string
+		shell   Shell
+		keyword string
+	}{
+		{"Bash", &BashShell{}, "compare_version"},
+		{"Zsh", &ZshShell{}, "compare_version"},
+		{"Fish", &FishShell{}, "compare_version"},
+		{"PowerShell", &PowerShell{}, "compareVersion"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			commands := tc.shell.SetupCommands("/usr/local/bin")
+			joined := strings.Join(commands, "\n")
+			if !strings.Contains(joined, tc.keyword) {
+				t.Errorf("%s SetupCommands should contain %q for partial version comparison", tc.name, tc.keyword)
+			}
+		})
+	}
+}
