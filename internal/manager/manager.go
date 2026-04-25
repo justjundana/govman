@@ -418,11 +418,6 @@ func (m *Manager) createSymlink(version string) error {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
-	// Remove the old symlink if it exists
-	if err := os.Remove(symlinkPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove existing symlink: %w", err)
-	}
-
 	if err := _symlink.Create(goExecutablePath, symlinkPath); err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
