@@ -76,6 +76,9 @@ func (pb *ProgressBar) Set(current int64) {
 	defer pb.mutex.Unlock()
 
 	pb.current = current
+	if pb.current < 0 {
+		pb.current = 0
+	}
 	if pb.current > pb.total {
 		pb.current = pb.total
 	}

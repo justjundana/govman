@@ -175,7 +175,7 @@ func TestProgressBar_Set(t *testing.T) {
 			name:     "Set negative",
 			total:    100,
 			set:      -10,
-			expected: -10, // Negative values are allowed, just clamped to total if exceeding
+			expected: 0, // Negative values are clamped to 0
 		},
 	}
 
