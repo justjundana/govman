@@ -33,7 +33,7 @@ Use this to verify your environment and troubleshoot version issues.`,
 			_logger.Verbose("Detecting currently active Go version")
 			current, err := mgr.Current()
 			if err != nil {
-				_logger.ErrorWithHelp("No Go version is currently active in your environment", "Install a Go version with 'govman install latest', then activate it with 'govman use <version>'.", "")
+				_logger.ErrorWithHelp("No Go version is currently active in your environment", "Install a Go version with 'govman install latest', then activate it with 'govman use <version>'.")
 				_logger.Info("Quick setup: govman install latest && govman use latest --default")
 				return fmt.Errorf("no Go version is currently active")
 			}

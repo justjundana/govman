@@ -276,9 +276,9 @@ func hasWildcardPattern(args []string) bool {
 }
 
 // expandInstallPatterns expands wildcard patterns in version arguments using remote available versions.
-// When unstableOnly is true, only prerelease versions (beta, rc, alpha) are returned.
+// When includeUnstable is true, both stable and prerelease versions are returned.
 // Returns a deduplicated, sorted list of concrete versions to install.
-func expandInstallPatterns(args []string, mgr *_manager.Manager, unstableOnly bool) ([]string, error) {
+func expandInstallPatterns(args []string, mgr *_manager.Manager, includeUnstable bool) ([]string, error) {
 	var allVersions []string
 	seenVersions := make(map[string]bool)
 
@@ -286,16 +286,11 @@ func expandInstallPatterns(args []string, mgr *_manager.Manager, unstableOnly bo
 		if _util.IsWildcardPattern(arg) {
 			// Fetch remote versions and filter by pattern
 			_logger.Progress("Fetching available versions for pattern '%s'...", arg)
-			// Always fetch all versions when unstableOnly is true (we'll filter later)
-			// Otherwise, fetch stable versions only
-			remoteVersions, err := _golang.GetAvailableVersions(unstableOnly)
+			// When includeUnstable is true, fetch all versions (stable + prerelease).
+			// Otherwise, fetch stable versions only.
+			remoteVersions, err := _golang.GetAvailableVersions(includeUnstable)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch remote versions: %w", err)
-			}
-
-			// If unstableOnly, filter to keep only prerelease versions
-			if unstableOnly {
-				remoteVersions = filterPrereleaseVersions(remoteVersions)
 			}
 
 			matched := _util.MatchVersionPattern(arg, remoteVersions)

@@ -62,7 +62,7 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 	_logger.Verbose("Scanning installation directory for Go versions")
 	versions, err := mgr.ListInstalled()
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to scan for installed Go versions", "Verify that ~/.govman/versions exists and is accessible.", "")
+		_logger.ErrorWithHelp("Unable to scan for installed Go versions", "Verify that ~/.govman/versions exists and is accessible.")
 		return fmt.Errorf("failed to list installed versions: %w", err)
 	}
 
@@ -124,7 +124,7 @@ func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern str
 	_logger.Verbose("Fetching available versions from Go's official release API")
 	versions, err := mgr.ListRemote(includeUnstable)
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to fetch remote Go versions", "Check your internet connection and verify that golang.org is accessible.", "")
+		_logger.ErrorWithHelp("Unable to fetch remote Go versions", "Check your internet connection and verify that golang.org is accessible.")
 		return fmt.Errorf("failed to list remote versions: %w", err)
 	}
 
@@ -162,7 +162,7 @@ func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern str
 	installedCount := 0
 
 	for _, version := range versions {
-		if strings.Contains(version, "rc") || strings.Contains(version, "beta") {
+		if strings.Contains(version, "rc") || strings.Contains(version, "beta") || strings.Contains(version, "alpha") {
 			unstableCount++
 		} else {
 			stableCount++
