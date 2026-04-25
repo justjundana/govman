@@ -85,7 +85,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	_logger.Verbose("Retrieving latest release information from GitHub")
 	latest, err := getLatestRelease(prerelease)
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to fetch update information", "Verify your internet connection and that GitHub API is accessible.", "")
+		_logger.ErrorWithHelp("Unable to fetch update information", "Verify your internet connection and that GitHub API is accessible.")
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
@@ -134,7 +134,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 
 	var downloadURL string
 	for _, asset := range latest.Assets {
-		if strings.Contains(asset.Name, assetName) {
+		if asset.Name == assetName {
 			downloadURL = asset.DownloadURL
 			break
 		}
@@ -149,7 +149,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 	_logger.Verbose("Downloading binary")
 	resp, err := selfUpdateHTTPClient.Get(downloadURL)
 	if err != nil {
-		_logger.ErrorWithHelp("Failed to download binary", "Check your internet connection and try again.", "")
+		_logger.ErrorWithHelp("Failed to download binary", "Check your internet connection and try again.")
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 	defer resp.Body.Close()
@@ -159,7 +159,14 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		return fmt.Errorf("failed to download binary: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
-	tempFile, err := os.CreateTemp("", "govman-update-*.bin")
+	_logger.Verbose("Getting current binary path")
+	currentBinary, err := os.Executable()
+	if err != nil {
+		_logger.ErrorWithHelp("Failed to get current binary path", "Check if the binary has proper permissions.")
+		return fmt.Errorf("failed to get current binary path: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(currentBinary), "govman-update-*.bin")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
@@ -180,17 +187,10 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		return fmt.Errorf("failed to close temporary file: %w", err)
 	}
 
-	_logger.Verbose("Getting current binary path")
-	currentBinary, err := os.Executable()
-	if err != nil {
-		_logger.ErrorWithHelp("Failed to get current binary path", "Check if the binary has proper permissions.", "")
-		return fmt.Errorf("failed to get current binary path: %w", err)
-	}
-
 	_logger.Verbose("Creating backup of current binary")
 	backupBinary := currentBinary + ".bak." + fmt.Sprintf("%d", time.Now().Unix())
 	if err := os.Rename(currentBinary, backupBinary); err != nil {
-		_logger.ErrorWithHelp("Failed to create backup of current binary", "Check if you have permission to modify the binary directory.", "")
+		_logger.ErrorWithHelp("Failed to create backup of current binary", "Check if you have permission to modify the binary directory.")
 		return fmt.Errorf("failed to rename current binary to backup: %w", err)
 	}
 
@@ -199,7 +199,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		// Failed to install new binary, restore backup
 		_logger.Warning("Failed to install new binary, restoring backup")
 		if restoreErr := os.Rename(backupBinary, currentBinary); restoreErr != nil {
-			_logger.ErrorWithHelp("Failed to restore backup binary", "You may need to manually restore the binary from the backup file.", "")
+			_logger.ErrorWithHelp("Failed to restore backup binary", "You may need to manually restore the binary from the backup file.")
 			return fmt.Errorf("failed to restore backup binary: %w", restoreErr)
 		}
 		return fmt.Errorf("failed to move downloaded binary to current binary path: %w", err)
@@ -207,7 +207,7 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 
 	_logger.Verbose("Setting executable permissions")
 	if err := os.Chmod(currentBinary, 0755); err != nil {
-		_logger.ErrorWithHelp("Failed to set executable permissions", "You may need to manually set executable permissions on the binary.", "")
+		_logger.ErrorWithHelp("Failed to set executable permissions", "You may need to manually set executable permissions on the binary.")
 		return fmt.Errorf("failed to set executable permission for new binary: %w", err)
 	}
 
