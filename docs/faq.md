@@ -87,6 +87,8 @@ govman install 1.25    # Installs latest 1.25.x (e.g., 1.25.1)
 - `govman use 1.25.1 --default`: System-wide default (persistent)
 - `govman use 1.25.1 --local`: Project-specific (creates `.govman-goversion`)
 
+> **Note:** `--default` and `--local` are mutually exclusive and cannot be used together.
+
 ## Shell Integration
 
 ### Why doesn't `govman use` work in my current shell session?

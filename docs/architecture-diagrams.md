@@ -93,7 +93,7 @@ flowchart TD
     CheckConfig -->|Yes| CheckFile{.govman-goversion exists?}
     CheckFile -->|No| UseDefault[Use default version]
     CheckFile -->|Yes| ReadFile[Read required version]
-    ReadFile --> CheckCurrent{Current == Required?}
+    ReadFile --> CheckCurrent{Current matches Required?}
     CheckCurrent -->|Yes| End
     CheckCurrent -->|No| Switch[govman use required-version]
     Switch --> UpdatePATH[Update PATH]

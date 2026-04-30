@@ -36,7 +36,7 @@ govman init [flags]
 
 **Flags:**
 - `--force, -f`: Force re-initialization (overwrite existing configuration)
-- `--shell string`: Target specific shell (bash, zsh, fish, powershell, pwsh)
+- `--shell string`: Target specific shell (bash, zsh, fish, powershell, pwsh, cmd)
 
 **Examples:**
 ```bash
@@ -137,6 +137,8 @@ govman use <version> [flags]
 - `--default, -d`: Set as system-wide default (persistent)
 - `--local, -l`: Set as project-local version (creates `.govman-goversion`)
 
+> **Note:** `--default` and `--local` are mutually exclusive and cannot be used together.
+
 **Examples:**
 ```bash
 govman use 1.25.1                 # Session-only
@@ -197,7 +199,7 @@ govman list [flags]
 
 **Flags:**
 - `--remote, -r`: List available versions from official releases
-- `--beta`: Include beta/rc versions (remote only)
+- `--beta`: Include pre-release versions — beta, rc, alpha (remote only)
 - `--pattern string`: Filter versions using glob patterns (remote only)
 
 **Examples:**

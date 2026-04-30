@@ -125,7 +125,7 @@ go version  # Doesn't switch automatically
 
 3. Verify `.govman-goversion` format:
    ```bash
-   cat .govman-goversion  # Should contain only version number, e.g., "1.25.1"
+   cat .govman-goversion  # Should contain only version number, e.g., "1.25.1" or partial "1.25"
    ```
 
 **Solution:**

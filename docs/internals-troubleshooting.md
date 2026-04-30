@@ -336,6 +336,10 @@ func (p *ProgressBar) Render() string {
 - Only redraw every 100ms to avoid flickering
 - Force update on completion
 
+**Value Clamping**:
+- `Set()` clamps values to `[0, total]` range
+- Negative values are clamped to `0`, values exceeding `total` are clamped to `total`
+
 ### internal/symlink
 
 Symlink creation with cross-platform support.
@@ -344,14 +348,13 @@ Symlink creation with cross-platform support.
 
 ```go
 func Create(target, link string) error {
-    // Remove existing symlink/file
-    os.Remove(link)
-    
     // Create parent directory
     os.MkdirAll(filepath.Dir(link), 0755)
     
-    // Create symlink
-    return os.Symlink(target, link)
+    // Create temp symlink and atomically rename
+    tmpLink := link + ".tmp." + randomSuffix()
+    os.Symlink(target, tmpLink)
+    return os.Rename(tmpLink, link)
 }
 ```
 
@@ -400,8 +403,8 @@ func (c *Config) Save() error {
 ```
 
 **Symlink Updates**:
-- OS-level atomic operation
-- Old symlink removed, new one created in single syscall
+- Atomic replacement via temp-symlink + `os.Rename`
+- No window where symlink is missing
 
 ### No Race Conditions
 

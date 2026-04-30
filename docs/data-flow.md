@@ -179,9 +179,9 @@ cd /path/to/project  # With .govman-goversion file
    ↓ if enabled, looks for
 4. .govman-goversion file in current directory
    ↓ reads version
-5. Required version (e.g., "1.25.1")
+5. Required version (e.g., "1.25.1" or partial "1.25")
    ↓ checks current
-6. go version output
+6. go version output (truncated to match required format if partial)
    ↓ if different
 7. govman use <required-version>
    ↓ follows Use Flow
