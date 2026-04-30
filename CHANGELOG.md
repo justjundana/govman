@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.2] - 2026-05-01
+
+### 🔧 Patch Release - Bug Fixes & Code Quality Improvements
+
+This release fixes several edge-case bugs across install, selfupdate, shell auto-switch, progress bar, and version switching. No new features are added.
+
+### Fixed
+- Fixed `install` wildcard expansion with `--unstable` flag stripping stable versions
+  - `govman install '1.14.*' --unstable` previously returned only prerelease versions
+  - Now correctly returns both stable and prerelease versions matching the pattern
+- Fixed `list --remote --beta` not counting alpha versions as unstable
+  - Alpha versions were missing from the unstable version counter in summary output
+- Fixed selfupdate cross-device rename failure on Linux
+  - Temp file was created in system temp dir (`/tmp`), causing `EXDEV` error when renaming to binary dir on a different filesystem
+  - Now creates temp file in the same directory as the current binary
+- Fixed selfupdate asset matching using substring instead of exact name
+  - `strings.Contains` could match `govman-linux-amd64-v2` when looking for `govman-linux-amd64`
+  - Now uses exact name comparison
+- Fixed symlink replacement not being fully atomic
+  - `manager.createSymlink` explicitly removed the old symlink before calling `symlink.Create`
+  - This created a window where no symlink existed
+  - Removed the redundant `os.Remove` since `symlink.Create` already performs atomic replacement via temp-symlink + `os.Rename`
+- Fixed shell auto-switch hooks triggering redundant version switches with partial versions
+  - When `.govman-goversion` contains a partial version like `1.25`, and the active version is `1.25.3`, the comparison `"1.25.3" != "1.25"` would trigger an unnecessary switch
+  - Auto-switch hooks in all 4 shells (Bash, Zsh, Fish, PowerShell) now truncate the current version to match the format of the required version before comparison
+- Fixed `use` command allowing `--default` and `--local` flags simultaneously
+  - These flags are mutually exclusive but were not validated
+  - Now enforced via Cobra's `MarkFlagsMutuallyExclusive`
+- Fixed progress bar `Set()` method not clamping negative values
+  - Negative values are now clamped to `0` (upper bound was already clamped to `total`)
+- Added missing `cmd` shell support in `init --shell` flag
+  - `govman init --shell cmd` was not recognized despite `CmdShell` being fully implemented
+- Cleaned up unnecessary trailing empty string arguments in `ErrorWithHelp` calls across CLI commands
+
 ## [1.3.1] - 2026-04-01
 
 ### 🔧 Patch Release - Bug Fixes & Code Quality Improvements
