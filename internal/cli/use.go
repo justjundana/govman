@@ -167,6 +167,7 @@ Examples:
 
 	cmd.Flags().BoolVarP(&setDefault, "default", "d", false, "Set as system-wide default version (persistent)")
 	cmd.Flags().BoolVarP(&setLocal, "local", "l", false, "Set as project-local version (creates .govman-goversion file)")
+	cmd.MarkFlagsMutuallyExclusive("default", "local")
 
 	return cmd
 }

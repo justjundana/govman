@@ -63,7 +63,7 @@ Go version when you navigate to different projects.`,
 
 			_logger.Verbose("Setting up shell integration with binary path: %s", binPath)
 			if err := _shell.InitializeShell(sh, binPath, force); err != nil {
-				_logger.ErrorWithHelp("Failed to configure shell integration", "Ensure you have write permissions to your shell configuration file and try again.", "")
+				_logger.ErrorWithHelp("Failed to configure shell integration", "Ensure you have write permissions to your shell configuration file and try again.")
 				return err
 			}
 
@@ -100,6 +100,8 @@ func getShellByName(name string) _shell.Shell {
 		return &_shell.FishShell{}
 	case "powershell", "pwsh":
 		return &_shell.PowerShell{}
+	case "cmd":
+		return &_shell.CmdShell{}
 	default:
 		return nil
 	}

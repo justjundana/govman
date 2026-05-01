@@ -45,6 +45,7 @@ govman init --shell bash
 govman init --shell zsh
 govman init --shell fish
 govman init --shell powershell
+govman init --shell cmd
 ```
 
 ### Force Reinitialization
@@ -205,7 +206,10 @@ govman_auto_switch() {
         # Improved version extraction with validation
         local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')
         if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi
-        if [[ -n "$current_version" && "$current_version" != "$required_version" ]]; then
+        # If required_version is major.minor only, truncate current_version for comparison
+        local compare_version="$current_version"
+        if [[ ! "$required_version" == *.*.* ]]; then compare_version="${current_version%%.*}.${current_version#*.}"; compare_version="${compare_version%%.*}"; fi
+        if [[ -n "$current_version" && "$compare_version" != "$required_version" ]]; then
             echo "Auto-switching to Go $required_version (required by .govman-goversion)"
             govman use "$required_version" > /dev/null 2>&1 || {
                 echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2

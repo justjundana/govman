@@ -34,7 +34,7 @@ Run periodically to keep your system clean and optimized.`,
 			mgr := _manager.New(getConfig())
 			err := mgr.Clean()
 			if err != nil {
-				_logger.ErrorWithHelp("Unable to clean cache directories", "Verify that ~/.govman/cache exists and you have sufficient permissions to modify it.", "")
+				_logger.ErrorWithHelp("Unable to clean cache directories", "Verify that ~/.govman/cache exists and you have sufficient permissions to modify it.")
 				return err
 			}
 

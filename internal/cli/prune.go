@@ -39,7 +39,7 @@ Examples:
 			// Get all installed versions
 			installed, err := mgr.ListInstalled()
 			if err != nil {
-				_logger.ErrorWithHelp("Unable to list installed versions", "Verify that ~/.govman/versions exists and you have sufficient permissions.", "")
+				_logger.ErrorWithHelp("Unable to list installed versions", "Verify that ~/.govman/versions exists and you have sufficient permissions.")
 				return fmt.Errorf("failed to list installed versions: %w", err)
 			}
 
