@@ -608,6 +608,63 @@ func TestDownloader_extractArchive(t *testing.T) {
 	}
 }
 
+// createTestTarGz creates a tar.gz archive with the given file entry.
+func createTestTarGz(t *testing.T, fileName, fileContent string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	tarWriter := tar.NewWriter(gzWriter)
+
+	if fileName != "" {
+		header := &tar.Header{
+			Name: fileName,
+			Size: int64(len(fileContent)),
+			Mode: 0644,
+		}
+		if strings.HasSuffix(fileName, "/") {
+			header.Typeflag = tar.TypeDir
+			header.Mode = 0755
+			header.Size = 0
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatalf("Failed to write tar header: %v", err)
+		}
+		if !strings.HasSuffix(fileName, "/") {
+			if _, err := tarWriter.Write([]byte(fileContent)); err != nil {
+				t.Fatalf("Failed to write tar content: %v", err)
+			}
+		}
+	}
+
+	tarWriter.Close()
+	gzWriter.Close()
+	return buf.Bytes()
+}
+
+// verifyExtractedFile checks that the extracted file exists and has the expected content.
+func verifyExtractedFile(t *testing.T, installDir, fileName, expectedContent string) {
+	t.Helper()
+	extractedPath := filepath.Join(installDir, fileName)
+	if strings.HasSuffix(fileName, "/") {
+		if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
+			t.Error("Extracted directory does not exist")
+		}
+		return
+	}
+
+	if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
+		t.Error("Extracted file does not exist")
+	}
+
+	content, err := os.ReadFile(extractedPath)
+	if err != nil {
+		t.Fatalf("Failed to read extracted file: %v", err)
+	}
+	if string(content) != expectedContent {
+		t.Errorf("Expected extracted content %q, got %q", expectedContent, string(content))
+	}
+}
+
 // TestDownloader_extractTarGz tests tar.gz extraction
 func TestDownloader_extractTarGz(t *testing.T) {
 	testCases := []struct {
@@ -643,44 +700,15 @@ func TestDownloader_extractTarGz(t *testing.T) {
 
 			installDir := filepath.Join(config.InstallDir, "test-tar")
 
-			var buf bytes.Buffer
-			gzWriter := gzip.NewWriter(&buf)
-			tarWriter := tar.NewWriter(gzWriter)
-
-			if tc.fileName != "" {
-				header := &tar.Header{
-					Name: tc.fileName,
-					Size: int64(len(tc.fileContent)),
-					Mode: 0644,
-				}
-				if strings.HasSuffix(tc.fileName, "/") {
-					header.Typeflag = tar.TypeDir
-					header.Mode = 0755
-					header.Size = 0
-				}
-				err := tarWriter.WriteHeader(header)
-				if err != nil {
-					t.Fatalf("Failed to write tar header: %v", err)
-				}
-				if !strings.HasSuffix(tc.fileName, "/") {
-					_, err = tarWriter.Write([]byte(tc.fileContent))
-					if err != nil {
-						t.Fatalf("Failed to write tar content: %v", err)
-					}
-				}
-			}
-
-			tarWriter.Close()
-			gzWriter.Close()
+			tarData := createTestTarGz(t, tc.fileName, tc.fileContent)
 
 			tarFile := filepath.Join(config.CacheDir, "test.tar.gz")
-			err := os.WriteFile(tarFile, buf.Bytes(), 0644)
-			if err != nil {
+			if err := os.WriteFile(tarFile, tarData, 0644); err != nil {
 				t.Fatalf("Failed to write tar.gz file: %v", err)
 			}
 			defer os.Remove(tarFile)
 
-			err = downloader.extractTarGz(tarFile, installDir)
+			err := downloader.extractTarGz(tarFile, installDir)
 
 			if tc.expectError {
 				if err == nil {
@@ -693,28 +721,8 @@ func TestDownloader_extractTarGz(t *testing.T) {
 				t.Fatalf("extractTarGz failed: %v", err)
 			}
 
-			if tc.fileName == "" {
-				return
-			}
-
-			extractedPath := filepath.Join(installDir, tc.fileName)
-			if strings.HasSuffix(tc.fileName, "/") {
-				if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
-					t.Error("Extracted directory does not exist")
-				}
-				return
-			}
-
-			if _, err := os.Stat(extractedPath); os.IsNotExist(err) {
-				t.Error("Extracted file does not exist")
-			}
-
-			content, err := os.ReadFile(extractedPath)
-			if err != nil {
-				t.Fatalf("Failed to read extracted file: %v", err)
-			}
-			if string(content) != tc.fileContent {
-				t.Errorf("Expected extracted content %q, got %q", tc.fileContent, string(content))
+			if tc.fileName != "" {
+				verifyExtractedFile(t, installDir, tc.fileName, tc.fileContent)
 			}
 
 			os.RemoveAll(installDir)

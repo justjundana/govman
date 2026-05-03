@@ -83,6 +83,49 @@ func (d *Downloader) Download(url, installDir, version string) error {
 	return nil
 }
 
+// handleResumeResponse checks if the server supports resume and truncates the file if needed.
+func (d *Downloader) handleResumeResponse(file *os.File, resp *http.Response, currentSize int64) (int64, error) {
+	if currentSize > 0 && resp.StatusCode == http.StatusOK {
+		_logger.Verbose("Server does not support resume, restarting download from scratch")
+		if err := file.Truncate(0); err != nil {
+			return 0, fmt.Errorf("failed to truncate file for fresh download: %w", err)
+		}
+		if _, err := file.Seek(0, 0); err != nil {
+			return 0, fmt.Errorf("failed to seek to beginning of file: %w", err)
+		}
+		return 0, nil
+	}
+	return currentSize, nil
+}
+
+// downloadWithRetry performs the HTTP download with retry logic.
+func (d *Downloader) downloadWithRetry(req *http.Request) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < d.config.Download.RetryCount; attempt++ {
+		resp, err = d.client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		if attempt < d.config.Download.RetryCount-1 {
+			_logger.Warning("Download failed, retrying in %v... (%d/%d)",
+				d.config.Download.RetryDelay, attempt+1, d.config.Download.RetryCount)
+			time.Sleep(d.config.Download.RetryDelay)
+		}
+	}
+	return nil, fmt.Errorf("failed to download after %d attempts: %w", d.config.Download.RetryCount, err)
+}
+
+// setupProgressReader wraps the response body with a progress bar if available.
+func setupProgressReader(body io.Reader, totalSize, currentSize int64, filename string) (io.Reader, *_progress.ProgressBar) {
+	progressBar := _progress.New(totalSize, fmt.Sprintf("Downloading %s", filename))
+	if progressBar != nil {
+		progressBar.Set(currentSize)
+		return io.TeeReader(body, progressBar), progressBar
+	}
+	return body, nil
+}
+
 // downloadFile downloads (or resumes) the archive to the cache directory with retries and a progress bar.
 // Parameters: url (download URL), fileInfo (expected file metadata). Returns the cached file path or an error.
 func (d *Downloader) downloadFile(url string, fileInfo *_golang.File) (string, error) {
@@ -120,20 +163,9 @@ func (d *Downloader) downloadFile(url string, fileInfo *_golang.File) (string, e
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
 	}
 
-	var resp *http.Response
-	for attempt := 0; attempt < d.config.Download.RetryCount; attempt++ {
-		resp, err = d.client.Do(req)
-		if err != nil {
-			if attempt < d.config.Download.RetryCount-1 {
-				_logger.Warning("Download failed, retrying in %v... (%d/%d)",
-					d.config.Download.RetryDelay, attempt+1, d.config.Download.RetryCount)
-				time.Sleep(d.config.Download.RetryDelay)
-				continue
-			}
-			return "", fmt.Errorf("failed to download after %d attempts: %w",
-				attempt+1, err)
-		}
-		break
+	resp, err := d.downloadWithRetry(req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
@@ -141,18 +173,9 @@ func (d *Downloader) downloadFile(url string, fileInfo *_golang.File) (string, e
 		return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// If we requested resume (Range header) but server responded with 200 OK
-	// instead of 206 Partial Content, the server is sending the full file.
-	// Truncate the existing partial file to avoid data corruption.
-	if currentSize > 0 && resp.StatusCode == http.StatusOK {
-		_logger.Verbose("Server does not support resume, restarting download from scratch")
-		if err := file.Truncate(0); err != nil {
-			return "", fmt.Errorf("failed to truncate file for fresh download: %w", err)
-		}
-		if _, err := file.Seek(0, 0); err != nil {
-			return "", fmt.Errorf("failed to seek to beginning of file: %w", err)
-		}
-		currentSize = 0
+	currentSize, err = d.handleResumeResponse(file, resp, currentSize)
+	if err != nil {
+		return "", err
 	}
 
 	totalSize := fileInfo.Size
@@ -160,17 +183,7 @@ func (d *Downloader) downloadFile(url string, fileInfo *_golang.File) (string, e
 		totalSize = currentSize + resp.ContentLength
 	}
 
-	progressBar := _progress.New(totalSize, fmt.Sprintf("Downloading %s", filename))
-	if progressBar != nil {
-		progressBar.Set(currentSize)
-	}
-
-	var reader io.Reader
-	if progressBar != nil {
-		reader = io.TeeReader(resp.Body, progressBar)
-	} else {
-		reader = resp.Body
-	}
+	reader, progressBar := setupProgressReader(resp.Body, totalSize, currentSize, filename)
 
 	if _, err := io.Copy(file, reader); err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
@@ -226,6 +239,29 @@ func (d *Downloader) extractArchive(archivePath, installDir string) error {
 	return fmt.Errorf("unsupported archive format")
 }
 
+// validateArchivePath checks if an archive path is safe (no traversal) and returns the target path.
+func validateArchivePath(path, installDir, originalName string) (string, error) {
+	if strings.Contains(path, "..") || filepath.IsAbs(path) || strings.Contains(path, "\\..") {
+		return "", fmt.Errorf("unsafe path in archive: %s", originalName)
+	}
+	targetPath := filepath.Join(installDir, path)
+	if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(installDir)) {
+		return "", fmt.Errorf("path traversal attempt detected in archive: %s", originalName)
+	}
+	return targetPath, nil
+}
+
+// ensureParentDir creates the parent directory for a target path if it doesn't exist.
+func ensureParentDir(targetPath string) error {
+	parentDir := filepath.Dir(targetPath)
+	if _, err := os.Stat(parentDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(parentDir, 0755); err != nil {
+			return fmt.Errorf("failed to create parent directory: %w", err)
+		}
+	}
+	return nil
+}
+
 // extractTarGz extracts a .tar.gz archive into installDir with path safety checks and file permissions preserved.
 // Returns an error on I/O issues or unsafe paths.
 func (d *Downloader) extractTarGz(archivePath, installDir string) error {
@@ -257,63 +293,53 @@ func (d *Downloader) extractTarGz(archivePath, installDir string) error {
 			continue
 		}
 
-		// Path traversal protection
-		if strings.Contains(path, "..") || filepath.IsAbs(path) || strings.Contains(path, "\\..") {
-			return fmt.Errorf("unsafe path in archive: %s", header.Name)
+		targetPath, err := validateArchivePath(path, installDir, header.Name)
+		if err != nil {
+			return err
 		}
 
-		// Additional check: ensure the resolved target path is within installDir
-		targetPath := filepath.Join(installDir, path)
-		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(installDir)) {
-			return fmt.Errorf("path traversal attempt detected in archive: %s", header.Name)
-		}
-
-		parentDir := filepath.Dir(targetPath)
-		if _, err := os.Stat(parentDir); os.IsNotExist(err) {
-			if err := os.MkdirAll(parentDir, 0755); err != nil {
-				return fmt.Errorf("failed to create parent directory: %w", err)
-			}
-		}
-
-		if header.Typeflag == tar.TypeDir {
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", targetPath, err)
-			}
-			continue
-		}
-
-		if header.Typeflag == tar.TypeSymlink {
-			// Validate symlink target for security
-			linkTarget := header.Linkname
-			if strings.Contains(linkTarget, "..") {
-				return fmt.Errorf("unsafe symlink target in archive: %s -> %s", header.Name, linkTarget)
-			}
-			// Remove existing symlink if any
-			os.Remove(targetPath)
-			if err := os.Symlink(linkTarget, targetPath); err != nil {
-				return fmt.Errorf("failed to create symlink %s -> %s: %w", targetPath, linkTarget, err)
-			}
-			continue
-		}
-
-		if header.Typeflag == tar.TypeReg {
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return fmt.Errorf("failed to create parent directory: %w", err)
-			}
-
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				return fmt.Errorf("failed to create file %s: %w", targetPath, err)
-			}
-
-			if _, err := io.Copy(outFile, io.LimitReader(tarReader, maxExtractFileSize)); err != nil {
-				outFile.Close()
-				return fmt.Errorf("failed to write file %s: %w", targetPath, err)
-			}
-			outFile.Close()
+		if err := d.extractTarEntry(header, tarReader, targetPath); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// extractTarEntry processes a single tar entry (directory, symlink, or regular file).
+func (d *Downloader) extractTarEntry(header *tar.Header, tarReader *tar.Reader, targetPath string) error {
+	if err := ensureParentDir(targetPath); err != nil {
+		return err
+	}
+
+	switch header.Typeflag {
+	case tar.TypeDir:
+		if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", targetPath, err)
+		}
+	case tar.TypeSymlink:
+		linkTarget := header.Linkname
+		if strings.Contains(linkTarget, "..") {
+			return fmt.Errorf("unsafe symlink target in archive: %s -> %s", header.Name, linkTarget)
+		}
+		os.Remove(targetPath)
+		if err := os.Symlink(linkTarget, targetPath); err != nil {
+			return fmt.Errorf("failed to create symlink %s -> %s: %w", targetPath, linkTarget, err)
+		}
+	case tar.TypeReg:
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return fmt.Errorf("failed to create parent directory: %w", err)
+		}
+		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		if err != nil {
+			return fmt.Errorf("failed to create file %s: %w", targetPath, err)
+		}
+		if _, err := io.Copy(outFile, io.LimitReader(tarReader, maxExtractFileSize)); err != nil {
+			outFile.Close()
+			return fmt.Errorf("failed to write file %s: %w", targetPath, err)
+		}
+		outFile.Close()
+	}
 	return nil
 }
 
@@ -336,15 +362,9 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 			continue
 		}
 
-		// Path traversal protection
-		if strings.Contains(path, "..") || filepath.IsAbs(path) || strings.Contains(path, "\\..") {
-			return fmt.Errorf("unsafe path in archive: %s", file.Name)
-		}
-
-		// Additional check: ensure the resolved target path is within installDir
-		targetPath := filepath.Join(installDir, path)
-		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(installDir)) {
-			return fmt.Errorf("path traversal attempt detected in archive: %s", file.Name)
+		targetPath, err := validateArchivePath(path, installDir, file.Name)
+		if err != nil {
+			return err
 		}
 
 		if file.FileInfo().IsDir() {
@@ -354,32 +374,34 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 			continue
 		}
 
-		parentDir := filepath.Dir(targetPath)
-		if _, err := os.Stat(parentDir); os.IsNotExist(err) {
-			if err := os.MkdirAll(parentDir, 0755); err != nil {
-				return fmt.Errorf("failed to create parent directory: %w", err)
-			}
+		if err := d.extractZipFile(file, targetPath); err != nil {
+			return err
 		}
+	}
 
-		srcFile, err := file.Open()
-		if err != nil {
-			return fmt.Errorf("failed to open file in archive: %w", err)
-		}
+	return nil
+}
 
-		dstFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			srcFile.Close()
-			return fmt.Errorf("failed to create file %s: %w", targetPath, err)
-		}
+// extractZipFile extracts a single file from a zip archive.
+func (d *Downloader) extractZipFile(file *zip.File, targetPath string) error {
+	if err := ensureParentDir(targetPath); err != nil {
+		return err
+	}
 
-		if _, err := io.Copy(dstFile, io.LimitReader(srcFile, maxExtractFileSize)); err != nil {
-			srcFile.Close()
-			dstFile.Close()
-			return fmt.Errorf("failed to write file %s: %w", targetPath, err)
-		}
+	srcFile, err := file.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open file in archive: %w", err)
+	}
+	defer srcFile.Close()
 
-		srcFile.Close()
-		dstFile.Close()
+	dstFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %w", targetPath, err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, io.LimitReader(srcFile, maxExtractFileSize)); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", targetPath, err)
 	}
 
 	return nil

@@ -9,6 +9,34 @@ import (
 	"time"
 )
 
+// setTestHome sets HOME (or USERPROFILE on Windows) to tempHome and returns a cleanup function.
+func setTestHome(t *testing.T, tempHome string) {
+	t.Helper()
+	oldHome := os.Getenv("HOME")
+	if runtime.GOOS == "windows" {
+		os.Setenv("USERPROFILE", tempHome)
+		t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
+	} else {
+		os.Setenv("HOME", tempHome)
+		t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+	}
+}
+
+// makeGovmanDirReadOnly creates a read-only .govman directory under tempHome.
+func makeGovmanDirReadOnly(t *testing.T, tempHome string) {
+	t.Helper()
+	govmanDir := filepath.Join(tempHome, ".govman")
+	if err := os.MkdirAll(govmanDir, 0755); err != nil {
+		t.Fatalf("Failed to create govman dir: %v", err)
+	}
+	if err := os.Chmod(govmanDir, 0444); err != nil {
+		t.Fatalf("Failed to make govman dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(govmanDir, 0755)
+	})
+}
+
 func TestLoad(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -21,16 +49,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "Load default config",
 			setup: func(t *testing.T) string {
-				// Create temp home directory
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-				} else {
-					os.Setenv("HOME", tempHome)
-					t.Cleanup(func() { os.Setenv("HOME", oldHome) })
-				}
+				setTestHome(t, t.TempDir())
 				return ""
 			},
 			expectError: false,
@@ -41,12 +60,10 @@ func TestLoad(t *testing.T) {
 				tempDir := t.TempDir()
 				configPath := filepath.Join(tempDir, "custom.yaml")
 
-				// Create a custom config file
 				configContent := `install_dir: "/tmp/custom/install"
 cache_dir: "/tmp/custom/cache"
 default_version: "1.21.0"`
-				err := os.WriteFile(configPath, []byte(configContent), 0644)
-				if err != nil {
+				if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 					t.Fatalf("Failed to create test config file: %v", err)
 				}
 
@@ -60,9 +77,7 @@ default_version: "1.21.0"`
 				tempDir := t.TempDir()
 				configPath := filepath.Join(tempDir, "invalid.yaml")
 
-				// Create invalid YAML
-				err := os.WriteFile(configPath, []byte("invalid: yaml: content: ["), 0644)
-				if err != nil {
+				if err := os.WriteFile(configPath, []byte("invalid: yaml: content: ["), 0644); err != nil {
 					t.Fatalf("Failed to create test config file: %v", err)
 				}
 
@@ -91,27 +106,8 @@ default_version: "1.21.0"`
 			name: "Config save fails during initial creation",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-				} else {
-					os.Setenv("HOME", tempHome)
-					t.Cleanup(func() { os.Setenv("HOME", oldHome) })
-				}
-				// Make the .govman directory read-only to cause Save to fail
-				govmanDir := filepath.Join(tempHome, ".govman")
-				err := os.MkdirAll(govmanDir, 0755)
-				if err != nil {
-					t.Fatalf("Failed to create govman dir: %v", err)
-				}
-				err = os.Chmod(govmanDir, 0444) // Read-only
-				if err != nil {
-					t.Fatalf("Failed to make govman dir read-only: %v", err)
-				}
-				t.Cleanup(func() {
-					os.Chmod(govmanDir, 0755) // Restore permissions for cleanup
-				})
+				setTestHome(t, tempHome)
+				makeGovmanDirReadOnly(t, tempHome)
 				return ""
 			},
 			expectError: true,
@@ -119,16 +115,7 @@ default_version: "1.21.0"`
 		{
 			name: "Successful config creation when file doesn't exist",
 			setup: func(t *testing.T) string {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-				} else {
-					os.Setenv("HOME", tempHome)
-					t.Cleanup(func() { os.Setenv("HOME", oldHome) })
-				}
-				// Don't create the config file - let Load create it
+				setTestHome(t, t.TempDir())
 				return ""
 			},
 			expectError: false,
@@ -137,27 +124,8 @@ default_version: "1.21.0"`
 			name: "Home directory accessible but config creation fails",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-				} else {
-					os.Setenv("HOME", tempHome)
-					t.Cleanup(func() { os.Setenv("HOME", oldHome) })
-				}
-				// Make the .govman directory read-only to cause Save to fail
-				govmanDir := filepath.Join(tempHome, ".govman")
-				err := os.MkdirAll(govmanDir, 0755)
-				if err != nil {
-					t.Fatalf("Failed to create govman dir: %v", err)
-				}
-				err = os.Chmod(govmanDir, 0444) // Read-only
-				if err != nil {
-					t.Fatalf("Failed to make govman dir read-only: %v", err)
-				}
-				t.Cleanup(func() {
-					os.Chmod(govmanDir, 0755) // Restore permissions for cleanup
-				})
+				setTestHome(t, tempHome)
+				makeGovmanDirReadOnly(t, tempHome)
 				return ""
 			},
 			expectError: true,

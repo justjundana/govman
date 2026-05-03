@@ -891,6 +891,20 @@ func TestGlobalLogger(t *testing.T) {
 				}
 			},
 		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.test(t)
+		})
+	}
+}
+
+func TestGlobalLoggerExtended(t *testing.T) {
+	testCases := []struct {
+		name string
+		test func(t *testing.T)
+	}{
 		{
 			name: "Global Download function",
 			test: func(t *testing.T) {
