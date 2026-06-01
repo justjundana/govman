@@ -12,7 +12,7 @@ govman/
 ├── internal/                # Private application code
 │   ├── cli/                 # CLI commands and subcommands
 │   ├── config/              # Configuration management
-│   ├── downloader/          # Download  and extraction logic
+│   ├── downloader/          # Download and extraction logic
 │   ├── golang/              # Go releases API integration
 │   ├── logger/              # Logging functionality
 │   ├── manager/             # Core version management
@@ -28,11 +28,14 @@ govman/
 │   ├── uninstall.sh        # Unix uninstallation
 │   ├── uninstall.ps1       # PowerShell uninstallation
 │   └── uninstall.bat       # Windows batch uninstallation
+├── CHANGELOG.md            # Project changelog
+├── CONTRIBUTING.md         # Contribution guidelines
 ├── Dockerfile              # Docker build configuration
+├── LICENSE.md              # Project license
 ├── Makefile                # Build automation
+├── README.md               # Project documentation
 ├── go.mod                  # Go module definition
-├── go.sum                  # Dependency checksums
-└── README.md               # Project documentation
+└── go.sum                  # Dependency checksums
 ```
 
 ## Package Structure
@@ -315,11 +318,13 @@ type Shell interface {
 
 **Files**:
 - `format.go`: Formatting helpers
+- `version_matcher.go`: Version matching and comparison utilities
 
 **Responsibilities**:
 - Format byte sizes (KB, MB, GB)
 - Format durations
 - Common string operations
+- Version pattern matching for wildcard support
 
 **Key Functions**:
 - `FormatBytes()`: Human-readable file sizes

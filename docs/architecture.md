@@ -123,6 +123,7 @@ type BashShell struct{}
 type ZshShell struct{}
 type FishShell struct{}
 type PowerShell struct{}
+type CmdShell struct{}
 ```
 
 ### 3. Singleton Pattern
