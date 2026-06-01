@@ -12,6 +12,43 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.3.3
+
+**Release Date:** June 01, 2026
+
+**Highlights:**
+- 🐛 **Fix:** Replaced broken interactive progress bar with clean log-style output (no more garbling on terminal resize)
+- 🧹 **Code Quality:** Reduced cyclomatic complexity across all flagged functions to achieve 100% on Go Report Card's gocyclo check
+- 🧹 **Code Quality:** Fixed ineffectual assignment in `listRemoteVersions` to achieve 100% on Go Report Card's ineffassign check
+
+**Progress Bar:**
+- Replaced interactive single-line progress bar (`\r` + ANSI) with log-style percentage output
+  - Previous implementation garbled on terminal resize in macOS Terminal.app
+  - New output prints one clean line per progress update, throttled to 1 per second
+  - Each line shows: percentage, downloaded/total size, speed, and ETA
+  - Skips duplicate percentage lines to keep output concise
+  - Removed `golang.org/x/term` dependency (no longer needed)
+  - Zero risk of terminal garbling — uses plain `fmt.Printf` with newlines
+
+**Code Quality:**
+- Reduced cyclomatic complexity in `newPruneCmd` by extracting `getProtectedVersions`, `executePrune`, and `reportPruneResults` helpers
+- Reduced cyclomatic complexity in `newUseCmd` by extracting `resolveAlias`, `resolvePartialVersion`, `resolveFullVersion`, and `resolveVersionForUse` helpers
+- Reduced cyclomatic complexity in `listRemoteVersions` by extracting `countVersionStats` and `formatVersionTypeDesc` helpers
+- Fixed ineffectual assignment to `versionTypeDesc` in `listRemoteVersions`
+- Reduced cyclomatic complexity in `newInstallCmd` and `newUninstallCmd` by extracting `installVersions` and `uninstallVersions` helpers
+- Reduced cyclomatic complexity in `runSelfUpdate` by extracting `findAssetURL`, `downloadBinary`, `replaceBinary`, and `cleanupBackupFiles` helpers
+- Reduced cyclomatic complexity in `downloadFile` by extracting `downloadWithRetry`, `handleResumeResponse`, and `setupProgressReader` helpers
+- Reduced cyclomatic complexity in `extractTarGz` and `extractZip` by extracting `validateArchivePath`, `ensureParentDir`, `extractTarEntry`, and `extractZipFile` helpers
+
+**Test Improvements:**
+- Split `TestGlobalLogger` into `TestGlobalLogger` and `TestGlobalLoggerExtended`
+- Extracted `createTestTarGz` and `verifyExtractedFile` helpers from `TestDownloader_extractTarGz`
+- Extracted `testInitializeUnixShell`, `testInitializePowerShell`, and `testInitializeCmdShell` helpers from `TestInitializeShellWithExistingConfig`
+- Split `TestReleaseAndFileStructs` into `TestReleaseJSONUnmarshaling`, `TestFileJSONUnmarshaling`, and `TestVersionInfoStructFields`
+- Extracted `setTestHome` and `makeGovmanDirReadOnly` helpers from `TestLoad`
+
+---
+
 ### v1.3.2
 
 **Release Date:** May 01, 2026
