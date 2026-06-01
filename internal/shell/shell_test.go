@@ -1632,6 +1632,101 @@ func TestDetectMoreEdgeCases(t *testing.T) {
 	}
 }
 
+// testInitializeUnixShell tests InitializeShell for a Unix shell (Bash, Zsh, Fish).
+func testInitializeUnixShell(t *testing.T, shell Shell, existingCfg string, force bool, expectError bool, errorMsg string) {
+	t.Helper()
+	tempDir := t.TempDir()
+
+	originalUserHomeDir := userHomeDir
+	defer func() { userHomeDir = originalUserHomeDir }()
+	userHomeDir = func() (string, error) {
+		return tempDir, nil
+	}
+
+	configFile := filepath.Join(tempDir, ".bashrc")
+	if _, ok := shell.(*ZshShell); ok {
+		configFile = filepath.Join(tempDir, ".zshrc")
+	} else if _, ok := shell.(*FishShell); ok {
+		fishDir := filepath.Join(tempDir, ".config", "fish")
+		os.MkdirAll(fishDir, 0755)
+		configFile = filepath.Join(fishDir, "config.fish")
+	}
+
+	if existingCfg != "" {
+		os.WriteFile(configFile, []byte(existingCfg), 0644)
+	}
+
+	err := InitializeShell(shell, tempDir, force)
+	if expectError {
+		if err == nil {
+			t.Errorf("Expected error but got none")
+		} else if !strings.Contains(err.Error(), errorMsg) {
+			t.Errorf("Expected error containing %q, got %q", errorMsg, err.Error())
+		}
+	} else {
+		if err != nil {
+			t.Errorf("Expected no error but got: %v", err)
+		}
+	}
+}
+
+// testInitializePowerShell tests InitializeShell for PowerShell.
+func testInitializePowerShell(t *testing.T, shell *PowerShell, existingCfg string, force bool, expectError bool, errorMsg string) {
+	t.Helper()
+	tempDir := t.TempDir()
+
+	originalUserHomeDir := userHomeDir
+	defer func() { userHomeDir = originalUserHomeDir }()
+	userHomeDir = func() (string, error) {
+		return tempDir, nil
+	}
+
+	profileDir := filepath.Join(tempDir, "Documents", "WindowsPowerShell")
+	os.MkdirAll(profileDir, 0755)
+	profileFile := filepath.Join(profileDir, "Microsoft.PowerShell_profile.ps1")
+
+	if existingCfg != "" {
+		if err := os.WriteFile(profileFile, []byte(existingCfg), 0644); err != nil {
+			t.Fatalf("Failed to write existing config: %v", err)
+		}
+	}
+
+	err := InitializeShell(shell, tempDir, force)
+	if expectError {
+		if err == nil {
+			t.Errorf("Expected error but got none")
+		} else if !strings.Contains(err.Error(), errorMsg) {
+			t.Errorf("Expected error containing %q, got %q", errorMsg, err.Error())
+		}
+	} else {
+		if err != nil {
+			t.Errorf("Expected no error but got: %v", err)
+		}
+	}
+}
+
+// testInitializeCmdShell tests InitializeShell for CMD.
+func testInitializeCmdShell(t *testing.T, shell *CmdShell, force bool, expectError bool, errorMsg string) {
+	t.Helper()
+	tempDir := t.TempDir()
+
+	wrapperPath := filepath.Join(tempDir, "govman.bat")
+	os.WriteFile(wrapperPath, []byte("@echo off"), 0644)
+
+	err := InitializeShell(shell, tempDir, force)
+	if expectError {
+		if err == nil {
+			t.Errorf("Expected error but got none")
+		} else if !strings.Contains(err.Error(), errorMsg) {
+			t.Errorf("Expected error containing %q, got %q", errorMsg, err.Error())
+		}
+	} else {
+		if err != nil {
+			t.Errorf("Expected no error but got: %v", err)
+		}
+	}
+}
+
 func TestInitializeShellWithExistingConfig(t *testing.T) {
 	// Test InitializeShell with existing configuration
 	testCases := []struct {
@@ -1689,169 +1784,13 @@ func TestInitializeShellWithExistingConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-
-			// Setup for Unix shells
-			if _, ok := tc.shell.(*BashShell); ok {
-				originalUserHomeDir := userHomeDir
-				defer func() { userHomeDir = originalUserHomeDir }()
-				userHomeDir = func() (string, error) {
-					return tempDir, nil
-				}
-
-				// Create existing config file
-				configFile := filepath.Join(tempDir, ".bashrc")
-				if _, ok := tc.shell.(*ZshShell); ok {
-					configFile = filepath.Join(tempDir, ".zshrc")
-				} else if _, ok := tc.shell.(*FishShell); ok {
-					fishDir := filepath.Join(tempDir, ".config", "fish")
-					os.MkdirAll(fishDir, 0755)
-					configFile = filepath.Join(fishDir, "config.fish")
-				}
-
-				if tc.existingCfg != "" {
-					os.WriteFile(configFile, []byte(tc.existingCfg), 0644)
-				}
-
-				err := InitializeShell(tc.shell, tempDir, tc.force)
-				if tc.expectError {
-					if err == nil {
-						t.Errorf("Expected error but got none")
-					} else if !strings.Contains(err.Error(), tc.errorMsg) {
-						t.Errorf("Expected error containing %q, got %q", tc.errorMsg, err.Error())
-					}
-				} else {
-					if err != nil {
-						t.Errorf("Expected no error but got: %v", err)
-					}
-				}
-			} else if _, ok := tc.shell.(*ZshShell); ok {
-				originalUserHomeDir := userHomeDir
-				defer func() { userHomeDir = originalUserHomeDir }()
-				userHomeDir = func() (string, error) {
-					return tempDir, nil
-				}
-
-				// Create existing config file
-				configFile := filepath.Join(tempDir, ".zshrc")
-
-				if tc.existingCfg != "" {
-					os.WriteFile(configFile, []byte(tc.existingCfg), 0644)
-				}
-
-				err := InitializeShell(tc.shell, tempDir, tc.force)
-				if tc.expectError {
-					if err == nil {
-						t.Errorf("Expected error but got none")
-					} else if !strings.Contains(err.Error(), tc.errorMsg) {
-						t.Errorf("Expected error containing %q, got %q", tc.errorMsg, err.Error())
-					}
-				} else {
-					if err != nil {
-						t.Errorf("Expected no error but got: %v", err)
-					}
-				}
-			} else if _, ok := tc.shell.(*FishShell); ok {
-				originalUserHomeDir := userHomeDir
-				defer func() { userHomeDir = originalUserHomeDir }()
-				userHomeDir = func() (string, error) {
-					return tempDir, nil
-				}
-
-				// Create existing config file
-				fishDir := filepath.Join(tempDir, ".config", "fish")
-				os.MkdirAll(fishDir, 0755)
-				configFile := filepath.Join(fishDir, "config.fish")
-
-				if tc.existingCfg != "" {
-					os.WriteFile(configFile, []byte(tc.existingCfg), 0644)
-				}
-
-				err := InitializeShell(tc.shell, tempDir, tc.force)
-				if tc.expectError {
-					if err == nil {
-						t.Errorf("Expected error but got none")
-					} else if !strings.Contains(err.Error(), tc.errorMsg) {
-						t.Errorf("Expected error containing %q, got %q", tc.errorMsg, err.Error())
-					}
-				} else {
-					if err != nil {
-						t.Errorf("Expected no error but got: %v", err)
-					}
-				}
-			}
-
-			// Setup for PowerShell
-			if _, ok := tc.shell.(*PowerShell); ok {
-				originalUserHomeDir := userHomeDir
-				defer func() { userHomeDir = originalUserHomeDir }()
-				userHomeDir = func() (string, error) {
-					return tempDir, nil
-				}
-
-				// Create existing profile
-				profileDir := filepath.Join(tempDir, "Documents", "WindowsPowerShell")
-				os.MkdirAll(profileDir, 0755)
-				profileFile := filepath.Join(profileDir, "Microsoft.PowerShell_profile.ps1")
-
-				if tc.existingCfg != "" {
-					err := os.WriteFile(profileFile, []byte(tc.existingCfg), 0644)
-					if err != nil {
-						t.Fatalf("Failed to write existing config: %v", err)
-					}
-
-					// Verify the file exists and has the right content
-					if _, err := os.Stat(profileFile); os.IsNotExist(err) {
-						t.Fatalf("Profile file does not exist: %s", profileFile)
-					}
-
-					content, err := os.ReadFile(profileFile)
-					if err != nil {
-						t.Fatalf("Failed to read profile file: %v", err)
-					}
-
-					if !containsGovmanConfig(string(content)) {
-						t.Fatalf("Profile file does not contain govman config: %s", string(content))
-					}
-
-					// Verify that ConfigFile() returns the same path
-					if tc.shell.ConfigFile() != profileFile {
-						t.Fatalf("ConfigFile() returned %s, expected %s", tc.shell.ConfigFile(), profileFile)
-					}
-				}
-
-				err := InitializeShell(tc.shell, tempDir, tc.force)
-				if tc.expectError {
-					if err == nil {
-						t.Errorf("Expected error but got none")
-					} else if !strings.Contains(err.Error(), tc.errorMsg) {
-						t.Errorf("Expected error containing %q, got %q", tc.errorMsg, err.Error())
-					}
-				} else {
-					if err != nil {
-						t.Errorf("Expected no error but got: %v", err)
-					}
-				}
-			}
-
-			// Setup for CMD shell
-			if _, ok := tc.shell.(*CmdShell); ok {
-				// Create existing wrapper (note: it's govman.bat, not govman_wrapper.bat)
-				wrapperPath := filepath.Join(tempDir, "govman.bat")
-				os.WriteFile(wrapperPath, []byte("@echo off"), 0644)
-
-				err := InitializeShell(tc.shell, tempDir, tc.force)
-				if tc.expectError {
-					if err == nil {
-						t.Errorf("Expected error but got none")
-					} else if !strings.Contains(err.Error(), tc.errorMsg) {
-						t.Errorf("Expected error containing %q, got %q", tc.errorMsg, err.Error())
-					}
-				} else {
-					if err != nil {
-						t.Errorf("Expected no error but got: %v", err)
-					}
-				}
+			switch s := tc.shell.(type) {
+			case *BashShell, *ZshShell, *FishShell:
+				testInitializeUnixShell(t, s, tc.existingCfg, tc.force, tc.expectError, tc.errorMsg)
+			case *PowerShell:
+				testInitializePowerShell(t, s, tc.existingCfg, tc.force, tc.expectError, tc.errorMsg)
+			case *CmdShell:
+				testInitializeCmdShell(t, s, tc.force, tc.expectError, tc.errorMsg)
 			}
 		})
 	}

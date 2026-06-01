@@ -75,6 +75,100 @@ Examples:
 	return cmd
 }
 
+// findAssetURL finds the download URL for the current platform from the release assets.
+func findAssetURL(latest *GitHubRelease) (string, error) {
+	assetName := fmt.Sprintf("govman-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	for _, asset := range latest.Assets {
+		if asset.Name == assetName {
+			return asset.DownloadURL, nil
+		}
+	}
+	return "", fmt.Errorf("no binary found for %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+// downloadBinary downloads the binary from downloadURL and returns the temp file path.
+func downloadBinary(downloadURL, binaryDir string) (string, error) {
+	resp, err := selfUpdateHTTPClient.Get(downloadURL)
+	if err != nil {
+		_logger.ErrorWithHelp("Failed to download binary", "Check your internet connection and try again.")
+		return "", fmt.Errorf("failed to download binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download binary: HTTP %d (%s)", resp.StatusCode, resp.Status)
+	}
+
+	tempFile, err := os.CreateTemp(binaryDir, "govman-update-*.bin")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary file: %w", err)
+	}
+
+	if _, err = io.Copy(tempFile, resp.Body); err != nil {
+		tempFile.Close()
+		os.Remove(tempFile.Name())
+		return "", fmt.Errorf("failed to write binary to temporary file: %w", err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempFile.Name())
+		return "", fmt.Errorf("failed to close temporary file: %w", err)
+	}
+
+	return tempFile.Name(), nil
+}
+
+// replaceBinary replaces the current binary with the new one, creating a backup.
+func replaceBinary(currentBinary, tempFilePath string) (string, error) {
+	backupBinary := currentBinary + ".bak." + fmt.Sprintf("%d", time.Now().Unix())
+	if err := os.Rename(currentBinary, backupBinary); err != nil {
+		_logger.ErrorWithHelp("Failed to create backup of current binary", "Check if you have permission to modify the binary directory.")
+		return "", fmt.Errorf("failed to rename current binary to backup: %w", err)
+	}
+
+	if err := os.Rename(tempFilePath, currentBinary); err != nil {
+		_logger.Warning("Failed to install new binary, restoring backup")
+		if restoreErr := os.Rename(backupBinary, currentBinary); restoreErr != nil {
+			_logger.ErrorWithHelp("Failed to restore backup binary", "You may need to manually restore the binary from the backup file.")
+			return "", fmt.Errorf("failed to restore backup binary: %w", restoreErr)
+		}
+		return "", fmt.Errorf("failed to move downloaded binary to current binary path: %w", err)
+	}
+
+	if err := os.Chmod(currentBinary, 0755); err != nil {
+		_logger.ErrorWithHelp("Failed to set executable permissions", "You may need to manually set executable permissions on the binary.")
+		return "", fmt.Errorf("failed to set executable permission for new binary: %w", err)
+	}
+
+	return backupBinary, nil
+}
+
+// cleanupBackupFiles removes old backup files from the binary directory.
+func cleanupBackupFiles(currentBinary, backupBinary string) {
+	if runtime.GOOS == "windows" {
+		_logger.Verbose("Skipping backup cleanup on Windows - will clean up on next startup")
+		return
+	}
+
+	_logger.Verbose("Cleaning up backup files")
+	os.Remove(backupBinary)
+
+	dir := filepath.Dir(currentBinary)
+	baseName := filepath.Base(currentBinary)
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
+			oldBackup := filepath.Join(dir, entry.Name())
+			os.Remove(oldBackup)
+			_logger.Verbose("Removed old backup: %s", entry.Name())
+		}
+	}
+}
+
 // runSelfUpdate orchestrates the self-update workflow.
 // Parameters: checkOnly (perform a dry run and do not install), force (reinstall even if already on latest),
 // prerelease (include pre-release versions when checking). Returns nil on success or an error if any step fails.
@@ -104,7 +198,6 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		_logger.Info("  Released: %s", latest.PublishedAt.Format("January 2, 2006"))
 	}
 
-	// Compare versions using SemVer-aware comparison (handles v prefix differences)
 	if !force && _golang.CompareVersions(latest.TagName, current) == 0 {
 		_logger.Success("You are already using the latest version!")
 		_logger.Info("Use --force to reinstall the current version")
@@ -127,38 +220,12 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		return nil
 	}
 
-	assetName := fmt.Sprintf("govman-%s-%s", runtime.GOOS, runtime.GOARCH)
-	if runtime.GOOS == "windows" {
-		assetName += ".exe"
-	}
-
-	var downloadURL string
-	for _, asset := range latest.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.DownloadURL
-			break
-		}
-	}
-
-	if downloadURL == "" {
-		return fmt.Errorf("no binary found for %s/%s", runtime.GOOS, runtime.GOARCH)
+	downloadURL, err := findAssetURL(latest)
+	if err != nil {
+		return err
 	}
 
 	_logger.Download("Downloading %s...", latest.TagName)
-
-	_logger.Verbose("Downloading binary")
-	resp, err := selfUpdateHTTPClient.Get(downloadURL)
-	if err != nil {
-		_logger.ErrorWithHelp("Failed to download binary", "Check your internet connection and try again.")
-		return fmt.Errorf("failed to download binary: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Validate HTTP status code before processing the response body
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download binary: HTTP %d (%s)", resp.StatusCode, resp.Status)
-	}
-
 	_logger.Verbose("Getting current binary path")
 	currentBinary, err := os.Executable()
 	if err != nil {
@@ -166,72 +233,24 @@ func runSelfUpdate(checkOnly, force, prerelease bool) error {
 		return fmt.Errorf("failed to get current binary path: %w", err)
 	}
 
-	tempFile, err := os.CreateTemp(filepath.Dir(currentBinary), "govman-update-*.bin")
+	_logger.Verbose("Downloading binary")
+	tempFilePath, err := downloadBinary(downloadURL, filepath.Dir(currentBinary))
 	if err != nil {
-		return fmt.Errorf("failed to create temporary file: %w", err)
+		return err
 	}
-	tempFilePath := tempFile.Name()
 	defer func() {
-		// Only remove temp file if it still exists (wasn't renamed)
 		if _, err := os.Stat(tempFilePath); err == nil {
 			os.Remove(tempFilePath)
 		}
 	}()
 
-	_, err = io.Copy(tempFile, resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to write binary to temporary file: %w", err)
-	}
-
-	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary file: %w", err)
-	}
-
-	_logger.Verbose("Creating backup of current binary")
-	backupBinary := currentBinary + ".bak." + fmt.Sprintf("%d", time.Now().Unix())
-	if err := os.Rename(currentBinary, backupBinary); err != nil {
-		_logger.ErrorWithHelp("Failed to create backup of current binary", "Check if you have permission to modify the binary directory.")
-		return fmt.Errorf("failed to rename current binary to backup: %w", err)
-	}
-
 	_logger.Verbose("Installing new binary")
-	if err := os.Rename(tempFile.Name(), currentBinary); err != nil {
-		// Failed to install new binary, restore backup
-		_logger.Warning("Failed to install new binary, restoring backup")
-		if restoreErr := os.Rename(backupBinary, currentBinary); restoreErr != nil {
-			_logger.ErrorWithHelp("Failed to restore backup binary", "You may need to manually restore the binary from the backup file.")
-			return fmt.Errorf("failed to restore backup binary: %w", restoreErr)
-		}
-		return fmt.Errorf("failed to move downloaded binary to current binary path: %w", err)
+	backupBinary, err := replaceBinary(currentBinary, tempFilePath)
+	if err != nil {
+		return err
 	}
 
-	_logger.Verbose("Setting executable permissions")
-	if err := os.Chmod(currentBinary, 0755); err != nil {
-		_logger.ErrorWithHelp("Failed to set executable permissions", "You may need to manually set executable permissions on the binary.")
-		return fmt.Errorf("failed to set executable permission for new binary: %w", err)
-	}
-
-	// Clean up backup files after successful update
-	// On Windows, the running process locks the backup file, so we skip
-	// cleanup here and let the startup routine handle it on next run.
-	if runtime.GOOS == "windows" {
-		_logger.Verbose("Skipping backup cleanup on Windows - will clean up on next startup")
-	} else {
-		_logger.Verbose("Cleaning up backup files")
-		os.Remove(backupBinary)
-
-		// Clean up any old backup files
-		dir := filepath.Dir(currentBinary)
-		baseName := filepath.Base(currentBinary)
-		entries, _ := os.ReadDir(dir)
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), baseName+".bak.") {
-				oldBackup := filepath.Join(dir, entry.Name())
-				os.Remove(oldBackup)
-				_logger.Verbose("Removed old backup: %s", entry.Name())
-			}
-		}
-	}
+	cleanupBackupFiles(currentBinary, backupBinary)
 
 	_logger.Success("Update completed successfully!")
 	return nil

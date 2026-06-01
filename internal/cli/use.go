@@ -24,6 +24,71 @@ func getActivationMode(setDefault, setLocal bool) string {
 	return "session-only"
 }
 
+// resolveAlias resolves an alias like "latest" or "stable" to a concrete version.
+func resolveAlias(mgr *_manager.Manager, version string) (string, error) {
+	installedVersions, err := mgr.ListInstalled()
+	if err != nil {
+		_logger.Verbose("Failed to list installed versions: %v", err)
+	}
+	if len(installedVersions) > 0 {
+		resolved := installedVersions[0] // installed versions are sorted in descending order
+		_logger.Verbose("Resolved alias to installed version %s", resolved)
+		return resolved, nil
+	}
+	return mgr.ResolveVersion(version)
+}
+
+// resolvePartialVersion resolves a partial version (e.g., "1.24") to a concrete installed version.
+func resolvePartialVersion(mgr *_manager.Manager, version string) (string, error) {
+	installedVersions, err := mgr.ListInstalled()
+	if err != nil {
+		_logger.Verbose("Failed to list installed versions: %v", err)
+	}
+	if len(installedVersions) > 0 {
+		if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+			_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
+			return matchedVersion, nil
+		}
+	}
+	return mgr.ResolveVersion(version)
+}
+
+// resolveFullVersion attempts to find the exact version or a close match among installed versions.
+func resolveFullVersion(mgr *_manager.Manager, version string) string {
+	if mgr.IsInstalled(version) {
+		return version
+	}
+	installedVersions, err := mgr.ListInstalled()
+	if err != nil {
+		_logger.Verbose("Failed to list installed versions: %v", err)
+		return version
+	}
+	if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
+		_logger.Verbose("Exact version %s not found, using %s (closest match)", version, matchedVersion)
+		return matchedVersion
+	}
+	return version
+}
+
+// resolveVersionForUse resolves a version argument to a concrete installed version.
+func resolveVersionForUse(mgr *_manager.Manager, version string) (string, error) {
+	isAlias := version == "latest" || version == "stable"
+	isPartialVersion := strings.Count(version, ".") == 1
+
+	var err error
+	if isAlias {
+		version, err = resolveAlias(mgr, version)
+	} else if isPartialVersion {
+		version, err = resolvePartialVersion(mgr, version)
+	} else {
+		version = resolveFullVersion(mgr, version)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve version %s: %w", version, err)
+	}
+	return version, nil
+}
+
 // newUseCmd creates the 'use' Cobra command to activate a Go version.
 // Flags: setDefault (system default) and setLocal (project-local) control activation scope.
 // Returns a *cobra.Command that validates installation, calls Manager.Use, and reports status.
@@ -59,73 +124,11 @@ Examples:
 			mgr := _manager.New(getConfig())
 
 			if version != "default" {
-				// Check if version is an alias like "latest", "stable", etc.
-				// Aliases have no dots in them (except for partial versions like "1.24")
-				isAlias := version == "latest" || version == "stable"
-				isPartialVersion := strings.Count(version, ".") == 1
-
-				if isAlias {
-					// Alias (e.g., "latest"): resolve to installed version first
-					installedVersions, err := mgr.ListInstalled()
-					if err != nil {
-						_logger.Verbose("Failed to list installed versions: %v", err)
-					}
-					if len(installedVersions) > 0 {
-						// For "latest", use the newest installed version
-						if version == "latest" || version == "stable" {
-							version = installedVersions[0] // installed versions are sorted in descending order
-							_logger.Verbose("Resolved alias to installed version %s", version)
-						}
-					} else {
-						// No versions installed, resolve from remote
-						resolved, err := mgr.ResolveVersion(version)
-						if err != nil {
-							return fmt.Errorf("failed to resolve version %s: %w", version, err)
-						}
-						version = resolved
-					}
-				} else if isPartialVersion {
-					// Partial version (e.g., "1.24"): use flexible matching
-					installedVersions, err := mgr.ListInstalled()
-					if err != nil {
-						_logger.Verbose("Failed to list installed versions: %v", err)
-					}
-					if len(installedVersions) > 0 {
-						if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-							_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
-							version = matchedVersion
-						} else {
-							// No installed version matches, resolve from remote
-							resolved, err := mgr.ResolveVersion(version)
-							if err != nil {
-								return fmt.Errorf("failed to resolve version %s: %w", version, err)
-							}
-							version = resolved
-						}
-					} else {
-						// No versions installed, resolve from remote
-						resolved, err := mgr.ResolveVersion(version)
-						if err != nil {
-							return fmt.Errorf("failed to resolve version %s: %w", version, err)
-						}
-						version = resolved
-					}
-				} else {
-					// Full version (e.g., "1.24.1"): check exact match first
-					if !mgr.IsInstalled(version) {
-						// Exact version not found, try flexible matching as fallback
-						installedVersions, err := mgr.ListInstalled()
-						if err != nil {
-							_logger.Verbose("Failed to list installed versions: %v", err)
-						}
-						if len(installedVersions) > 0 {
-							if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-								_logger.Verbose("Exact version %s not found, using %s (closest match)", version, matchedVersion)
-								version = matchedVersion
-							}
-						}
-					}
+				resolved, err := resolveVersionForUse(mgr, version)
+				if err != nil {
+					return err
 				}
+				version = resolved
 
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s', or check available versions with 'govman list'.", version)

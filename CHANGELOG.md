@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.3] - 2026-05-01
+
+### 🔧 Patch Release - Code Quality & Stability Improvements
+
+This release reduces cyclomatic complexity across all flagged functions, fixes an ineffectual assignment, and replaces the broken interactive progress bar with a clean log-style output that never garbles on terminal resize.
+
+### Changed
+- Replaced interactive single-line progress bar with log-style percentage output
+  - Previous implementation garbled on terminal resize due to ANSI escape / line-wrapping issues
+  - New implementation prints one line per progress update (throttled to 1 per second)
+  - Displays percentage, downloaded/total size, speed, and ETA per line
+  - Skips duplicate percentage lines to keep output concise
+  - Removed dependency on `golang.org/x/term` (no longer needed)
+  - Zero risk of terminal garbling — uses plain `fmt.Printf` with newlines
+
+### Fixed
+- Reduced cyclomatic complexity in `newPruneCmd` by extracting `getProtectedVersions`, `executePrune`, and `reportPruneResults` helpers
+- Reduced cyclomatic complexity in `newUseCmd` by extracting `resolveAlias`, `resolvePartialVersion`, `resolveFullVersion`, and `resolveVersionForUse` helpers
+- Reduced cyclomatic complexity in `listRemoteVersions` by extracting `countVersionStats` and `formatVersionTypeDesc` helpers
+- Fixed ineffectual assignment to `versionTypeDesc` in `listRemoteVersions`
+- Reduced cyclomatic complexity in `newInstallCmd` and `newUninstallCmd` by extracting `installVersions` and `uninstallVersions` helpers
+- Reduced cyclomatic complexity in `runSelfUpdate` by extracting `findAssetURL`, `downloadBinary`, `replaceBinary`, and `cleanupBackupFiles` helpers
+- Reduced cyclomatic complexity in `downloadFile` by extracting `downloadWithRetry`, `handleResumeResponse`, and `setupProgressReader` helpers
+- Reduced cyclomatic complexity in `extractTarGz` and `extractZip` by extracting `validateArchivePath`, `ensureParentDir`, `extractTarEntry`, and `extractZipFile` helpers
+- Reduced cyclomatic complexity in `TestGlobalLogger` by splitting into `TestGlobalLogger` and `TestGlobalLoggerExtended`
+- Reduced cyclomatic complexity in `TestDownloader_extractTarGz` by extracting `createTestTarGz` and `verifyExtractedFile` helpers
+- Reduced cyclomatic complexity in `TestInitializeShellWithExistingConfig` by extracting `testInitializeUnixShell`, `testInitializePowerShell`, and `testInitializeCmdShell` helpers
+- Reduced cyclomatic complexity in `TestReleaseAndFileStructs` by splitting into `TestReleaseJSONUnmarshaling`, `TestFileJSONUnmarshaling`, and `TestVersionInfoStructFields`
+- Reduced cyclomatic complexity in `TestLoad` by extracting `setTestHome` and `makeGovmanDirReadOnly` helpers
+
 ## [1.3.2] - 2026-05-01
 
 ### 🔧 Patch Release - Bug Fixes & Code Quality Improvements

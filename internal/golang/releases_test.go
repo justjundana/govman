@@ -1225,125 +1225,105 @@ func TestConcurrency(t *testing.T) {
 	}
 }
 
-func TestReleaseAndFileStructs(t *testing.T) {
-	testCases := []struct {
-		name string
-		test func(t *testing.T)
-	}{
-		{
-			name: "Release JSON unmarshaling",
-			test: func(t *testing.T) {
-				jsonData := `{
-					"version": "go1.21.0",
-					"stable": true,
-					"files": [
-						{
-							"filename": "go1.21.0.linux-amd64.tar.gz",
-							"os": "linux",
-							"arch": "amd64",
-							"version": "go1.21.0",
-							"sha256": "abc123",
-							"size": 1024,
-							"kind": "archive"
-						}
-					]
-				}`
+func TestReleaseJSONUnmarshaling(t *testing.T) {
+	jsonData := `{
+		"version": "go1.21.0",
+		"stable": true,
+		"files": [
+			{
+				"filename": "go1.21.0.linux-amd64.tar.gz",
+				"os": "linux",
+				"arch": "amd64",
+				"version": "go1.21.0",
+				"sha256": "abc123",
+				"size": 1024,
+				"kind": "archive"
+			}
+		]
+	}`
 
-				var release Release
-				err := json.Unmarshal([]byte(jsonData), &release)
-				if err != nil {
-					t.Fatalf("Failed to unmarshal: %v", err)
-				}
-
-				if release.Version != "go1.21.0" {
-					t.Errorf("Expected version 'go1.21.0', got %q", release.Version)
-				}
-				if !release.Stable {
-					t.Error("Expected stable to be true")
-				}
-				if len(release.Files) != 1 {
-					t.Errorf("Expected 1 file, got %d", len(release.Files))
-				}
-			},
-		},
-		{
-			name: "File JSON unmarshaling",
-			test: func(t *testing.T) {
-				jsonData := `{
-					"filename": "go1.21.0.linux-amd64.tar.gz",
-					"os": "linux",
-					"arch": "amd64",
-					"version": "go1.21.0",
-					"sha256": "abc123",
-					"size": 1024,
-					"kind": "archive"
-				}`
-
-				var file File
-				err := json.Unmarshal([]byte(jsonData), &file)
-				if err != nil {
-					t.Fatalf("Failed to unmarshal: %v", err)
-				}
-
-				if file.Filename != "go1.21.0.linux-amd64.tar.gz" {
-					t.Errorf("Expected filename 'go1.21.0.linux-amd64.tar.gz', got %q", file.Filename)
-				}
-				if file.OS != "linux" {
-					t.Errorf("Expected OS 'linux', got %q", file.OS)
-				}
-				if file.Arch != "amd64" {
-					t.Errorf("Expected arch 'amd64', got %q", file.Arch)
-				}
-				if file.Sha256 != "abc123" {
-					t.Errorf("Expected sha256 'abc123', got %q", file.Sha256)
-				}
-				if file.Size != 1024 {
-					t.Errorf("Expected size 1024, got %d", file.Size)
-				}
-				if file.Kind != "archive" {
-					t.Errorf("Expected kind 'archive', got %q", file.Kind)
-				}
-			},
-		},
-		{
-			name: "VersionInfo struct fields",
-			test: func(t *testing.T) {
-				now := time.Now()
-				info := &VersionInfo{
-					Version:     "1.21.0",
-					Path:        "/usr/local/go",
-					OS:          "linux",
-					Arch:        "amd64",
-					InstallDate: now,
-					Size:        1024000,
-				}
-
-				if info.Version != "1.21.0" {
-					t.Errorf("Expected version '1.21.0', got %q", info.Version)
-				}
-				if info.Path != "/usr/local/go" {
-					t.Errorf("Expected path '/usr/local/go', got %q", info.Path)
-				}
-				if info.OS != "linux" {
-					t.Errorf("Expected OS 'linux', got %q", info.OS)
-				}
-				if info.Arch != "amd64" {
-					t.Errorf("Expected arch 'amd64', got %q", info.Arch)
-				}
-				if !info.InstallDate.Equal(now) {
-					t.Error("InstallDate mismatch")
-				}
-				if info.Size != 1024000 {
-					t.Errorf("Expected size 1024000, got %d", info.Size)
-				}
-			},
-		},
+	var release Release
+	err := json.Unmarshal([]byte(jsonData), &release)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.test(t)
-		})
+	if release.Version != "go1.21.0" {
+		t.Errorf("Expected version 'go1.21.0', got %q", release.Version)
+	}
+	if !release.Stable {
+		t.Error("Expected stable to be true")
+	}
+	if len(release.Files) != 1 {
+		t.Errorf("Expected 1 file, got %d", len(release.Files))
+	}
+}
+
+func TestFileJSONUnmarshaling(t *testing.T) {
+	jsonData := `{
+		"filename": "go1.21.0.linux-amd64.tar.gz",
+		"os": "linux",
+		"arch": "amd64",
+		"version": "go1.21.0",
+		"sha256": "abc123",
+		"size": 1024,
+		"kind": "archive"
+	}`
+
+	var file File
+	err := json.Unmarshal([]byte(jsonData), &file)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	if file.Filename != "go1.21.0.linux-amd64.tar.gz" {
+		t.Errorf("Expected filename 'go1.21.0.linux-amd64.tar.gz', got %q", file.Filename)
+	}
+	if file.OS != "linux" {
+		t.Errorf("Expected OS 'linux', got %q", file.OS)
+	}
+	if file.Arch != "amd64" {
+		t.Errorf("Expected arch 'amd64', got %q", file.Arch)
+	}
+	if file.Sha256 != "abc123" {
+		t.Errorf("Expected sha256 'abc123', got %q", file.Sha256)
+	}
+	if file.Size != 1024 {
+		t.Errorf("Expected size 1024, got %d", file.Size)
+	}
+	if file.Kind != "archive" {
+		t.Errorf("Expected kind 'archive', got %q", file.Kind)
+	}
+}
+
+func TestVersionInfoStructFields(t *testing.T) {
+	now := time.Now()
+	info := &VersionInfo{
+		Version:     "1.21.0",
+		Path:        "/usr/local/go",
+		OS:          "linux",
+		Arch:        "amd64",
+		InstallDate: now,
+		Size:        1024000,
+	}
+
+	if info.Version != "1.21.0" {
+		t.Errorf("Expected version '1.21.0', got %q", info.Version)
+	}
+	if info.Path != "/usr/local/go" {
+		t.Errorf("Expected path '/usr/local/go', got %q", info.Path)
+	}
+	if info.OS != "linux" {
+		t.Errorf("Expected OS 'linux', got %q", info.OS)
+	}
+	if info.Arch != "amd64" {
+		t.Errorf("Expected arch 'amd64', got %q", info.Arch)
+	}
+	if !info.InstallDate.Equal(now) {
+		t.Error("InstallDate mismatch")
+	}
+	if info.Size != 1024000 {
+		t.Errorf("Expected size 1024000, got %d", info.Size)
 	}
 }
 

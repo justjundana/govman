@@ -14,6 +14,53 @@ import (
 	_util "github.com/justjundana/govman/internal/util"
 )
 
+// installVersions performs the installation loop and returns results.
+func installVersions(mgr *_manager.Manager, versions []string) (successful, errors []string) {
+	for i, version := range versions {
+		_logger.Info("[%d/%d] Installing Go %s...", i+1, len(versions), version)
+		if err := mgr.Install(version); err != nil {
+			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			_logger.Warning("Failed to install Go %s: %v", version, err)
+			continue
+		}
+		successful = append(successful, version)
+		_logger.Success("Successfully installed Go %s", version)
+	}
+	return
+}
+
+// uninstallVersions performs the uninstallation loop and returns results.
+func uninstallVersions(mgr *_manager.Manager, versions []string, current string) (successful []string, totalFreedSpace int64, errors []string) {
+	for i, version := range versions {
+		_logger.Info("[%d/%d] Uninstalling Go %s...", i+1, len(versions), version)
+
+		if current == version {
+			_logger.Warning("Cannot uninstall currently active Go version %s", version)
+			errors = append(errors, fmt.Sprintf("Go %s: cannot uninstall active version", version))
+			continue
+		}
+
+		info, err := mgr.Info(version)
+		if err != nil {
+			_logger.Warning("Go version %s is not installed or information is unavailable", version)
+			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			continue
+		}
+
+		_logger.Progress("Removing installation directory and associated files")
+		if err = mgr.Uninstall(version); err != nil {
+			_logger.Warning("Failed to uninstall Go %s: %v", version, err)
+			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			continue
+		}
+
+		successful = append(successful, version)
+		totalFreedSpace += info.Size
+		_logger.Success("Successfully uninstalled Go %s", version)
+	}
+	return
+}
+
 // newInstallCmd creates the 'install' Cobra command to download and install one or more Go versions.
 // Versions are provided as positional args (e.g., latest, 1.25.1). Returns a *cobra.Command that installs each version and reports results.
 func newInstallCmd() *cobra.Command {
@@ -78,19 +125,7 @@ Examples:
 			_logger.Info("Starting installation of %d Go version(s)...", len(expandedVersions))
 			_logger.Progress("Preparing downloads and verifying version availability")
 
-			var errors []string
-			var successful []string
-			for i, version := range expandedVersions {
-				_logger.Info("[%d/%d] Installing Go %s...", i+1, len(expandedVersions), version)
-				if err := mgr.Install(version); err != nil {
-					errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
-					_logger.Warning("Failed to install Go %s: %v", version, err)
-					continue
-				}
-
-				successful = append(successful, version)
-				_logger.Success("Successfully installed Go %s", version)
-			}
+			successful, errors := installVersions(mgr, expandedVersions)
 
 			_logger.Info(strings.Repeat("─", 50))
 
@@ -193,41 +228,7 @@ Examples:
 			_logger.Progress("Validating versions and checking installation status")
 
 			current, _ := mgr.Current()
-			var errors []string
-			var successful []string
-			var totalFreedSpace int64
-
-			for i, version := range expandedVersions {
-				_logger.Info("[%d/%d] Uninstalling Go %s...", i+1, len(expandedVersions), version)
-
-				// Check if version is currently active
-				if current == version {
-					_logger.Warning("Cannot uninstall currently active Go version %s", version)
-					errors = append(errors, fmt.Sprintf("Go %s: cannot uninstall active version", version))
-					continue
-				}
-
-				// Get version info before uninstalling to track disk space
-				info, err := mgr.Info(version)
-				if err != nil {
-					_logger.Warning("Go version %s is not installed or information is unavailable", version)
-					errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
-					continue
-				}
-
-				// Perform uninstallation
-				_logger.Progress("Removing installation directory and associated files")
-				err = mgr.Uninstall(version)
-				if err != nil {
-					_logger.Warning("Failed to uninstall Go %s: %v", version, err)
-					errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
-					continue
-				}
-
-				successful = append(successful, version)
-				totalFreedSpace += info.Size
-				_logger.Success("Successfully uninstalled Go %s", version)
-			}
+			successful, totalFreedSpace, errors := uninstallVersions(mgr, expandedVersions, current)
 
 			_logger.Info(strings.Repeat("─", 50))
 

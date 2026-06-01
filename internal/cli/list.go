@@ -118,6 +118,29 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 	return nil
 }
 
+// countVersionStats counts stable, unstable, and installed versions.
+func countVersionStats(versions []string, mgr *_manager.Manager) (stableCount, unstableCount, installedCount int) {
+	for _, version := range versions {
+		if strings.Contains(version, "rc") || strings.Contains(version, "beta") || strings.Contains(version, "alpha") {
+			unstableCount++
+		} else {
+			stableCount++
+		}
+		if mgr.IsInstalled(version) {
+			installedCount++
+		}
+	}
+	return
+}
+
+// formatVersionTypeDesc returns a description string for the version type display.
+func formatVersionTypeDesc(includeUnstable bool, stableCount, unstableCount int) string {
+	if includeUnstable {
+		return fmt.Sprintf("versions (%d stable, %d pre-release)", stableCount, unstableCount)
+	}
+	return "stable versions"
+}
+
 // listRemoteVersions fetches and displays available remote Go versions.
 // Parameters: mgr (Manager), includeUnstable (include beta/rc), pattern (glob filter). Returns an error on fetch failures.
 func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern string) error {
@@ -157,27 +180,8 @@ func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern str
 		return nil
 	}
 
-	stableCount := 0
-	unstableCount := 0
-	installedCount := 0
-
-	for _, version := range versions {
-		if strings.Contains(version, "rc") || strings.Contains(version, "beta") || strings.Contains(version, "alpha") {
-			unstableCount++
-		} else {
-			stableCount++
-		}
-		if mgr.IsInstalled(version) {
-			installedCount++
-		}
-	}
-
-	versionTypeDesc := "versions"
-	if includeUnstable {
-		versionTypeDesc = fmt.Sprintf("versions (%d stable, %d pre-release)", stableCount, unstableCount)
-	} else {
-		versionTypeDesc = "stable versions"
-	}
+	stableCount, unstableCount, installedCount := countVersionStats(versions, mgr)
+	versionTypeDesc := formatVersionTypeDesc(includeUnstable, stableCount, unstableCount)
 
 	_logger.Info("Available Go %s (%d total, %d already installed):", versionTypeDesc, len(versions), installedCount)
 	_logger.Info(strings.Repeat("─", 60))

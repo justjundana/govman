@@ -8,7 +8,7 @@ govman uses minimal external dependencies to maintain security and simplicity.
 
 ### Direct Dependencies
 
-#### github.com/spf13/cobra (v1.8.0+)
+#### github.com/spf13/cobra (v1.10.1)
 
 **Purpose**: CLI framework
 
@@ -26,7 +26,7 @@ govman uses minimal external dependencies to maintain security and simplicity.
 
 **License**: Apache 2.0
 
-#### github.com/spf13/viper (v1.18.0+)
+#### github.com/spf13/viper (v1.21.0)
 
 **Purpose**: Configuration management
 
@@ -74,19 +74,16 @@ govman
 │   └── github.com/spf13/pflag
 └── github.com/spf13/viper
     ├── github.com/fsnotify/fsnotify
-    ├── github.com/hashicorp/hcl
-    ├── github.com/magiconair/properties
-    ├── github.com/mitchellh/mapstructure
+    ├── github.com/go-viper/mapstructure/v2
     ├── github.com/pelletier/go-toml/v2
     ├── github.com/sagikazarmark/locafero
-    ├── github.com/sagikazarmark/slog-shim
-    ├── github.com/sourcegraph/conc
     ├── github.com/spf13/afero
     ├── github.com/spf13/cast
     ├── github.com/spf13/pflag
     ├── github.com/subosito/gotenv
-    ├── gopkg.in/ini.v1
-    └── gopkg.in/yaml.v3
+    ├── go.yaml.in/yaml/v3
+    ├── golang.org/x/sys
+    └── golang.org/x/text
 ```
 
 ## No External Dependencies For
@@ -108,8 +105,8 @@ All dependencies are pinned to specific versions in `go.mod`:
 
 ```go
 require (
-    github.com/spf13/cobra v1.8.0
-    github.com/spf13/viper v1.18.0
+    github.com/spf13/cobra v1.10.1
+    github.com/spf13/viper v1.21.0
 )
 ```
 
@@ -141,7 +138,7 @@ Not included in runtime binary:
 
 ### For Building from Source
 
-- Go 1.21+
+- Go 1.25+
 - Make (Unix/macOS)
 - Git
 
