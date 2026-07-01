@@ -40,6 +40,17 @@ func FindBestMatchingVersion(requestedVersion string, installedVersions []string
 	if len(installedVersions) == 0 {
 		return "", fmt.Errorf("no versions installed")
 	}
+	for _, installed := range installedVersions {
+		if installed == requestedVersion {
+			return installed, nil
+		}
+	}
+
+	// Only major.minor requests are flexible. Full stable and prerelease
+	// versions are reproducibility pins and must match exactly.
+	if strings.Count(requestedVersion, ".") != 1 || strings.ContainsAny(requestedVersion, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-") {
+		return "", fmt.Errorf("exact version %s is not installed", requestedVersion)
+	}
 
 	requestedMajorMinor := ExtractMajorMinor(requestedVersion)
 

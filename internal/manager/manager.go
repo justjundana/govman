@@ -23,6 +23,11 @@ import (
 // Matches: 1.25.4, 1.25, 1.25rc1, 1.25.4-beta1, latest, stable
 var VersionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?(rc|beta|alpha)\d*)?)$`)
 
+// ConcreteVersionRegex matches version identifiers that may safely be used as
+// managed directory names. Aliases must be resolved before reaching a
+// filesystem operation.
+var ConcreteVersionRegex = regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?$`)
+
 type Manager struct {
 	config     *_config.Config
 	downloader *_downloader.Downloader
@@ -55,9 +60,19 @@ func (m *Manager) Install(version string) error {
 	}
 	_logger.StopTimer(timer)
 
+	installDir, err := m.versionDir(resolvedVersion)
+	if err != nil {
+		return err
+	}
+
 	_logger.InternalProgress("Checking if version is already installed")
 	if m.IsInstalled(resolvedVersion) {
 		return fmt.Errorf("go version %s is already installed", resolvedVersion)
+	}
+	if _, err := os.Lstat(installDir); err == nil {
+		return fmt.Errorf("go version %s has a corrupted or incomplete installation at %s; remove it with 'govman uninstall %s' before retrying", resolvedVersion, installDir, resolvedVersion)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect installation path for Go %s: %w", resolvedVersion, err)
 	}
 
 	_logger.Info("Installing Go %s...", resolvedVersion)
@@ -73,7 +88,6 @@ func (m *Manager) Install(version string) error {
 	}
 	_logger.StopTimer(timer)
 
-	installDir := m.config.GetVersionDir(resolvedVersion)
 	timer = _logger.StartTimer("download and installation")
 	if err := m.downloader.Download(downloadURL, installDir, resolvedVersion); err != nil {
 		_logger.StopTimer(timer)
@@ -88,8 +102,20 @@ func (m *Manager) Install(version string) error {
 // Uninstall removes an installed Go version.
 // Returns an error if the version is not installed, is active, or removal fails.
 func (m *Manager) Uninstall(version string) error {
+	installDir, err := m.versionDir(version)
+	if err != nil {
+		return err
+	}
+
 	_logger.InternalProgress("Checking if version is installed")
-	if !m.IsInstalled(version) {
+	info, err := os.Lstat(installDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("go version %s is not installed", version)
+		}
+		return fmt.Errorf("failed to inspect Go %s installation: %w", version, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("go version %s is not installed", version)
 	}
 
@@ -98,8 +124,13 @@ func (m *Manager) Uninstall(version string) error {
 	if err == nil && current == version {
 		return fmt.Errorf("cannot uninstall currently active version %s", version)
 	}
+	if m.config.DefaultVersion == version {
+		return fmt.Errorf("cannot uninstall default version %s; activate a different default version first", version)
+	}
+	if localVersion := m.getLocalVersion(); localVersion == version {
+		return fmt.Errorf("cannot uninstall project-local version %s; change or remove %s first", version, m.config.AutoSwitch.ProjectFile)
+	}
 
-	installDir := m.config.GetVersionDir(version)
 	_logger.InternalProgress("Removing installation directory: %s", installDir)
 	timer := _logger.StartTimer("uninstallation")
 	if err := os.RemoveAll(installDir); err != nil {
@@ -122,6 +153,9 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 		}
 		version = defaultVersion
 	} else {
+		if !ConcreteVersionRegex.MatchString(version) {
+			return fmt.Errorf("invalid concrete version format: %s", version)
+		}
 		// Validate version is installed
 		_logger.InternalProgress("Checking if version is installed")
 		if !m.IsInstalled(version) {
@@ -161,7 +195,11 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 	}
 
 	// Update PATH
-	versionBinPath := filepath.Join(m.config.GetVersionDir(version), "bin")
+	versionDir, err := m.versionDir(version)
+	if err != nil {
+		return err
+	}
+	versionBinPath := filepath.Join(versionDir, "bin")
 	return m.shell.ExecutePathCommand(versionBinPath)
 }
 
@@ -263,30 +301,36 @@ func (m *Manager) CurrentGlobal() (string, error) {
 	}
 	version := matches[1]
 
-	expectedVersionDir := m.config.GetVersionDir(version)
-	if _, err := os.Stat(expectedVersionDir); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("symlink points to Go %s but installation directory %s no longer exists - the installation may have been manually deleted. Run 'govman install %s' to reinstall",
-				version, expectedVersionDir, version)
-		}
-
-		return "", fmt.Errorf("failed to verify installation directory %s for Go %s: %w",
-			expectedVersionDir, version, err)
+	expectedVersionDir, err := m.versionDir(version)
+	if err != nil {
+		return "", fmt.Errorf("invalid version in global symlink target: %w", err)
+	}
+	goExecutable, err := m.validateInstallation(version)
+	if err != nil {
+		return "", err
 	}
 
-	goExecutable := filepath.Join(expectedVersionDir, "bin", "go")
-
+	targetPath := target
+	if !filepath.IsAbs(targetPath) {
+		targetPath = filepath.Join(filepath.Dir(symlinkPath), targetPath)
+	}
+	targetPath, err = filepath.Abs(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve global symlink target: %w", err)
+	}
+	expectedPath, err := filepath.Abs(goExecutable)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve expected Go executable: %w", err)
+	}
+	pathsEqual := filepath.Clean(targetPath) == filepath.Clean(expectedPath)
 	if runtime.GOOS == "windows" {
-		goExecutable += ".exe"
+		pathsEqual = strings.EqualFold(filepath.Clean(targetPath), filepath.Clean(expectedPath))
 	}
-	if _, err := os.Stat(goExecutable); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("go %s installation appears corrupted - executable not found at %s. Try reinstalling with 'govman install %s'",
-				version, goExecutable, version)
-		}
-
-		return "", fmt.Errorf("failed to verify Go executable at %s for version %s: %w",
-			goExecutable, version, err)
+	if !pathsEqual {
+		return "", fmt.Errorf("global symlink target %s does not match managed executable %s", targetPath, expectedPath)
+	}
+	if _, err := os.Stat(expectedVersionDir); err != nil {
+		return "", fmt.Errorf("failed to verify installation directory %s for Go %s: %w", expectedVersionDir, version, err)
 	}
 
 	return version, nil
@@ -308,7 +352,9 @@ func (m *Manager) ListInstalled() ([]string, error) {
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), "go") {
 			version := entry.Name()[2:]
-			versions = append(versions, version)
+			if ConcreteVersionRegex.MatchString(version) && m.IsInstalled(version) {
+				versions = append(versions, version)
+			}
 		}
 	}
 
@@ -330,20 +376,20 @@ func (m *Manager) ListRemote(includeUnstable bool) ([]string, error) {
 // IsInstalled reports whether a given version is installed by checking its directory.
 // Returns true if installed; false otherwise.
 func (m *Manager) IsInstalled(version string) bool {
-	installDir := m.config.GetVersionDir(version)
-	_, err := os.Stat(installDir)
-
+	_, err := m.validateInstallation(version)
 	return err == nil
 }
 
 // Info returns metadata about an installed version.
 // Returns VersionInfo or an error if the version is not installed or info retrieval fails.
 func (m *Manager) Info(version string) (*_golang.VersionInfo, error) {
-	if !m.IsInstalled(version) {
-		return nil, fmt.Errorf("go version %s is not installed", version)
+	if _, err := m.validateInstallation(version); err != nil {
+		return nil, err
 	}
-
-	installDir := m.config.GetVersionDir(version)
+	installDir, err := m.versionDir(version)
+	if err != nil {
+		return nil, err
+	}
 	return _golang.GetVersionInfo(installDir)
 }
 
@@ -393,18 +439,19 @@ func (m *Manager) ResolveVersion(version string) (string, error) {
 		return "", fmt.Errorf("no patch version found for %s", version)
 	}
 
+	if !ConcreteVersionRegex.MatchString(version) {
+		return "", fmt.Errorf("invalid version format: %s", version)
+	}
+
 	return version, nil
 }
 
 // createSymlink creates/replaces the global "go" symlink targeting the selected version's binary.
 // Returns an error if directory creation or symlink operation fails.
 func (m *Manager) createSymlink(version string) error {
-	versionRoot := m.config.GetVersionDir(version)
-
-	goExecutablePath := filepath.Join(versionRoot, "bin", "go")
-
-	if runtime.GOOS == "windows" {
-		goExecutablePath += ".exe"
+	goExecutablePath, err := m.validateInstallation(version)
+	if err != nil {
+		return err
 	}
 
 	symlinkPath := m.config.GetCurrentSymlink()
@@ -428,8 +475,76 @@ func (m *Manager) createSymlink(version string) error {
 // setLocalVersion writes the project's autoswitch file with the specified version.
 // Returns an error if the file write fails.
 func (m *Manager) setLocalVersion(version string) error {
+	if !ConcreteVersionRegex.MatchString(version) {
+		return fmt.Errorf("invalid concrete version format: %s", version)
+	}
 	filename := m.config.AutoSwitch.ProjectFile
 	return os.WriteFile(filename, []byte(version+"\n"), 0644)
+}
+
+// versionDir validates a concrete version and returns an absolute path that is
+// guaranteed to remain within the configured installation root.
+func (m *Manager) versionDir(version string) (string, error) {
+	if m == nil || m.config == nil {
+		return "", fmt.Errorf("manager configuration is not initialized")
+	}
+	if !ConcreteVersionRegex.MatchString(version) {
+		return "", fmt.Errorf("invalid concrete version format: %s", version)
+	}
+
+	root, err := filepath.Abs(m.config.InstallDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve install directory: %w", err)
+	}
+	candidate := filepath.Join(root, "go"+version)
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate version path: %w", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("version path escapes install directory: %s", version)
+	}
+	return candidate, nil
+}
+
+// validateInstallation verifies that a managed version directory contains a
+// usable Go executable and is not itself a symlink.
+func (m *Manager) validateInstallation(version string) (string, error) {
+	installDir, err := m.versionDir(version)
+	if err != nil {
+		return "", err
+	}
+
+	dirInfo, err := os.Lstat(installDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("go version %s is not installed", version)
+		}
+		return "", fmt.Errorf("failed to inspect Go %s installation: %w", version, err)
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("go version %s installation root is not a managed directory", version)
+	}
+
+	goExecutable := filepath.Join(installDir, "bin", "go")
+	if runtime.GOOS == "windows" {
+		goExecutable += ".exe"
+	}
+	binInfo, err := os.Lstat(goExecutable)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("go %s installation is incomplete: executable not found at %s", version, goExecutable)
+		}
+		return "", fmt.Errorf("failed to inspect Go %s executable: %w", version, err)
+	}
+	if !binInfo.Mode().IsRegular() {
+		return "", fmt.Errorf("go %s executable is not a regular file: %s", version, goExecutable)
+	}
+	if runtime.GOOS != "windows" && binInfo.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("go %s executable is not executable: %s", version, goExecutable)
+	}
+
+	return goExecutable, nil
 }
 
 // getLocalVersionRaw reads the project's autoswitch file and returns the raw version string.
