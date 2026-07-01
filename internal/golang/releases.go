@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,9 +19,8 @@ import (
 )
 
 var (
-	releasesCache []Release
-	cacheMutex    sync.RWMutex
-	cacheExpiry   time.Time
+	releasesCache = make(map[releasesCacheKey]*releasesCacheEntry)
+	cacheMutex    sync.Mutex
 
 	// Pre-compiled regex patterns to avoid repeated compilation
 	versionParseRegex     = regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?(?:-?(rc\d+|beta\d+|alpha\d+))?$`)
@@ -29,6 +29,18 @@ var (
 	// VersionExtractRegex extracts a Go version from paths like ".../go1.25.4/bin/go"
 	VersionExtractRegex = regexp.MustCompile(`go(\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?)`)
 )
+
+type releasesCacheKey struct {
+	apiURL        string
+	cacheDuration time.Duration
+}
+
+type releasesCacheEntry struct {
+	releases []Release
+	expires  time.Time
+	fetching bool
+	ready    chan struct{}
+}
 
 const (
 	GoDownloadURLTemplate = "%s"
@@ -348,61 +360,104 @@ func extractPrereleaseNumber(prerelease string) int {
 
 // fetchReleasesWithConfig fetches releases JSON, caches results with expiry, and returns parsed data.
 // Parameters: apiURL, cacheDuration. Returns []Release or an error.
-// Uses double-checked locking to avoid TOCTOU race condition.
 func fetchReleasesWithConfig(apiURL string, cacheDuration time.Duration) ([]Release, error) {
-	// First check with read lock (fast path)
-	cacheMutex.RLock()
-	if time.Now().Before(cacheExpiry) && releasesCache != nil {
-		result := releasesCache
-		cacheMutex.RUnlock()
-		return result, nil
+	parsedURL, err := url.ParseRequestURI(apiURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid Go releases API URL %q", apiURL)
 	}
-	cacheMutex.RUnlock()
+	if cacheDuration < 0 {
+		cacheDuration = 0
+	}
+	key := releasesCacheKey{apiURL: parsedURL.String(), cacheDuration: cacheDuration}
 
-	// Acquire write lock and recheck (double-checked locking)
-	cacheMutex.Lock()
-	// Recheck after acquiring write lock to avoid duplicate fetches
-	if time.Now().Before(cacheExpiry) && releasesCache != nil {
-		result := releasesCache
+	for {
+		cacheMutex.Lock()
+		entry := releasesCache[key]
+		if entry != nil && !entry.fetching && time.Now().Before(entry.expires) {
+			result := cloneReleases(entry.releases)
+			cacheMutex.Unlock()
+			return result, nil
+		}
+		if entry != nil && entry.fetching {
+			ready := entry.ready
+			cacheMutex.Unlock()
+			<-ready
+			continue
+		}
+		entry = &releasesCacheEntry{fetching: true, ready: make(chan struct{})}
+		releasesCache[key] = entry
 		cacheMutex.Unlock()
-		return result, nil
-	}
-	// Release the write lock before making the HTTP request
-	// to avoid blocking other goroutines during potentially slow network calls
-	cacheMutex.Unlock()
 
-	// Fetch releases outside the lock
+		fetched, fetchErr := fetchReleases(parsedURL.String())
+
+		cacheMutex.Lock()
+		if fetchErr == nil {
+			entry.releases = cloneReleases(fetched)
+			entry.expires = time.Now().Add(cacheDuration)
+		} else if releasesCache[key] == entry {
+			delete(releasesCache, key)
+		}
+		entry.fetching = false
+		close(entry.ready)
+		cacheMutex.Unlock()
+
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		return cloneReleases(fetched), nil
+	}
+}
+
+func fetchReleases(apiURL string) ([]Release, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-
-	resp, err := client.Get(apiURL)
+	request, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create releases request: %w", err)
+	}
+	request.Header.Set("User-Agent", "govman")
+	request.Header.Set("Accept", "application/json")
+	resp, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch releases: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, fmt.Errorf("failed to fetch releases: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	const maxReleasesResponseSize = 32 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleasesResponseSize+1))
+	closeErr := resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("failed to close releases response: %w", closeErr)
+	}
+	if len(body) > maxReleasesResponseSize {
+		return nil, fmt.Errorf("Go releases response exceeds %d bytes", maxReleasesResponseSize)
 	}
 
 	var releases []Release
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("failed to parse releases: %w", err)
 	}
-
-	// Acquire write lock only to update the cache
-	cacheMutex.Lock()
-	releasesCache = releases
-	cacheExpiry = time.Now().Add(cacheDuration)
-	cacheMutex.Unlock()
-
 	return releases, nil
+}
+
+func cloneReleases(releases []Release) []Release {
+	if releases == nil {
+		return nil
+	}
+	clone := make([]Release, len(releases))
+	for index, release := range releases {
+		clone[index] = release
+		clone[index].Files = append([]File(nil), release.Files...)
+	}
+	return clone
 }
 
 // getDirSize walks a directory and sums file sizes.
@@ -432,7 +487,6 @@ func getDirSize(path string) (int64, error) {
 // This is primarily used for testing to ensure a clean state.
 func ClearReleasesCache() {
 	cacheMutex.Lock()
-	releasesCache = nil
-	cacheExpiry = time.Time{}
+	releasesCache = make(map[releasesCacheKey]*releasesCacheEntry)
 	cacheMutex.Unlock()
 }

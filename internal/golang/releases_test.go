@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -987,6 +988,104 @@ func TestFetchReleasesCache(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	})
+}
+
+func TestFetchReleasesCacheIsolatedByEndpointAndPolicy(t *testing.T) {
+	ClearReleasesCache()
+	serverA := createMockServer([]Release{{Version: "go1.24.1", Stable: true}}, http.StatusOK)
+	defer serverA.Close()
+	serverB := createMockServer([]Release{{Version: "go1.25.2", Stable: true}}, http.StatusOK)
+	defer serverB.Close()
+
+	releasesA, err := fetchReleasesWithConfig(serverA.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasesB, err := fetchReleasesWithConfig(serverB.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if releasesA[0].Version != "go1.24.1" || releasesB[0].Version != "go1.25.2" {
+		t.Fatalf("cache leaked across endpoints: A=%v B=%v", releasesA, releasesB)
+	}
+
+	var requests atomic.Int32
+	policyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		json.NewEncoder(writer).Encode([]Release{{Version: "go1.25.2", Stable: true}})
+	}))
+	defer policyServer.Close()
+	if _, err := fetchReleasesWithConfig(policyServer.URL, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchReleasesWithConfig(policyServer.URL, 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("cache policy keys shared one response: requests=%d", requests.Load())
+	}
+}
+
+func TestFetchReleasesReturnsDeepCopies(t *testing.T) {
+	ClearReleasesCache()
+	server := createMockServer([]Release{{
+		Version: "go1.25.2",
+		Stable:  true,
+		Files:   []File{{Filename: "original.tar.gz"}},
+	}}, http.StatusOK)
+	defer server.Close()
+
+	first, err := fetchReleasesWithConfig(server.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first[0].Version = "mutated"
+	first[0].Files[0].Filename = "mutated.tar.gz"
+	second, err := fetchReleasesWithConfig(server.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second[0].Version != "go1.25.2" || second[0].Files[0].Filename != "original.tar.gz" {
+		t.Fatalf("caller mutated shared cache: %v", second)
+	}
+}
+
+func TestFetchReleasesDeduplicatesConcurrentRequests(t *testing.T) {
+	ClearReleasesCache()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		if request.Header.Get("User-Agent") != "govman" {
+			t.Errorf("User-Agent = %q, want govman", request.Header.Get("User-Agent"))
+		}
+		time.Sleep(25 * time.Millisecond)
+		json.NewEncoder(writer).Encode([]Release{{Version: "go1.25.2", Stable: true}})
+	}))
+	defer server.Close()
+
+	start := make(chan struct{})
+	errors := make(chan error, 20)
+	var wait sync.WaitGroup
+	for range 20 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := fetchReleasesWithConfig(server.URL, time.Minute)
+			errors <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("concurrent release requests = %d, want 1", requests.Load())
+	}
 }
 
 func TestGetDirSize(t *testing.T) {
