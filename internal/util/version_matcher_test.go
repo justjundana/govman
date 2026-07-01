@@ -70,11 +70,11 @@ func TestFindBestMatchingVersion(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:              "full version matches different patch",
+			name:              "full version does not match different patch",
 			requestedVersion:  "1.25.4",
 			installedVersions: []string{"1.25.1", "1.24.3"},
-			expectedVersion:   "1.25.1",
-			expectError:       false,
+			expectedVersion:   "",
+			expectError:       true,
 		},
 		{
 			name:              "no matching version",
@@ -98,11 +98,18 @@ func TestFindBestMatchingVersion(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:              "multiple versions, picks highest",
+			name:              "full version never floats to highest patch",
 			requestedVersion:  "1.25.2",
 			installedVersions: []string{"1.25.9", "1.25.1", "1.25.4"},
-			expectedVersion:   "1.25.9",
-			expectError:       false,
+			expectedVersion:   "",
+			expectError:       true,
+		},
+		{
+			name:              "prerelease requires exact match",
+			requestedVersion:  "1.26rc2",
+			installedVersions: []string{"1.26rc1", "1.26.0"},
+			expectedVersion:   "",
+			expectError:       true,
 		},
 	}
 

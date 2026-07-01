@@ -90,6 +90,23 @@ func createTestConfig(t *testing.T) *_config.Config {
 	return config
 }
 
+func createInstalledVersion(t *testing.T, config *_config.Config, version string) string {
+	t.Helper()
+	versionDir := config.GetVersionDir(version)
+	binDir := filepath.Join(versionDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create test Go bin directory: %v", err)
+	}
+	goPath := filepath.Join(binDir, "go")
+	if runtime.GOOS == "windows" {
+		goPath += ".exe"
+	}
+	if err := os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755); err != nil {
+		t.Fatalf("failed to create test Go executable: %v", err)
+	}
+	return goPath
+}
+
 func createTestManager(t *testing.T, config *_config.Config) *Manager {
 	return &Manager{
 		config:     config,
@@ -160,8 +177,7 @@ func TestManager_IsInstalled(t *testing.T) {
 			name:    "version installed",
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(versionDir, 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			want:    true,
 			wantErr: false,
@@ -205,8 +221,7 @@ func TestManager_ListInstalled(t *testing.T) {
 			setup: func(c *_config.Config) {
 				versions := []string{"1.19.0", "1.20.0", "1.18.0"}
 				for _, version := range versions {
-					versionDir := c.GetVersionDir(version)
-					os.MkdirAll(versionDir, 0755)
+					createInstalledVersion(t, c, version)
 				}
 			},
 			want:    []string{"1.20.0", "1.19.0", "1.18.0"}, // Should be sorted descending
@@ -217,7 +232,7 @@ func TestManager_ListInstalled(t *testing.T) {
 			setup: func(c *_config.Config) {
 				versions := []string{"1.19.0", "1.21.0", "1.20.0"}
 				for _, v := range versions {
-					os.MkdirAll(c.GetVersionDir(v), 0755)
+					createInstalledVersion(t, c, v)
 				}
 			},
 			want:    []string{"1.21.0", "1.20.0", "1.19.0"},
@@ -236,7 +251,7 @@ func TestManager_ListInstalled(t *testing.T) {
 			name: "mixed directories and files",
 			setup: func(c *_config.Config) {
 				// Create a directory that starts with "go"
-				os.MkdirAll(filepath.Join(c.InstallDir, "go1.20.0"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 				// Create a file that starts with "go"
 				os.WriteFile(filepath.Join(c.InstallDir, "go.mod"), []byte("test"), 0644)
 				// Create a directory that doesn't start with "go"
@@ -581,9 +596,7 @@ func TestManager_Use(t *testing.T) {
 			setDefault: false,
 			setLocal:   false,
 			setup: func(c *_config.Config) {
-				// Install version first
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
 		},
@@ -593,9 +606,7 @@ func TestManager_Use(t *testing.T) {
 			setDefault: true,
 			setLocal:   false,
 			setup: func(c *_config.Config) {
-				// Install version first
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
 		},
@@ -605,9 +616,7 @@ func TestManager_Use(t *testing.T) {
 			setDefault: false,
 			setLocal:   true,
 			setup: func(c *_config.Config) {
-				// Install version first
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
 		},
@@ -633,9 +642,7 @@ func TestManager_Use(t *testing.T) {
 			setDefault: false,
 			setLocal:   true,
 			setup: func(c *_config.Config) {
-				// Install version first
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 
 				// Make directory read-only to cause write failure
 				projectDir := filepath.Dir(c.AutoSwitch.ProjectFile)
@@ -649,9 +656,7 @@ func TestManager_Use(t *testing.T) {
 			setDefault: true,
 			setLocal:   false,
 			setup: func(c *_config.Config) {
-				// Install version first
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 
 				// Make bin directory read-only to cause symlink creation failure
 				os.Chmod(c.GetBinPath(), 0444)
@@ -665,17 +670,11 @@ func TestManager_Use(t *testing.T) {
 			setLocal:   false,
 			setup: func(c *_config.Config) {
 				c.DefaultVersion = "1.20.0"
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-				// Create go executable
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0'"), 0755)
+				goPath := createInstalledVersion(t, c, "1.20.0")
 
 				// Create symlink so CurrentGlobal() works
 				symlinkPath := c.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
+				os.Symlink(goPath, symlinkPath)
 			},
 			wantErr: false,
 		},
@@ -1020,9 +1019,7 @@ func TestManager_getLocalVersion(t *testing.T) {
 			name: "local version file exists with matching installed version",
 			setup: func(c *_config.Config) {
 				version := "1.19.0"
-				// Create the version directory to simulate it being installed
-				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(versionDir, 0755)
+				createInstalledVersion(t, c, version)
 				// Write the local version file
 				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 			},
@@ -1033,9 +1030,7 @@ func TestManager_getLocalVersion(t *testing.T) {
 			name: "local version file with whitespace and matching installed version",
 			setup: func(c *_config.Config) {
 				version := "1.19.0"
-				// Create the version directory to simulate it being installed
-				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(versionDir, 0755)
+				createInstalledVersion(t, c, version)
 				// Write the local version file with whitespace
 				versionWithWhitespace := "  1.19.0  \n"
 				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(versionWithWhitespace), 0644)
@@ -1094,9 +1089,7 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 			name: "local version set",
 			setup: func(c *_config.Config) {
 				version := "1.20.0"
-				// Install the version
-				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, version)
 				// Write local version file
 				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
 				// Set PATH to include a fake go binary that will return an error, so session check fails
@@ -1294,8 +1287,8 @@ func TestManager_ResolveVersion(t *testing.T) {
 			name:    "resolve version with no dots",
 			input:   "1",
 			setup:   func(c *_config.Config) {},
-			want:    "1",
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 		{
 			name:  "resolve version with one dot that doesn't match",
@@ -1355,8 +1348,7 @@ func TestManager_createSymlink(t *testing.T) {
 			name:    "create symlink successfully",
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
 		},
@@ -1364,8 +1356,7 @@ func TestManager_createSymlink(t *testing.T) {
 			name:    "create symlink with bin directory creation failure",
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 
 				// Make parent directory read-only
 				parentDir := filepath.Dir(c.GetBinPath())
@@ -1413,8 +1404,7 @@ func TestManager_createSymlink(t *testing.T) {
 				os.Symlink(oldTargetPath, symlinkPath)
 
 				// Create new version
-				newVersionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(newVersionDir, "bin"), 0755)
+				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
 		},
@@ -1533,5 +1523,79 @@ func TestManager_getCurrentSessionVersion(t *testing.T) {
 				t.Errorf("getCurrentSessionVersion() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManagerRejectsUnsafeVersionPaths(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+
+	sentinelDir := filepath.Join(filepath.Dir(config.InstallDir), "sentinel")
+	if err := os.MkdirAll(sentinelDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sentinelFile := filepath.Join(sentinelDir, "keep.txt")
+	if err := os.WriteFile(sentinelFile, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unsafeVersions := []string{
+		"../sentinel",
+		"x/../../sentinel",
+		"/tmp/sentinel",
+		`//server/share`,
+		`\\server\share`,
+		`C:\sentinel`,
+		`..\sentinel`,
+		"",
+		" ",
+		"\t",
+		"1",
+		"%2e%2e/sentinel",
+		"1.25.1/../../sentinel",
+	}
+
+	for _, version := range unsafeVersions {
+		t.Run(version, func(t *testing.T) {
+			if manager.IsInstalled(version) {
+				t.Fatalf("unsafe version %q must not be considered installed", version)
+			}
+			if err := manager.Uninstall(version); err == nil {
+				t.Fatalf("Uninstall(%q) succeeded, want validation error", version)
+			}
+			if err := manager.Use(version, false, false); err == nil {
+				t.Fatalf("Use(%q) succeeded, want validation error", version)
+			}
+			if _, err := manager.Info(version); err == nil {
+				t.Fatalf("Info(%q) succeeded, want validation error", version)
+			}
+		})
+	}
+
+	if data, err := os.ReadFile(sentinelFile); err != nil || string(data) != "keep" {
+		t.Fatalf("sentinel outside install root was modified: data=%q err=%v", data, err)
+	}
+}
+
+func TestManagerRejectsIncompleteInstallation(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	version := "1.25.1"
+
+	if err := os.MkdirAll(config.GetVersionDir(version), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if manager.IsInstalled(version) {
+		t.Fatal("directory without bin/go must not be considered installed")
+	}
+	versions, err := manager.ListInstalled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("incomplete installation appeared in installed list: %v", versions)
+	}
+	if err := manager.Use(version, false, false); err == nil {
+		t.Fatal("incomplete installation was activated")
 	}
 }
