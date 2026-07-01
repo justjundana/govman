@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,7 +154,7 @@ func TestDownloader_downloadFile_Timeout(t *testing.T) {
 	fileInfo := mockFileInfo()
 	fileInfo.Size = 17
 
-	_, err := downloader.downloadFile(server.URL, fileInfo)
+	_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 	if err == nil {
 		t.Error("Expected timeout error but got none")
 	}
@@ -253,6 +255,16 @@ func TestDownloader_Download(t *testing.T) {
 				}
 				tarWriter.WriteHeader(header)
 				tarWriter.Write([]byte(content))
+				for _, executable := range []string{"bin/go", "bin/go.exe"} {
+					executableContent := "test go executable"
+					executableHeader := &tar.Header{
+						Name: executable,
+						Size: int64(len(executableContent)),
+						Mode: 0755,
+					}
+					tarWriter.WriteHeader(executableHeader)
+					tarWriter.Write([]byte(executableContent))
+				}
 				tarWriter.Close()
 				gzWriter.Close()
 
@@ -379,8 +391,11 @@ func TestDownloader_downloadFile(t *testing.T) {
 
 			fileInfo := mockFileInfo()
 			fileInfo.Size = int64(len(tc.fileContent))
+			if fileInfo.Size == 0 {
+				fileInfo.Size = 1
+			}
 
-			cachePath, err := downloader.downloadFile(server.URL, fileInfo)
+			cachePath, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 
 			if tc.expectError {
 				if err == nil {
@@ -449,6 +464,7 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Range") == fmt.Sprintf("bytes=%d-", tc.partialSize) {
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", tc.partialSize, len(tc.testContent)-1, len(tc.testContent)))
 					w.WriteHeader(http.StatusPartialContent)
 					w.Write([]byte(tc.testContent[tc.partialSize:]))
 				} else {
@@ -461,7 +477,7 @@ func TestDownloader_downloadFile_Resume(t *testing.T) {
 			fileInfo.Size = int64(len(tc.testContent))
 			fileInfo.Filename = "test-resume.txt"
 
-			downloadedPath, err := downloader.downloadFile(server.URL, fileInfo)
+			downloadedPath, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 
 			if tc.expectError {
 				if err == nil {
@@ -1343,7 +1359,7 @@ func TestDownloader_downloadFile_ServerError(t *testing.T) {
 
 	fileInfo := mockFileInfo()
 
-	_, err := downloader.downloadFile(server.URL, fileInfo)
+	_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 	if err == nil {
 		t.Error("Expected server error but got none")
 	}
@@ -1366,7 +1382,7 @@ func TestDownloader_downloadFile_NetworkTimeout(t *testing.T) {
 
 	fileInfo := mockFileInfo()
 
-	_, err := downloader.downloadFile(server.URL, fileInfo)
+	_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 	if err == nil {
 		t.Error("Expected timeout error but got none")
 	}
@@ -1409,7 +1425,7 @@ func TestDownloader_downloadFile_RetryExhaustion(t *testing.T) {
 	fileInfo := mockFileInfo()
 	fileInfo.Size = 1024
 
-	_, err := downloader.downloadFile(server.URL, fileInfo)
+	_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 	if err == nil {
 		t.Error("Expected error but got none")
 	}
@@ -1454,6 +1470,7 @@ func TestDownloader_downloadFile_PartialResume(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				rangeHeader := r.Header.Get("Range")
 				if rangeHeader == fmt.Sprintf("bytes=%d-", len(tc.initialData)) {
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", len(tc.initialData), len(tc.finalData)-1, len(tc.finalData)))
 					w.WriteHeader(http.StatusPartialContent)
 					w.Write([]byte(tc.finalData[len(tc.initialData):]))
 				} else {
@@ -1466,7 +1483,7 @@ func TestDownloader_downloadFile_PartialResume(t *testing.T) {
 			fileInfo.Size = int64(len(tc.finalData))
 			fileInfo.Filename = "resume-test.txt"
 
-			resultPath, err := downloader.downloadFile(server.URL, fileInfo)
+			resultPath, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
 
 			if tc.expectError {
 				if err == nil {
@@ -1565,5 +1582,374 @@ func TestDownloader_extractArchive_UnsupportedFormat(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type testTarEntry struct {
+	header tar.Header
+	body   string
+}
+
+func createTarGzEntries(t *testing.T, entries ...testTarEntry) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, entry := range entries {
+		header := entry.header
+		if header.Typeflag == 0 {
+			header.Typeflag = tar.TypeReg
+		}
+		if header.Typeflag == tar.TypeReg {
+			header.Size = int64(len(entry.body))
+		}
+		if err := tarWriter.WriteHeader(&header); err != nil {
+			t.Fatal(err)
+		}
+		if entry.body != "" {
+			if _, err := tarWriter.Write([]byte(entry.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func validGoArchive(t *testing.T, marker string) []byte {
+	t.Helper()
+	return createTarGzEntries(t,
+		testTarEntry{header: tar.Header{Name: "go/bin/go", Mode: 0755}, body: "go executable"},
+		testTarEntry{header: tar.Header{Name: "go/bin/go.exe", Mode: 0755}, body: "go executable"},
+		testTarEntry{header: tar.Header{Name: "go/marker.txt", Mode: 0644}, body: marker},
+	)
+}
+
+func writeTestArchive(t *testing.T, directory, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(directory, name)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestDownloader_installArchiveTransactional(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := createTestDownloader(t, config)
+	installDir := filepath.Join(config.InstallDir, "go1.25.1")
+
+	incomplete := writeTestArchive(t, config.CacheDir, "incomplete.tar.gz", createTarGzEntries(t,
+		testTarEntry{header: tar.Header{Name: "go/README", Mode: 0644}, body: "missing executable"},
+	))
+	if err := downloader.installArchive(incomplete, installDir, "1.25.1"); err == nil {
+		t.Fatal("incomplete archive was installed")
+	}
+	if _, err := os.Lstat(installDir); !os.IsNotExist(err) {
+		t.Fatalf("failed install left final directory: %v", err)
+	}
+	partials, err := filepath.Glob(filepath.Join(config.InstallDir, ".go1.25.1.partial-*"))
+	if err != nil || len(partials) != 0 {
+		t.Fatalf("failed install left staging directories: %v (glob error: %v)", partials, err)
+	}
+
+	valid := writeTestArchive(t, config.CacheDir, "valid.tar.gz", validGoArchive(t, "retry succeeded"))
+	if err := downloader.installArchive(valid, installDir, "1.25.1"); err != nil {
+		t.Fatalf("retry after failed install did not succeed: %v", err)
+	}
+	marker, err := os.ReadFile(filepath.Join(installDir, "marker.txt"))
+	if err != nil || string(marker) != "retry succeeded" {
+		t.Fatalf("committed installation is invalid: marker=%q err=%v", marker, err)
+	}
+}
+
+func TestDownloader_installArchiveConcurrentWinner(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := createTestDownloader(t, config)
+	installDir := filepath.Join(config.InstallDir, "go1.25.1")
+	archives := []string{
+		writeTestArchive(t, config.CacheDir, "a.tar.gz", validGoArchive(t, "a")),
+		writeTestArchive(t, config.CacheDir, "b.tar.gz", validGoArchive(t, "b")),
+	}
+
+	start := make(chan struct{})
+	errors := make(chan error, len(archives))
+	for _, archive := range archives {
+		archive := archive
+		go func() {
+			<-start
+			errors <- downloader.installArchive(archive, installDir, "1.25.1")
+		}()
+	}
+	close(start)
+	successes := 0
+	for range archives {
+		if err := <-errors; err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent installation winners = %d, want 1", successes)
+	}
+	marker, err := os.ReadFile(filepath.Join(installDir, "marker.txt"))
+	if err != nil || (string(marker) != "a" && string(marker) != "b") {
+		t.Fatalf("final installation combined or corrupt: marker=%q err=%v", marker, err)
+	}
+}
+
+func TestDownloader_rejectsArchiveLinksAndUnsafePaths(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := createTestDownloader(t, config)
+
+	for _, entry := range []testTarEntry{
+		{header: tar.Header{Name: "go/link", Typeflag: tar.TypeSymlink, Linkname: "/tmp/outside", Mode: 0777}},
+		{header: tar.Header{Name: "go/link", Typeflag: tar.TypeLink, Linkname: "../../outside", Mode: 0777}},
+	} {
+		archive := writeTestArchive(t, config.CacheDir, fmt.Sprintf("link-%d.tar.gz", entry.header.Typeflag), createTarGzEntries(t, entry))
+		if err := downloader.extractTarGz(archive, filepath.Join(config.InstallDir, fmt.Sprintf("link-%d", entry.header.Typeflag))); err == nil || !strings.Contains(err.Error(), "links are not allowed") {
+			t.Fatalf("archive link type %d was not rejected: %v", entry.header.Typeflag, err)
+		}
+	}
+
+	unsafeNames := []string{"../outside", "/absolute", `..\\outside`, `\\\\server\\share`, `C:\\outside`, "\x00bad"}
+	for _, name := range unsafeNames {
+		if _, err := validateArchivePath(name, config.InstallDir, name); err == nil {
+			t.Errorf("unsafe archive path %q was accepted", name)
+		}
+	}
+}
+
+func TestDownloader_rejectsZipSymlink(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := createTestDownloader(t, config)
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	header := &zip.FileHeader{Name: "go/link"}
+	header.SetMode(os.ModeSymlink | 0777)
+	entry, err := writer.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("../../outside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := writeTestArchive(t, config.CacheDir, "symlink.zip", buffer.Bytes())
+	if err := downloader.extractZip(archive, filepath.Join(config.InstallDir, "zip-link")); err == nil || !strings.Contains(err.Error(), "links are not allowed") {
+		t.Fatalf("zip symlink was not rejected: %v", err)
+	}
+}
+
+func TestDownloader_enforcesArchiveLimits(t *testing.T) {
+	config := createTestConfig(t)
+	tests := []struct {
+		name       string
+		entries    []testTarEntry
+		fileLimit  int64
+		totalLimit int64
+		entryLimit int
+		want       string
+	}{
+		{
+			name:       "file size",
+			entries:    []testTarEntry{{header: tar.Header{Name: "go/large", Mode: 0644}, body: "12345"}},
+			fileLimit:  4,
+			totalLimit: 100,
+			entryLimit: 10,
+			want:       "exceeds size limit",
+		},
+		{
+			name: "total size",
+			entries: []testTarEntry{
+				{header: tar.Header{Name: "go/a", Mode: 0644}, body: "1234"},
+				{header: tar.Header{Name: "go/b", Mode: 0644}, body: "5678"},
+			},
+			fileLimit:  10,
+			totalLimit: 7,
+			entryLimit: 10,
+			want:       "extracted size exceeds limit",
+		},
+		{
+			name: "entry count",
+			entries: []testTarEntry{
+				{header: tar.Header{Name: "go/a", Mode: 0644}, body: "a"},
+				{header: tar.Header{Name: "go/b", Mode: 0644}, body: "b"},
+			},
+			fileLimit:  10,
+			totalLimit: 10,
+			entryLimit: 1,
+			want:       "too many entries",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			downloader := createTestDownloader(t, config)
+			downloader.maxFileSize = test.fileLimit
+			downloader.maxTotalSize = test.totalLimit
+			downloader.maxArchiveEntries = test.entryLimit
+			archive := writeTestArchive(t, config.CacheDir, strings.ReplaceAll(test.name, " ", "-")+".tar.gz", createTarGzEntries(t, test.entries...))
+			err := downloader.extractTarGz(archive, filepath.Join(config.InstallDir, strings.ReplaceAll(test.name, " ", "-")))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("limit error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDownloader_invalidResumeRestartsFromZero(t *testing.T) {
+	config := createTestConfig(t)
+	config.Download.RetryDelay = 0
+	downloader := createTestDownloader(t, config)
+	content := []byte("complete download")
+	fileInfo := mockFileInfo()
+	fileInfo.Filename = "resume.tar.gz"
+	fileInfo.Size = int64(len(content))
+	if err := os.WriteFile(filepath.Join(config.CacheDir, fileInfo.Filename), content[:4], 0600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		attempt := requests.Add(1)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(content[4:])
+			return
+		}
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	path, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, content) {
+		t.Fatalf("fresh restart result = %q, err=%v", data, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", requests.Load())
+	}
+}
+
+func TestDownloader_cacheCommitIsCoordinated(t *testing.T) {
+	config := createTestConfig(t)
+	config.Download.RetryDelay = 0
+	downloader := createTestDownloader(t, config)
+	content := []byte("one complete cache value")
+	fileInfo := mockFileInfo()
+	fileInfo.Filename = "concurrent.tar.gz"
+	fileInfo.Size = int64(len(content))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		time.Sleep(25 * time.Millisecond)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
+			results <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("network requests = %d, want 1", requests.Load())
+	}
+	data, err := os.ReadFile(filepath.Join(config.CacheDir, fileInfo.Filename))
+	if err != nil || !bytes.Equal(data, content) {
+		t.Fatalf("cache value = %q, err=%v", data, err)
+	}
+}
+
+func TestDownloader_rejectsTruncatedAndOversizedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body []byte
+		size int64
+		want string
+	}{
+		{name: "truncated", body: []byte("short"), size: 10, want: "download truncated"},
+		{name: "oversized", body: []byte("too-long"), size: 3, want: "exceeded expected size"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := createTestConfig(t)
+			config.Download.RetryDelay = 0
+			downloader := createTestDownloader(t, config)
+			fileInfo := mockFileInfo()
+			fileInfo.Filename = test.name + ".tar.gz"
+			fileInfo.Size = test.size
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				w.Write(test.body)
+			}))
+			defer server.Close()
+			_, err := downloader.downloadFile(server.URL+"/"+fileInfo.Filename, fileInfo)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("download error = %v, want %q", err, test.want)
+			}
+			if _, err := os.Lstat(filepath.Join(config.CacheDir, fileInfo.Filename)); !os.IsNotExist(err) {
+				t.Fatalf("invalid response was committed to final cache: %v", err)
+			}
+		})
+	}
+}
+
+func TestDownloader_downloadURLValidation(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := createTestDownloader(t, config)
+	content := []byte("content")
+	fileInfo := mockFileInfo()
+	fileInfo.Filename = "archive.tar.gz"
+	fileInfo.Size = int64(len(content))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Write(content)
+	}))
+	defer server.Close()
+	if _, err := downloader.downloadFile(server.URL+"/archive.tar.gz?token=value", fileInfo); err != nil {
+		t.Fatalf("query string changed cache filename: %v", err)
+	}
+	fileInfo.Filename = "different.tar.gz"
+	if _, err := downloader.downloadFile(server.URL+"/archive.tar.gz", fileInfo); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("metadata filename mismatch was not rejected: %v", err)
+	}
+}
+
+func TestParseContentRange(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		ok    bool
+	}{
+		{value: "bytes 5-9/10", ok: true},
+		{value: "bytes 5-9/*"},
+		{value: "bytes 10-9/10"},
+		{value: "items 5-9/10"},
+		{value: "bytes nope"},
+	} {
+		_, _, _, err := parseContentRange(test.value)
+		if (err == nil) != test.ok {
+			t.Errorf("parseContentRange(%q) error = %v, ok=%v", test.value, err, test.ok)
+		}
 	}
 }
