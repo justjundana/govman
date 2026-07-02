@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,10 @@ var VersionFormatRegex = regexp.MustCompile(`^(latest|stable|\d+\.\d+(\.\d+)?(-?
 // managed directory names. Aliases must be resolved before reaching a
 // filesystem operation.
 var ConcreteVersionRegex = regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:-?(?:rc|beta|alpha)\d*)?$`)
+
+// ErrUnmanagedGo indicates that PATH resolves to a Go executable outside the
+// configured govman installation root.
+var ErrUnmanagedGo = errors.New("active Go executable is not managed by govman")
 
 type Manager struct {
 	config     *_config.Config
@@ -146,12 +151,14 @@ func (m *Manager) Uninstall(version string) error {
 // Use activates a Go version for the current session, as default, or for the local project.
 // setDefault sets it globally; setLocal writes a project version file. Returns an error if activation fails.
 func (m *Manager) Use(version string, setDefault, setLocal bool) error {
+	if setDefault && setLocal {
+		return fmt.Errorf("default and local activation scopes are mutually exclusive")
+	}
 	if version == "default" {
-		defaultVersion, err := m.CurrentGlobal()
-		if err != nil {
-			return fmt.Errorf("failed to get default version: %w", err)
+		if m.config.DefaultVersion == "" {
+			return fmt.Errorf("no default Go version is configured")
 		}
-		version = defaultVersion
+		version = m.config.DefaultVersion
 	} else {
 		if !ConcreteVersionRegex.MatchString(version) {
 			return fmt.Errorf("invalid concrete version format: %s", version)
@@ -163,44 +170,71 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 		}
 	}
 
-	// Apply the version based on scope
-	switch {
-	case setLocal:
-		_logger.InternalProgress("Setting local version for project")
-		if err := m.setLocalVersion(version); err != nil {
-			return fmt.Errorf("failed to set local version: %w", err)
-		}
-		_logger.Success("Set Go %s as local version for this project", version)
-
-	case setDefault:
-		_logger.InternalProgress("Setting as system default version")
-
-		// Update config
-		m.config.DefaultVersion = version
-		if err := m.config.Save(); err != nil {
-			_logger.Warning("Failed to save default version to config: %v", err)
-		}
-
-		// Create symlink
-		_logger.InternalProgress("Creating symlink for Go %s", version)
-		timer := _logger.StartTimer("symlink creation")
-		if err := m.createSymlink(version); err != nil {
-			_logger.StopTimer(timer)
-			return fmt.Errorf("failed to create symlink: %w", err)
-		}
-		_logger.StopTimer(timer)
-
-	default:
-		// Session-only, no additional action needed
-	}
-
-	// Update PATH
 	versionDir, err := m.versionDir(version)
 	if err != nil {
 		return err
 	}
 	versionBinPath := filepath.Join(versionDir, "bin")
-	return m.shell.ExecutePathCommand(versionBinPath)
+
+	switch {
+	case setLocal:
+		_logger.InternalProgress("Setting local version for project")
+		snapshot, err := snapshotFile(m.config.AutoSwitch.ProjectFile)
+		if err != nil {
+			return fmt.Errorf("failed to snapshot local version state: %w", err)
+		}
+		if err := m.setLocalVersion(version); err != nil {
+			return fmt.Errorf("failed to set local version: %w", err)
+		}
+		if err := m.shell.ExecutePathCommand(versionBinPath); err != nil {
+			if rollbackErr := restoreFile(m.config.AutoSwitch.ProjectFile, snapshot); rollbackErr != nil {
+				return fmt.Errorf("failed to update PATH: %w; failed to restore local version: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("failed to update PATH; local version was restored: %w", err)
+		}
+		_logger.Success("Set Go %s as local version for this project", version)
+		return nil
+
+	case setDefault:
+		_logger.InternalProgress("Setting as system default version")
+		oldDefault := m.config.DefaultVersion
+		links, err := m.snapshotToolchainLinks(version)
+		if err != nil {
+			return err
+		}
+		_logger.InternalProgress("Activating toolchain links for Go %s", version)
+		timer := _logger.StartTimer("symlink creation")
+		if err := m.createSymlink(version); err != nil {
+			_logger.StopTimer(timer)
+			if rollbackErr := restoreLinks(links); rollbackErr != nil {
+				return fmt.Errorf("failed to activate toolchain links: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("failed to activate toolchain links: %w", err)
+		}
+		_logger.StopTimer(timer)
+
+		m.config.DefaultVersion = version
+		if err := m.config.Save(); err != nil {
+			m.config.DefaultVersion = oldDefault
+			if rollbackErr := restoreLinks(links); rollbackErr != nil {
+				return fmt.Errorf("failed to save default version: %w; failed to restore toolchain links: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("failed to save default version: %w", err)
+		}
+		if err := m.shell.ExecutePathCommand(versionBinPath); err != nil {
+			m.config.DefaultVersion = oldDefault
+			configRollbackErr := m.config.Save()
+			linkRollbackErr := restoreLinks(links)
+			if configRollbackErr != nil || linkRollbackErr != nil {
+				return fmt.Errorf("failed to update PATH: %w; config rollback: %v; link rollback: %v", err, configRollbackErr, linkRollbackErr)
+			}
+			return fmt.Errorf("failed to update PATH; default activation was restored: %w", err)
+		}
+		return nil
+
+	default:
+		return m.shell.ExecutePathCommand(versionBinPath)
+	}
 }
 
 // Current returns the currently active Go version, checking session, local project, or global symlink.
@@ -208,12 +242,11 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 func (m *Manager) Current() (string, error) {
 	sessionVersion, err := m.getCurrentSessionVersion()
 	if err != nil {
+		if errors.Is(err, ErrUnmanagedGo) {
+			return "", err
+		}
 		_logger.Verbose("Could not get session version: %v", err)
 	} else if sessionVersion != "" {
-		if !m.IsInstalled(sessionVersion) {
-			_logger.Warning("Session version %s is active but not managed by GOVMAN", sessionVersion)
-		}
-
 		return sessionVersion, nil
 	}
 
@@ -322,9 +355,17 @@ func (m *Manager) CurrentGlobal() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve expected Go executable: %w", err)
 	}
-	pathsEqual := filepath.Clean(targetPath) == filepath.Clean(expectedPath)
+	canonicalTarget, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve global symlink target: %w", err)
+	}
+	canonicalExpected, err := filepath.EvalSymlinks(expectedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve expected Go executable: %w", err)
+	}
+	pathsEqual := filepath.Clean(canonicalTarget) == filepath.Clean(canonicalExpected)
 	if runtime.GOOS == "windows" {
-		pathsEqual = strings.EqualFold(filepath.Clean(targetPath), filepath.Clean(expectedPath))
+		pathsEqual = strings.EqualFold(filepath.Clean(canonicalTarget), filepath.Clean(canonicalExpected))
 	}
 	if !pathsEqual {
 		return "", fmt.Errorf("global symlink target %s does not match managed executable %s", targetPath, expectedPath)
@@ -446,30 +487,187 @@ func (m *Manager) ResolveVersion(version string) (string, error) {
 	return version, nil
 }
 
-// createSymlink creates/replaces the global "go" symlink targeting the selected version's binary.
-// Returns an error if directory creation or symlink operation fails.
+type linkState struct {
+	path   string
+	exists bool
+	target string
+}
+
+type fileState struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+// createSymlink activates every executable in the selected Go toolchain's bin
+// directory. This keeps go, gofmt, and any future official toolchain binaries
+// on the same version.
 func (m *Manager) createSymlink(version string) error {
-	goExecutablePath, err := m.validateInstallation(version)
+	if _, err := m.validateInstallation(version); err != nil {
+		return err
+	}
+	links, err := m.desiredToolchainLinks(version)
 	if err != nil {
 		return err
 	}
-
-	symlinkPath := m.config.GetCurrentSymlink()
-
-	if runtime.GOOS == "windows" {
-		symlinkPath += ".exe"
-	}
-
-	binDir := m.config.GetBinPath()
-	if err := os.MkdirAll(binDir, 0755); err != nil {
+	if err := os.MkdirAll(m.config.GetBinPath(), 0755); err != nil {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
-
-	if err := _symlink.Create(goExecutablePath, symlinkPath); err != nil {
-		return fmt.Errorf("failed to create symlink: %w", err)
+	for destination := range links {
+		info, err := os.Lstat(destination)
+		if err == nil && info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("refusing to replace non-symlink toolchain path: %s", destination)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to inspect toolchain path %s: %w", destination, err)
+		}
 	}
-
+	for destination, target := range links {
+		if err := _symlink.Create(target, destination); err != nil {
+			return fmt.Errorf("failed to activate %s: %w", filepath.Base(destination), err)
+		}
+	}
+	if err := m.removeStaleToolchainLinks(links); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (m *Manager) desiredToolchainLinks(version string) (map[string]string, error) {
+	versionDir, err := m.versionDir(version)
+	if err != nil {
+		return nil, err
+	}
+	binDir := filepath.Join(versionDir, "bin")
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Go %s toolchain directory: %w", version, err)
+	}
+	links := make(map[string]string)
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || entry.Name() == "govman" || entry.Name() == "govman.exe" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("failed to inspect toolchain executable %s: %w", entry.Name(), err)
+		}
+		if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
+			continue
+		}
+		links[filepath.Join(m.config.GetBinPath(), entry.Name())] = filepath.Join(binDir, entry.Name())
+	}
+	goName := "go"
+	if runtime.GOOS == "windows" {
+		goName += ".exe"
+	}
+	if _, ok := links[filepath.Join(m.config.GetBinPath(), goName)]; !ok {
+		return nil, fmt.Errorf("Go %s toolchain does not contain %s", version, goName)
+	}
+	return links, nil
+}
+
+func (m *Manager) isManagedToolchainTarget(target string) bool {
+	if !filepath.IsAbs(target) {
+		return false
+	}
+	root, err := filepath.Abs(m.config.InstallDir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func (m *Manager) removeStaleToolchainLinks(desired map[string]string) error {
+	entries, err := os.ReadDir(m.config.GetBinPath())
+	if err != nil {
+		return fmt.Errorf("failed to read govman bin directory: %w", err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(m.config.GetBinPath(), entry.Name())
+		if _, keep := desired[path]; keep || entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("failed to inspect existing toolchain link %s: %w", path, err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		if m.isManagedToolchainTarget(filepath.Clean(target)) {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("failed to remove stale toolchain link %s: %w", path, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Manager) snapshotToolchainLinks(version string) ([]linkState, error) {
+	desired, err := m.desiredToolchainLinks(version)
+	if err != nil {
+		return nil, err
+	}
+	paths := make(map[string]struct{}, len(desired))
+	for path := range desired {
+		paths[path] = struct{}{}
+	}
+	entries, err := os.ReadDir(m.config.GetBinPath())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to inspect existing toolchain links: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(m.config.GetBinPath(), entry.Name())
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		absoluteTarget := target
+		if !filepath.IsAbs(absoluteTarget) {
+			absoluteTarget = filepath.Join(filepath.Dir(path), absoluteTarget)
+		}
+		if m.isManagedToolchainTarget(filepath.Clean(absoluteTarget)) {
+			paths[path] = struct{}{}
+		}
+	}
+	states := make([]linkState, 0, len(paths))
+	for path := range paths {
+		state := linkState{path: path}
+		info, statErr := os.Lstat(path)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return nil, fmt.Errorf("toolchain activation would overwrite a non-symlink path: %s", path)
+			}
+			state.exists = true
+			state.target, statErr = os.Readlink(path)
+		}
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("failed to snapshot toolchain path %s: %w", path, statErr)
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+func restoreLinks(states []linkState) error {
+	var restoreErrors []error
+	for _, state := range states {
+		if err := os.Remove(state.path); err != nil && !os.IsNotExist(err) {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		if state.exists {
+			if err := os.Symlink(state.target, state.path); err != nil {
+				restoreErrors = append(restoreErrors, err)
+			}
+		}
+	}
+	return errors.Join(restoreErrors...)
 }
 
 // setLocalVersion writes the project's autoswitch file with the specified version.
@@ -479,7 +677,84 @@ func (m *Manager) setLocalVersion(version string) error {
 		return fmt.Errorf("invalid concrete version format: %s", version)
 	}
 	filename := m.config.AutoSwitch.ProjectFile
-	return os.WriteFile(filename, []byte(version+"\n"), 0644)
+	return writeFileAtomic(filename, []byte(version+"\n"), 0644)
+}
+
+func snapshotFile(path string) (fileState, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return fileState{}, nil
+	}
+	if err != nil {
+		return fileState{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return fileState{}, fmt.Errorf("refusing to modify non-regular file: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileState{}, err
+	}
+	return fileState{exists: true, data: data, mode: info.Mode().Perm()}, nil
+}
+
+func restoreFile(path string, state fileState) error {
+	if !state.exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return writeFileAtomic(path, state.data, state.mode)
+}
+
+func writeFileAtomic(path string, data []byte, defaultMode os.FileMode) (resultErr error) {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return err
+	}
+	mode := defaultMode
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular file: %s", path)
+		}
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	tempFile, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			if closeErr := tempFile.Close(); resultErr == nil && closeErr != nil {
+				resultErr = closeErr
+			}
+		}
+		if resultErr != nil {
+			os.Remove(tempPath)
+		}
+	}()
+	if err := tempFile.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tempFile.Write(data); err != nil {
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 // versionDir validates a concrete version and returns an absolute path that is
@@ -619,25 +894,53 @@ func (m *Manager) CurrentActivationMethod() string {
 	return "system-default"
 }
 
-// getCurrentSessionVersion executes "go version" and parses the active version.
-// Returns the version string or an error if command execution or parsing fails.
+// getCurrentSessionVersion resolves the actual executable selected by PATH and
+// only reports it when its canonical location belongs to a valid managed
+// installation.
 func (m *Manager) getCurrentSessionVersion() (string, error) {
-	cmd := exec.Command("go", "version")
-	output, err := cmd.Output()
+	goPath, err := exec.LookPath("go")
 	if err != nil {
-		return "", fmt.Errorf("failed to execute 'go version': %w", err)
+		return "", fmt.Errorf("failed to find Go executable in PATH: %w", err)
 	}
-
-	versionStr := strings.TrimSpace(string(output))
-	parts := strings.Split(versionStr, " ")
-	if len(parts) < 3 {
-		return "", fmt.Errorf("unexpected 'go version' output format: %s", versionStr)
+	canonicalPath, err := filepath.EvalSymlinks(goPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve active Go executable %s: %w", goPath, err)
 	}
-
-	version := strings.TrimPrefix(parts[2], "go")
-	if version == "" {
-		return "", fmt.Errorf("could not extract version from 'go version' output: %s", versionStr)
+	canonicalPath, err = filepath.Abs(canonicalPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve active Go executable path: %w", err)
 	}
-
+	root, err := filepath.Abs(m.config.InstallDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve managed installation root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("failed to canonicalize managed installation root: %w", err)
+	}
+	relativePath, err := filepath.Rel(root, canonicalPath)
+	if err != nil || filepath.IsAbs(relativePath) || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("%w: %s", ErrUnmanagedGo, canonicalPath)
+	}
+	components := strings.Split(filepath.Clean(relativePath), string(os.PathSeparator))
+	if len(components) != 3 || components[1] != "bin" || (components[2] != "go" && components[2] != "go.exe") || !strings.HasPrefix(components[0], "go") {
+		return "", fmt.Errorf("%w: %s", ErrUnmanagedGo, canonicalPath)
+	}
+	version := strings.TrimPrefix(components[0], "go")
+	expectedExecutable, err := m.validateInstallation(version)
+	if err != nil {
+		return "", err
+	}
+	expectedCanonical, err := filepath.EvalSymlinks(expectedExecutable)
+	if err != nil {
+		return "", err
+	}
+	pathsEqual := filepath.Clean(expectedCanonical) == filepath.Clean(canonicalPath)
+	if runtime.GOOS == "windows" {
+		pathsEqual = strings.EqualFold(filepath.Clean(expectedCanonical), filepath.Clean(canonicalPath))
+	}
+	if !pathsEqual {
+		return "", fmt.Errorf("%w: %s", ErrUnmanagedGo, canonicalPath)
+	}
 	return version, nil
 }

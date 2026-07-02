@@ -93,3 +93,22 @@ func TestCreate_ErrorOnRemove(t *testing.T) {
 		t.Error("expected error when os.Remove fails on non-empty directory, got nil")
 	}
 }
+
+func TestCreateRefusesRegularFile(t *testing.T) {
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "target")
+	destination := filepath.Join(tempDir, "existing")
+	if err := os.WriteFile(target, []byte("target"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("preserve"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Create(target, destination); err == nil {
+		t.Fatal("Create replaced a regular file")
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("regular file changed: data=%q err=%v", data, err)
+	}
+}

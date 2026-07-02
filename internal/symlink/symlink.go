@@ -10,22 +10,37 @@ import (
 // Uses atomic replacement pattern: creates a temp symlink and renames it.
 // This avoids TOCTOU race conditions between check and create operations.
 func Create(target, symlinkPath string) error {
-	// Create a temporary symlink in the same directory
 	dir := filepath.Dir(symlinkPath)
-	tempLink := filepath.Join(dir, fmt.Sprintf(".govman-symlink-%d", os.Getpid()))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create symlink directory: %w", err)
+	}
+	if info, err := os.Lstat(symlinkPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("refusing to replace non-symlink path: %s", symlinkPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect existing symlink: %w", err)
+	}
 
-	// Remove any leftover temp symlink from previous failed attempts
-	os.Remove(tempLink)
+	tempFile, err := os.CreateTemp(dir, ".govman-symlink-*")
+	if err != nil {
+		return fmt.Errorf("failed to reserve temporary symlink path: %w", err)
+	}
+	tempLink := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempLink)
+		return fmt.Errorf("failed to close temporary symlink reservation: %w", err)
+	}
+	if err := os.Remove(tempLink); err != nil {
+		return fmt.Errorf("failed to prepare temporary symlink path: %w", err)
+	}
 
-	// Create the symlink at the temporary location
 	if err := os.Symlink(target, tempLink); err != nil {
 		return fmt.Errorf("failed to create temporary symlink: %w", err)
 	}
 
-	// Atomically rename the temp symlink to the final location
-	// This replaces any existing symlink in a single operation
 	if err := os.Rename(tempLink, symlinkPath); err != nil {
-		os.Remove(tempLink) // Cleanup on failure
+		os.Remove(tempLink)
 		return fmt.Errorf("failed to rename symlink to final location: %w", err)
 	}
 

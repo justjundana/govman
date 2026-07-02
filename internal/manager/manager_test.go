@@ -3,7 +3,6 @@ package manager
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -22,6 +21,9 @@ type mockShell struct {
 	pathCommand  string
 	setupCommand []string
 	available    bool
+	executeErr   error
+	executeCalls int
+	executedPath string
 }
 
 func (m *mockShell) Name() string {
@@ -49,6 +51,11 @@ func (m *mockShell) IsAvailable() bool {
 }
 
 func (m *mockShell) ExecutePathCommand(path string) error {
+	m.executeCalls++
+	m.executedPath = path
+	if m.executeErr != nil {
+		return m.executeErr
+	}
 	fmt.Printf(`export PATH="%s:$PATH"`+"\n", path)
 	return nil
 }
@@ -63,29 +70,25 @@ func createTestConfig(t *testing.T) *_config.Config {
 		os.Setenv("HOME", originalHome)
 	})
 
-	// Create config file first
 	configFile := filepath.Join(tempDir, "config.yaml")
-	config := &_config.Config{
-		InstallDir:     filepath.Join(tempDir, "versions"),
-		CacheDir:       filepath.Join(tempDir, "cache"),
-		DefaultVersion: "",
-		GoReleases: _config.GoReleasesConfig{
-			APIURL:      "https://api.github.com/repos/golang/go/releases",
-			CacheExpiry: 3600,
-			DownloadURL: "",
-		},
-		AutoSwitch: _config.AutoSwitchConfig{
-			ProjectFile: filepath.Join(tempDir, ".govman-goversion"),
-		},
+	config, err := _config.Load(configFile)
+	if err != nil {
+		t.Fatalf("failed to create test config: %v", err)
 	}
+	config.InstallDir = filepath.Join(tempDir, "versions")
+	config.CacheDir = filepath.Join(tempDir, "cache")
+	config.DefaultVersion = ""
+	config.GoReleases = _config.GoReleasesConfig{
+		APIURL:      "https://api.github.com/repos/golang/go/releases",
+		CacheExpiry: 3600,
+		DownloadURL: "",
+	}
+	config.AutoSwitch = _config.AutoSwitchConfig{ProjectFile: filepath.Join(tempDir, ".govman-goversion")}
 
 	// Create directories
 	os.MkdirAll(config.InstallDir, 0755)
 	os.MkdirAll(config.CacheDir, 0755)
 	os.MkdirAll(config.GetBinPath(), 0755)
-
-	// Create empty config file to enable saving
-	os.WriteFile(configFile, []byte(""), 0644)
 
 	return config
 }
@@ -103,6 +106,13 @@ func createInstalledVersion(t *testing.T, config *_config.Config, version string
 	}
 	if err := os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755); err != nil {
 		t.Fatalf("failed to create test Go executable: %v", err)
+	}
+	gofmtPath := filepath.Join(binDir, "gofmt")
+	if runtime.GOOS == "windows" {
+		gofmtPath += ".exe"
+	}
+	if err := os.WriteFile(gofmtPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to create test gofmt executable: %v", err)
 	}
 	return goPath
 }
@@ -310,8 +320,8 @@ func TestManager_Current(t *testing.T) {
 			setup: func(c *_config.Config) {
 				// No setup needed, uses system Go
 			},
-			want:    "SYSTEM_GO", // Will be resolved dynamically
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 		{
 			name: "global version active",
@@ -387,13 +397,15 @@ func TestManager_Current(t *testing.T) {
 				os.Chmod(goPath, 0755)
 				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
-			want:    "1.99.0",
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalPath := os.Getenv("PATH")
+			defer os.Setenv("PATH", originalPath)
 			config := createTestConfig(t)
 			manager := createTestManager(t, config)
 
@@ -412,20 +424,8 @@ func TestManager_Current(t *testing.T) {
 				return
 			}
 
-			want := tt.want
-			if want == "SYSTEM_GO" {
-				// Get system Go version dynamically
-				out, err := exec.Command("go", "version").Output()
-				if err == nil {
-					parts := strings.Fields(string(out))
-					if len(parts) >= 3 {
-						want = strings.TrimPrefix(parts[2], "go")
-					}
-				}
-			}
-
-			if got != want {
-				t.Errorf("Current() = %v, want %v", got, want)
+			if got != tt.want {
+				t.Errorf("Current() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -1447,12 +1447,8 @@ func TestManager_getCurrentSessionVersion(t *testing.T) {
 		{
 			name: "get current session version successfully",
 			setup: func(c *_config.Config) {
-				// Create a fake go binary that outputs a version string
-				binDir := filepath.Join(c.GetBinPath(), "fakego")
-				os.MkdirAll(binDir, 0755)
-				goPath := filepath.Join(binDir, "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.21.0 linux/amd64'"), 0755)
-				// Prepend fake bin directory to PATH
+				createInstalledVersion(t, c, "1.21.0")
+				binDir := filepath.Join(c.GetVersionDir("1.21.0"), "bin")
 				originalPath := os.Getenv("PATH")
 				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
 			},
@@ -1597,5 +1593,117 @@ func TestManagerRejectsIncompleteInstallation(t *testing.T) {
 	}
 	if err := manager.Use(version, false, false); err == nil {
 		t.Fatal("incomplete installation was activated")
+	}
+}
+
+func TestManagerDefaultActivationLinksFullToolchain(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	for _, version := range []string{"1.24.1", "1.25.2"} {
+		createInstalledVersion(t, config, version)
+	}
+
+	if err := manager.Use("1.24.1", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Use("1.25.2", true, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, executable := range []string{"go", "gofmt"} {
+		if runtime.GOOS == "windows" {
+			executable += ".exe"
+		}
+		linkPath := filepath.Join(config.GetBinPath(), executable)
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("%s is not an activated toolchain link: %v", executable, err)
+		}
+		expected := filepath.Join(config.GetVersionDir("1.25.2"), "bin", executable)
+		if filepath.Clean(target) != filepath.Clean(expected) {
+			t.Fatalf("%s target = %s, want %s", executable, target, expected)
+		}
+	}
+	if config.DefaultVersion != "1.25.2" {
+		t.Fatalf("default version = %s, want 1.25.2", config.DefaultVersion)
+	}
+}
+
+func TestManagerDefaultActivationRollsBackOnShellFailure(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	createInstalledVersion(t, config, "1.24.1")
+	createInstalledVersion(t, config, "1.25.2")
+	config.DefaultVersion = "1.24.1"
+	if err := config.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.createSymlink("1.24.1"); err != nil {
+		t.Fatal(err)
+	}
+	manager.shell.(*mockShell).executeErr = fmt.Errorf("injected shell failure")
+
+	if err := manager.Use("1.25.2", true, false); err == nil {
+		t.Fatal("default activation succeeded despite shell failure")
+	}
+	if config.DefaultVersion != "1.24.1" {
+		t.Fatalf("default version was not restored: %s", config.DefaultVersion)
+	}
+	for _, executable := range []string{"go", "gofmt"} {
+		if runtime.GOOS == "windows" {
+			executable += ".exe"
+		}
+		target, err := os.Readlink(filepath.Join(config.GetBinPath(), executable))
+		if err != nil || !strings.Contains(target, "go1.24.1") {
+			t.Fatalf("%s link was not restored: target=%s err=%v", executable, target, err)
+		}
+	}
+}
+
+func TestManagerLocalActivationRollsBackOnShellFailure(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	createInstalledVersion(t, config, "1.25.2")
+	if err := os.WriteFile(config.AutoSwitch.ProjectFile, []byte("1.24.1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager.shell.(*mockShell).executeErr = fmt.Errorf("injected shell failure")
+
+	if err := manager.Use("1.25.2", false, true); err == nil {
+		t.Fatal("local activation succeeded despite shell failure")
+	}
+	data, err := os.ReadFile(config.AutoSwitch.ProjectFile)
+	if err != nil || string(data) != "1.24.1\n" {
+		t.Fatalf("local file was not restored: data=%q err=%v", data, err)
+	}
+	info, err := os.Stat(config.AutoSwitch.ProjectFile)
+	if err != nil {
+		t.Fatalf("failed to stat restored local file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("local file mode was not preserved: mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestManagerDefaultActivationProtectsRegularFiles(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	createInstalledVersion(t, config, "1.25.2")
+	gofmtName := "gofmt"
+	if runtime.GOOS == "windows" {
+		gofmtName += ".exe"
+	}
+	protectedPath := filepath.Join(config.GetBinPath(), gofmtName)
+	if err := os.WriteFile(protectedPath, []byte("user file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Use("1.25.2", true, false); err == nil {
+		t.Fatal("default activation replaced a regular file")
+	}
+	data, err := os.ReadFile(protectedPath)
+	if err != nil || string(data) != "user file" {
+		t.Fatalf("regular file was modified: data=%q err=%v", data, err)
+	}
+	if config.DefaultVersion != "" {
+		t.Fatalf("default changed despite link collision: %s", config.DefaultVersion)
 	}
 }
