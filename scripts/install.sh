@@ -14,6 +14,10 @@ parse_arguments() {
                 shift
                 ;;
             --version|-v)
+				if [[ $# -lt 2 ]]; then
+					print_error "Missing value for $1"
+					exit 1
+				fi
                 SPECIFIC_VERSION="$2"
                 shift 2
                 ;;
@@ -213,11 +217,15 @@ detect_platform() {
         i386|i686) arch=386;;
         *)          print_error "Unsupported architecture"; exit 1;;
     esac
-         # Special case for Windows
-    if [[ "$os" == "windows" ]]; then
-        arch=amd64  # Default to amd64 for Windows
-    fi
-         echo "${os}/${arch}"
+	         echo "${os}/${arch}"
+}
+
+validate_release_version() {
+	local version="$1"
+	if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$ ]]; then
+		print_error "Invalid release version: $version"
+		return 1
+	fi
 }
  # Get shell configuration files
 get_shell_configs() {
@@ -229,28 +237,48 @@ get_shell_configs() {
 get_latest_version() {
     # If specific version is requested, use it
     if [[ -n "$SPECIFIC_VERSION" ]]; then
+		validate_release_version "$SPECIFIC_VERSION" || exit 1
         echo "$SPECIFIC_VERSION"
         return
     fi
      local version=""
     if command -v curl >/dev/null 2>&1; then
-        version=$(curl -s https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+		version=$(curl --fail --silent --show-error --location --max-time 30 \
+			-H "Accept: application/vnd.github+json" -H "User-Agent: govman-installer" \
+			https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
-        version=$(wget -qO- https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+		version=$(wget --quiet --https-only --timeout=30 -O- \
+			--header="Accept: application/vnd.github+json" --header="User-Agent: govman-installer" \
+			https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     else
         print_error "Either curl or wget is required to download govman"
         exit 1
     fi
-     if [[ -z "$version" ]]; then
+    if [[ -z "$version" ]]; then
         print_error "Failed to get latest version information"
         exit 1
     fi
+	validate_release_version "$version" || exit 1
      echo "$version"
 }
- # Verify binary checksum (basic validation)
-verify_binary() {
+
+calculate_sha256() {
+	local file_path="$1"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$file_path" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$file_path" | awk '{print $1}'
+	elif command -v openssl >/dev/null 2>&1; then
+		openssl dgst -sha256 "$file_path" | awk '{print $NF}'
+	else
+		print_error "sha256sum, shasum, or openssl is required to verify govman"
+		return 1
+	fi
+}
+
+ verify_binary() {
     local binary_path="$1"
-    local binary_name="$(basename "$binary_path")"
+	local expected_version="$2"
      # Basic file validation
     if [[ ! -f "$binary_path" ]]; then
         print_error "Binary file not found: $binary_path"
@@ -261,40 +289,19 @@ verify_binary() {
         print_error "Binary is not executable: $binary_path"
         return 1
     fi
-     # Check file size (should be > 1MB for a Go binary)
-    local file_size
-    if command -v stat >/dev/null 2>&1; then
-        case "$(uname -s)" in
-            Darwin*) file_size=$(stat -f%z "$binary_path") ;;
-            *) file_size=$(stat -c%s "$binary_path") ;;
-        esac
-         if [[ $file_size -lt 1048576 ]]; then  # Less than 1MB
-            print_warning "Binary file seems unusually small ($file_size bytes)"
-        fi
-    fi
-     # Try to get version to ensure it's a valid govman binary
-    if ! "$binary_path" --version >/dev/null 2>&1; then
+	local version_output
+	if ! version_output=$("$binary_path" --version 2>&1); then
         print_error "Downloaded binary appears to be corrupted or invalid"
         return 1
     fi
+	local normalized_version="${expected_version#v}"
+	local escaped_version="${normalized_version//./\\.}"
+	if ! printf '%s\n' "$version_output" | grep -Eq "(^|[^0-9])v?${escaped_version}([^0-9]|$)"; then
+		print_error "Downloaded binary reports the wrong version"
+		return 1
+	fi
      print_success "Binary validation completed"
     return 0
-}
- # Animated loading for download process
-show_download_progress() {
-    [[ "$QUIET_MODE" == "true" ]] && return
-    local item="$1"
-    local delay=0.1
-    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    local temp
-     echo -n "   ${DIM}Downloading $item... ${NC}"
-    for i in {1..15}; do
-        temp=${spinstr#?}
-        printf "\r   ${DIM}Downloading $item... ${CYAN}%c${NC} " "$spinstr"
-        spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-    done
-    printf "\r   ${GREEN}${CHECKMARK}${NC} Downloaded $item successfully.      \n"
 }
  # Animated loading for installation process
 show_install_progress() {
@@ -317,59 +324,111 @@ download_binary() {
     local version="$1"
     local platform="$2"
     local install_dir="$3"
-         local os=$(echo "$platform" | cut -d'/' -f1)
-    local arch=$(echo "$platform" | cut -d'/' -f2)
-         # Construct binary name
+	local os
+	local arch
+	os=$(echo "$platform" | cut -d'/' -f1)
+	arch=$(echo "$platform" | cut -d'/' -f2)
+	local asset_name="govman-${os}-${arch}"
     local binary_name="govman"
     if [[ "$os" == "windows" ]]; then
+		asset_name="${asset_name}.exe"
         binary_name="govman.exe"
     fi
-         # Construct download URL
-    local download_url="https://github.com/justjundana/govman/releases/download/${version}/govman-${os}-${arch}"
-    if [[ "$os" == "windows" ]]; then
-        download_url="${download_url}.exe"
-    fi
-         print_step "Downloading govman ${version} for ${platform}..."
+	local release_base="https://github.com/justjundana/govman/releases/download/${version}"
+	local download_url="${release_base}/${asset_name}"
+	local checksum_url="${release_base}/checksums.txt"
+	print_step "Downloading govman ${version} for ${platform}..."
     print_info "Download URL: $download_url"
-         # Create install directory
     mkdir -p "$install_dir"
-         # Download binary
-    [[ "$QUIET_MODE" == "false" ]] && show_download_progress "govman binary"
-     if command -v curl >/dev/null 2>&1; then
-        if [[ "$QUIET_MODE" == "true" ]]; then
-            curl -sSL -o "${install_dir}/${binary_name}" "$download_url"
-        else
-            curl -sSL -o "${install_dir}/${binary_name}" "$download_url"
-        fi
+
+	local temp_binary
+	local temp_checksums
+	temp_binary=$(mktemp "${install_dir}/.govman-download.XXXXXX") || exit 1
+	if [[ "$os" == "windows" ]]; then
+		mv "$temp_binary" "${temp_binary}.exe"
+		temp_binary="${temp_binary}.exe"
+	fi
+	temp_checksums=$(mktemp "${install_dir}/.govman-checksums.XXXXXX") || {
+		rm -f "$temp_binary"
+		exit 1
+	}
+
+	if command -v curl >/dev/null 2>&1; then
+		if ! curl --fail --silent --show-error --location --max-time 120 -o "$temp_binary" "$download_url" ||
+			! curl --fail --silent --show-error --location --max-time 30 -o "$temp_checksums" "$checksum_url"; then
+			rm -f "$temp_binary" "$temp_checksums"
+			print_error "Failed to download govman binary or checksum manifest"
+			exit 1
+		fi
     elif command -v wget >/dev/null 2>&1; then
-        if [[ "$QUIET_MODE" == "true" ]]; then
-            wget -qO "${install_dir}/${binary_name}" "$download_url"
-        else
-            wget -qO "${install_dir}/${binary_name}" "$download_url"
-        fi
+		if ! wget --quiet --https-only --timeout=120 -O "$temp_binary" "$download_url" ||
+			! wget --quiet --https-only --timeout=30 -O "$temp_checksums" "$checksum_url"; then
+			rm -f "$temp_binary" "$temp_checksums"
+			print_error "Failed to download govman binary or checksum manifest"
+			exit 1
+		fi
     else
+		rm -f "$temp_binary" "$temp_checksums"
         print_error "Either curl or wget is required to download govman"
         exit 1
     fi
-     # Check if download was successful
-    if [[ ! -f "${install_dir}/${binary_name}" ]]; then
-        print_error "Failed to download govman binary"
-        exit 1
-    fi
-     # Make binary executable
-    chmod +x "${install_dir}/${binary_name}"
-     # Validate the downloaded binary
-    if ! verify_binary "${install_dir}/${binary_name}"; then
+
+	local checksum_matches
+	checksum_matches=$(awk -v name="$asset_name" '$2 == name || $2 == "*" name { print $1 }' "$temp_checksums")
+	rm -f "$temp_checksums"
+	local checksum_count
+	checksum_count=$(printf '%s\n' "$checksum_matches" | awk 'NF { count++ } END { print count+0 }')
+	if [[ "$checksum_count" -ne 1 ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum manifest must contain exactly one entry for $asset_name"
+		exit 1
+	fi
+	local expected_checksum
+	expected_checksum=$(printf '%s\n' "$checksum_matches" | awk 'NF { print tolower($1) }')
+	if [[ ! "$expected_checksum" =~ ^[0-9a-f]{64}$ ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum manifest contains an invalid SHA-256 value"
+		exit 1
+	fi
+	local actual_checksum
+	actual_checksum=$(calculate_sha256 "$temp_binary") || {
+		rm -f "$temp_binary"
+		exit 1
+	}
+	actual_checksum=$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+	if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum verification failed for $asset_name"
+		exit 1
+	fi
+
+	chmod 0755 "$temp_binary"
+	if ! verify_binary "$temp_binary" "$version"; then
         print_error "Binary validation failed"
-        rm -f "${install_dir}/${binary_name}"
+		rm -f "$temp_binary"
         exit 1
     fi
-         print_success "Downloaded govman binary to ${install_dir}/${binary_name}"
+
+	local binary_path="${install_dir}/${binary_name}"
+	local backup_path="${binary_path}.bak.$$"
+	if [[ -e "$binary_path" ]]; then
+		mv "$binary_path" "$backup_path"
+	fi
+	if ! mv "$temp_binary" "$binary_path"; then
+		[[ -e "$backup_path" ]] && mv "$backup_path" "$binary_path"
+		print_error "Failed to install govman binary; previous binary was restored"
+		exit 1
+	fi
+	rm -f "$backup_path"
+	print_success "Downloaded and verified govman binary at ${binary_path}"
 }
  # Add to PATH and initialize shell configuration
 add_to_path() {
     local install_dir="$1"
     local govman_binary="${install_dir}/govman"
+	if is_windows; then
+		govman_binary="${govman_binary}.exe"
+	fi
      # Ensure the govman binary is executable
     if [ ! -x "$govman_binary" ]; then
         print_error "govman binary not found or not executable at $govman_binary"

@@ -13,7 +13,9 @@ set SHOW_HELP=0
 if "%~1"=="" goto :args_done
 if /i "%~1"=="--quiet" set QUIET_MODE=1 & shift & goto :parse_args
 if /i "%~1"=="-q" set QUIET_MODE=1 & shift & goto :parse_args
+if /i "%~1"=="--version" if "%~2"=="" echo Missing value for --version & exit /b 1
 if /i "%~1"=="--version" set SPECIFIC_VERSION=%~2 & shift & shift & goto :parse_args
+if /i "%~1"=="-v" if "%~2"=="" echo Missing value for -v & exit /b 1
 if /i "%~1"=="-v" set SPECIFIC_VERSION=%~2 & shift & shift & goto :parse_args
 if /i "%~1"=="--help" set SHOW_HELP=1 & shift & goto :parse_args
 if /i "%~1"=="-h" set SHOW_HELP=1 & shift & goto :parse_args
@@ -226,6 +228,7 @@ REM Detect architecture
 set "ARCH=amd64"
 if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
 if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCH=arm64"
+if /i "%PROCESSOR_ARCHITECTURE%"=="x86" if "%PROCESSOR_ARCHITEW6432%"=="" set "ARCH=386"
 
 set "PLATFORM=windows/!ARCH!"
 call :print_success "Detected platform: %BOLD%!PLATFORM!%RESET%"
@@ -237,6 +240,8 @@ call :print_step "Fetching latest version information..."
 
 if defined SPECIFIC_VERSION (
     set "VERSION=!SPECIFIC_VERSION!"
+	call :validate_version
+	if !errorlevel! neq 0 exit /b !errorlevel!
     call :print_success "Using specified version: %BOLD%!VERSION!%RESET%"
     echo.
     exit /b 0
@@ -246,10 +251,10 @@ REM Try to get latest version using curl or PowerShell
 curl --version >nul 2>&1
 if !errorlevel!==0 (
     REM Use curl if available
-    for /f "delims=" %%i in ('curl -s https://api.github.com/repos/justjundana/govman/releases/latest ^| findstr "tag_name" ^| for /f "tokens=2 delims=:, " %%j in ^("%%i"^) do echo %%~j') do set "VERSION=%%~i"
+    for /f "delims=" %%i in ('curl --fail --silent --show-error --location --max-time 30 -H "Accept: application/vnd.github+json" -H "User-Agent: govman-installer" https://api.github.com/repos/justjundana/govman/releases/latest ^| findstr "tag_name" ^| for /f "tokens=2 delims=:, " %%j in ^("%%i"^) do echo %%~j') do set "VERSION=%%~i"
 ) else (
     REM Fallback to PowerShell
-    for /f "delims=" %%i in ('powershell -Command "(Invoke-RestMethod https://api.github.com/repos/justjundana/govman/releases/latest).tag_name" 2^>nul') do set "VERSION=%%i"
+	for /f "delims=" %%i in ('powershell -NoProfile -Command "$h=@{'User-Agent'='govman-installer';'Accept'='application/vnd.github+json'}; (Invoke-RestMethod -Headers $h -TimeoutSec 30 https://api.github.com/repos/justjundana/govman/releases/latest).tag_name" 2^>nul') do set "VERSION=%%i"
 )
 
 if "!VERSION!"=="" (
@@ -258,8 +263,19 @@ if "!VERSION!"=="" (
     exit /b 1
 )
 
+call :validate_version
+if !errorlevel! neq 0 exit /b !errorlevel!
+
 call :print_success "Latest version: %BOLD%!VERSION!%RESET%"
 echo.
+exit /b 0
+
+:validate_version
+powershell -NoProfile -Command "if ($env:VERSION -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$') { exit 1 }" >nul 2>&1
+if !errorlevel! neq 0 (
+	call :print_error "Invalid release version: !VERSION!"
+	exit /b 1
+)
 exit /b 0
 
 :show_system_info
@@ -278,8 +294,14 @@ goto :eof
 :download_binary
 call :print_step "Downloading govman !VERSION! for !PLATFORM!..."
 
-set "DOWNLOAD_URL=https://github.com/justjundana/govman/releases/download/!VERSION!/govman-windows-!ARCH!.exe"
+set "ASSET_NAME=govman-windows-!ARCH!.exe"
+set "RELEASE_BASE=https://github.com/justjundana/govman/releases/download/!VERSION!"
+set "DOWNLOAD_URL=!RELEASE_BASE!/!ASSET_NAME!"
+set "CHECKSUM_URL=!RELEASE_BASE!/checksums.txt"
 set "BINARY_PATH=!INSTALL_DIR!\govman.exe"
+set "TEMP_BINARY=!INSTALL_DIR!\.govman-download-!RANDOM!-!RANDOM!.exe"
+set "TEMP_CHECKSUMS=!INSTALL_DIR!\.govman-checksums-!RANDOM!-!RANDOM!.txt"
+set "BACKUP_PATH=!BINARY_PATH!.bak.!RANDOM!"
 
 call :print_info "Download URL: !DOWNLOAD_URL!"
 
@@ -289,33 +311,64 @@ if not exist "!INSTALL_DIR!" mkdir "!INSTALL_DIR!"
 REM Show progress (simplified for batch)
 if %QUIET_MODE%==0 echo    Downloading govman binary...
 
-REM Download using curl or PowerShell
 curl --version >nul 2>&1
 if !errorlevel!==0 (
-    curl -sSL -o "!BINARY_PATH!" "!DOWNLOAD_URL!"
+	curl --fail --silent --show-error --location --max-time 120 -o "!TEMP_BINARY!" "!DOWNLOAD_URL!"
+	if !errorlevel! neq 0 goto :download_failed
+	curl --fail --silent --show-error --location --max-time 30 -o "!TEMP_CHECKSUMS!" "!CHECKSUM_URL!"
+	if !errorlevel! neq 0 goto :download_failed
 ) else (
-    powershell -Command "Invoke-WebRequest -Uri '!DOWNLOAD_URL!' -OutFile '!BINARY_PATH!'" >nul 2>&1
+	powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $h=@{'User-Agent'='govman-installer'}; Invoke-WebRequest -UseBasicParsing -Headers $h -TimeoutSec 120 -Uri $env:DOWNLOAD_URL -OutFile $env:TEMP_BINARY; Invoke-WebRequest -UseBasicParsing -Headers $h -TimeoutSec 30 -Uri $env:CHECKSUM_URL -OutFile $env:TEMP_CHECKSUMS" >nul 2>&1
+	if !errorlevel! neq 0 goto :download_failed
 )
 
+set "EXPECTED_CHECKSUM="
+set "CHECKSUM_COUNT=0"
+for /f "usebackq tokens=1,2" %%A in ("!TEMP_CHECKSUMS!") do (
+	set "MANIFEST_NAME=%%B"
+	if "!MANIFEST_NAME:~0,1!"=="*" set "MANIFEST_NAME=!MANIFEST_NAME:~1!"
+	if /i "!MANIFEST_NAME!"=="!ASSET_NAME!" (
+		set /a CHECKSUM_COUNT+=1
+		set "EXPECTED_CHECKSUM=%%A"
+	)
+)
+if not "!CHECKSUM_COUNT!"=="1" (
+	call :print_error "Checksum manifest must contain exactly one entry for !ASSET_NAME!"
+	goto :download_cleanup_error
+)
+
+for /f "delims=" %%H in ('powershell -NoProfile -Command "(Get-FileHash -LiteralPath $env:TEMP_BINARY -Algorithm SHA256).Hash.ToLowerInvariant()"') do set "ACTUAL_CHECKSUM=%%H"
+if /i not "!ACTUAL_CHECKSUM!"=="!EXPECTED_CHECKSUM!" (
+	call :print_error "Checksum verification failed for !ASSET_NAME!"
+	goto :download_cleanup_error
+)
+
+powershell -NoProfile -Command "$o=^& $env:TEMP_BINARY --version 2^>^&1 ^| Out-String; $v=[regex]::Escape($env:VERSION.TrimStart('v')); if ($LASTEXITCODE -ne 0 -or $o -notmatch ('(^|[^0-9])v?' + $v + '([^0-9]|$)')) { exit 1 }" >nul 2>&1
 if !errorlevel! neq 0 (
-    call :print_error "Failed to download govman binary"
-    exit /b 1
+	call :print_error "Downloaded binary is invalid or reports the wrong version"
+	goto :download_cleanup_error
 )
 
-if not exist "!BINARY_PATH!" (
-    call :print_error "Failed to download govman binary"
-    exit /b 1
+if exist "!BINARY_PATH!" move /y "!BINARY_PATH!" "!BACKUP_PATH!" >nul
+move /y "!TEMP_BINARY!" "!BINARY_PATH!" >nul
+if !errorlevel! neq 0 (
+	if exist "!BACKUP_PATH!" move /y "!BACKUP_PATH!" "!BINARY_PATH!" >nul
+	call :print_error "Failed to install govman binary; previous binary was restored"
+	goto :download_cleanup_error
 )
-
-REM Basic validation - check if file exists and has reasonable size
-for %%F in ("!BINARY_PATH!") do set "FILE_SIZE=%%~zF"
-if !FILE_SIZE! lss 1048576 (
-    call :print_warning "Binary file seems unusually small (!FILE_SIZE! bytes)"
-)
-
-call :print_success "Downloaded govman binary to !BINARY_PATH!"
+if exist "!BACKUP_PATH!" del /q "!BACKUP_PATH!"
+if exist "!TEMP_CHECKSUMS!" del /q "!TEMP_CHECKSUMS!"
+call :print_success "Downloaded and verified govman binary at !BINARY_PATH!"
 echo.
 exit /b 0
+
+:download_failed
+call :print_error "Failed to download govman binary or checksum manifest"
+
+:download_cleanup_error
+if exist "!TEMP_BINARY!" del /q "!TEMP_BINARY!"
+if exist "!TEMP_CHECKSUMS!" del /q "!TEMP_CHECKSUMS!"
+exit /b 1
 
 :add_to_path
 call :print_step "Configuring Windows environment..."

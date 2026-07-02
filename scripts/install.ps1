@@ -7,6 +7,9 @@ param(
     [switch]$Help
 )
 
+$ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 # Colors and styles for Windows Terminal
 $Colors = @{
     Red = "`e[0;31m"
@@ -120,24 +123,38 @@ function Show-Help {
 
 # Detect platform (Windows architecture)
 function Get-Platform {
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64" -or $env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
-        "amd64"
-    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-        "arm64"
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+		"arm64"
+    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "AMD64" -or $env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
+		"amd64"
+    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "x86") {
+        "386"
     } else {
-        "amd64"  # Default to amd64 for Windows
+        throw "Unsupported Windows architecture: $($env:PROCESSOR_ARCHITECTURE)"
     }
     return "windows/$arch"
+}
+
+function Test-ReleaseVersion {
+    param([string]$Candidate)
+    return $Candidate -match '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$'
 }
 
 # Get the latest release version from GitHub
 function Get-LatestVersion {
     if ($Version) {
+        if (-not (Test-ReleaseVersion $Version)) {
+            throw "Invalid release version: $Version"
+        }
         return $Version
     }
 
     try {
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/justjundana/govman/releases/latest" -TimeoutSec 30
+		$headers = @{ "User-Agent" = "govman-installer"; "Accept" = "application/vnd.github+json" }
+		$response = Invoke-RestMethod -Uri "https://api.github.com/repos/justjundana/govman/releases/latest" -TimeoutSec 30 -Headers $headers
+        if (-not (Test-ReleaseVersion $response.tag_name)) {
+            throw "GitHub returned an invalid release version"
+        }
         return $response.tag_name
     }
     catch {
@@ -149,22 +166,26 @@ function Get-LatestVersion {
 
 # Verify binary (basic validation)
 function Test-Binary {
-    param([string]$BinaryPath)
+    param(
+        [string]$BinaryPath,
+        [string]$ExpectedVersion
+    )
 
     if (-not (Test-Path $BinaryPath)) {
         Print-Error "Binary file not found: $BinaryPath"
         return $false
     }
 
-    # Check file size (should be > 1MB for a Go binary)
-    $fileSize = (Get-Item $BinaryPath).Length
-    if ($fileSize -lt 1048576) {
-        Print-Warning "Binary file seems unusually small ($fileSize bytes)"
-    }
-
-    # Try to get version to ensure it's a valid govman binary
     try {
-        $null = & $BinaryPath --version 2>$null
+		$versionOutput = (& $BinaryPath --version 2>&1 | Out-String).Trim()
+		if ($LASTEXITCODE -ne 0) {
+			throw "--version exited with code $LASTEXITCODE"
+		}
+		$normalizedVersion = $ExpectedVersion.TrimStart('v')
+		$escapedVersion = [Regex]::Escape($normalizedVersion)
+		if ($versionOutput -notmatch "(^|[^0-9])v?$escapedVersion([^0-9]|$)") {
+			throw "binary reports unexpected version: $versionOutput"
+		}
         Print-Success "Binary validation completed"
         return $true
     }
@@ -172,22 +193,6 @@ function Test-Binary {
         Print-Error "Downloaded binary appears to be corrupted or invalid"
         return $false
     }
-}
-
-# Animated loading for download process
-function Show-DownloadProgress {
-    param([string]$Item)
-    if ($Quiet) { return }
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Downloading $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 15; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Downloading $Item... $($Colors.Cyan)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Downloaded $Item successfully.      "
 }
 
 # Animated loading for installation process
@@ -218,8 +223,10 @@ function Download-Binary {
     $os = $parts[0]
     $arch = $parts[1]
 
-    # Construct download URL
-    $downloadUrl = "https://github.com/justjundana/govman/releases/download/$Version/govman-$os-$arch.exe"
+	$assetName = "govman-$os-$arch.exe"
+	$releaseBase = "https://github.com/justjundana/govman/releases/download/$Version"
+    $downloadUrl = "$releaseBase/$assetName"
+	$checksumUrl = "$releaseBase/checksums.txt"
     $binaryPath = Join-Path $InstallDir "govman.exe"
 
     Print-Step "Downloading govman $Version for $Platform..."
@@ -230,35 +237,59 @@ function Download-Binary {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    # Show download progress animation
-    if (-not $Quiet) {
-        Show-DownloadProgress "govman binary"
-    }
-
-    # Download binary
+	$tempBinary = Join-Path $InstallDir ".govman-download-$PID-$([Guid]::NewGuid().ToString('N')).exe"
+	$tempChecksums = Join-Path $InstallDir ".govman-checksums-$PID-$([Guid]::NewGuid().ToString('N')).txt"
+	$backupPath = "$binaryPath.bak.$PID"
     try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $binaryPath -TimeoutSec 60
+		$headers = @{ "User-Agent" = "govman-installer" }
+		Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBinary -TimeoutSec 120 -Headers $headers -UseBasicParsing
+		Invoke-WebRequest -Uri $checksumUrl -OutFile $tempChecksums -TimeoutSec 30 -Headers $headers -UseBasicParsing
+
+		$checksumMatches = @()
+		foreach ($line in Get-Content -LiteralPath $tempChecksums) {
+			if ($line -match '^([A-Fa-f0-9]{64})\s+\*?(.+)$' -and $Matches[2] -eq $assetName) {
+				$checksumMatches += $Matches[1].ToLowerInvariant()
+			}
+		}
+		if ($checksumMatches.Count -ne 1) {
+			throw "Checksum manifest must contain exactly one entry for $assetName"
+		}
+		$actualChecksum = (Get-FileHash -LiteralPath $tempBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+		if ($actualChecksum -ne $checksumMatches[0]) {
+			throw "Checksum verification failed for $assetName"
+		}
+		if (-not (Test-Binary $tempBinary $Version)) {
+			throw "Binary validation failed"
+		}
+
+		if (Test-Path -LiteralPath $binaryPath) {
+			Move-Item -LiteralPath $binaryPath -Destination $backupPath -Force
+		}
+		try {
+			Move-Item -LiteralPath $tempBinary -Destination $binaryPath -Force
+		}
+		catch {
+			if (Test-Path -LiteralPath $backupPath) {
+				Move-Item -LiteralPath $backupPath -Destination $binaryPath -Force
+			}
+			throw
+		}
+		Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Print-Error "Failed to download govman binary"
+		if (-not (Test-Path -LiteralPath $binaryPath) -and (Test-Path -LiteralPath $backupPath)) {
+			Move-Item -LiteralPath $backupPath -Destination $binaryPath -Force
+		}
+        Print-Error "Failed to download, verify, or install govman binary"
         Print-Info "Error: $($_.Exception.Message)"
         exit 1
     }
-
-    # Check if download was successful
-    if (-not (Test-Path $binaryPath)) {
-        Print-Error "Failed to download govman binary"
-        exit 1
+	finally {
+		Remove-Item -LiteralPath $tempBinary -Force -ErrorAction SilentlyContinue
+		Remove-Item -LiteralPath $tempChecksums -Force -ErrorAction SilentlyContinue
     }
 
-    # Validate the downloaded binary
-    if (-not (Test-Binary $binaryPath)) {
-        Print-Error "Binary validation failed"
-        Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
-        exit 1
-    }
-
-    Print-Success "Downloaded govman binary to $binaryPath"
+	Print-Success "Downloaded and verified govman binary at $binaryPath"
     return $binaryPath
 }
 
