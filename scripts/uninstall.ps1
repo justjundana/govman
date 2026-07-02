@@ -48,7 +48,7 @@ function Print-Separator {
 
 # Print fancy header
 function Print-Header {
-    Clear-Host
+    if (-not [Console]::IsOutputRedirected) { Clear-Host }
     Print-Separator "═"
     Write-Host ""
     Write-Host ""
@@ -368,21 +368,6 @@ function Show-RemovalPreview {
     Write-Host ""
 }
 
-# Animated loading for removal process
-function Show-RemovalProgress {
-    param([string]$Item)
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Removing $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 10; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Removing $Item... $($Colors.Cyan)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Removed $Item successfully.      "
-}
-
 # Remove binary with feedback
 function Remove-Binary {
     $installDir = Join-Path $env:USERPROFILE ".govman\bin"
@@ -390,7 +375,6 @@ function Remove-Binary {
     Print-Step "Removing govman binary..."
 
     if (Test-Path $installDir) {
-        Show-RemovalProgress "binary directory"
         try {
             Remove-Item -Path $installDir -Recurse -Force
             Print-Success "Removed govman binary from $installDir"
@@ -411,7 +395,6 @@ function Remove-FromPath {
     Print-Step "Cleaning PATH configuration..."
 
     if (Remove-UserPathEntry $installDir) {
-        Show-RemovalProgress "PATH configuration"
         Print-Success "Cleaned PATH configuration"
     } else {
         Print-Info "No govman PATH configuration found"
@@ -436,7 +419,6 @@ function Remove-GovmanDir {
         $dirSize = "{0:N2} MB" -f ((Get-ChildItem $govmanDir -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB)
         Print-Info "Removing directory: $govmanDir ($dirSize)"
 
-        Show-RemovalProgress "data directory"
         try {
             Remove-Item -Path $govmanDir -Recurse -Force
             Print-Success "Removed govman data directory"
@@ -589,9 +571,9 @@ function Main {
                 Write-Host ""
                 Remove-ProfileIntegration
                 Write-Host ""
-                Remove-Binary
-                Write-Host ""
                 Remove-FromPath
+                Write-Host ""
+                Remove-Binary
                 Write-Host ""
                 Show-Completion $false
             } else {
@@ -620,8 +602,6 @@ function Main {
             if ($confirm -eq "DELETE") {
                 Write-Host ""
                 Remove-ProfileIntegration
-                Write-Host ""
-                Remove-Binary
                 Write-Host ""
                 Remove-FromPath
                 Write-Host ""

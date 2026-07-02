@@ -51,7 +51,7 @@ function Print-Separator {
 # Print fancy header
 function Print-Header {
     if ($Quiet) { return }
-    Clear-Host
+    if (-not [Console]::IsOutputRedirected) { Clear-Host }
     Print-Separator "═"
     Write-Host ""
     Write-Host ""
@@ -194,22 +194,6 @@ function Test-Binary {
         Print-Error "Downloaded binary appears to be corrupted or invalid"
         return $false
     }
-}
-
-# Animated loading for installation process
-function Show-InstallProgress {
-    param([string]$Item)
-    if ($Quiet) { return }
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Installing $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 10; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Installing $Item... $($Colors.Purple)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Installed $Item successfully.      "
 }
 
 # Download the binary
@@ -403,11 +387,6 @@ function Add-ToPath {
 
     Print-Step "Configuring Windows environment..."
 
-    # Show install progress animation
-    if (-not $Quiet) {
-        Show-InstallProgress "environment configuration"
-    }
-
     if (Set-UserPathEntry -Entry $InstallDir -Action Add) {
         Print-Success "Added $InstallDir to user PATH"
     } else {
@@ -542,7 +521,7 @@ function Test-ExistingInstallation {
         Write-Host "$($Colors.Dim)$($Colors.Gray)Installation cancelled - govman already exists$($Colors.Reset)"
         Print-Separator "═"
         Write-Host ""
-        exit 1
+        exit 0
     } else {
         Print-Success "No existing installation found - proceeding with fresh install"
         Write-Host ""

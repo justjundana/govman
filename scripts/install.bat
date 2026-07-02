@@ -32,34 +32,19 @@ if %SHOW_HELP%==1 (
 )
 
 REM ANSI color codes (for Windows 10+ terminals)
-set "RED=[0;31m"
-set "GREEN=[0;32m"
-set "YELLOW=[1;33m"
-set "BLUE=[0;34m"
-set "PURPLE=[0;35m"
-set "CYAN=[0;36m"
-set "WHITE=[1;37m"
-set "GRAY=[0;90m"
-set "RESET=[0m"
-set "BOLD=[1m"
-set "DIM=[2m"
-
-REM Check if we're in a terminal that supports ANSI colors
-REM For older Windows versions, we'll disable colors
-ver | find "Version 10." >nul
-if %errorlevel% neq 0 (
-    set "RED="
-    set "GREEN="
-    set "YELLOW="
-    set "BLUE="
-    set "PURPLE="
-    set "CYAN="
-    set "WHITE="
-    set "GRAY="
-    set "RESET="
-    set "BOLD="
-    set "DIM="
-)
+REM Keep output portable. The previous values omitted the ESC character and
+REM printed literal control-code fragments instead of colors.
+set "RED="
+set "GREEN="
+set "YELLOW="
+set "BLUE="
+set "PURPLE="
+set "CYAN="
+set "WHITE="
+set "GRAY="
+set "RESET="
+set "BOLD="
+set "DIM="
 
 REM Unicode characters (will fallback to ASCII on older systems)
 set "CHECKMARK=v"
@@ -76,6 +61,7 @@ echo.
 
 call :check_existing_installation
 if !errorlevel! neq 0 exit /b !errorlevel!
+if "!ALREADY_INSTALLED!"=="1" exit /b 0
 
 call :detect_platform
 if !errorlevel! neq 0 exit /b !errorlevel!
@@ -172,6 +158,7 @@ goto :eof
 :check_existing_installation
 call :print_step "Checking for existing installation..."
 
+set "ALREADY_INSTALLED=0"
 set "BINARY_FOUND=0"
 set "COMMAND_FOUND=0"
 set "DATA_FOUND=0"
@@ -216,7 +203,8 @@ if !BINARY_FOUND!==1 (
     echo %DIM%%GRAY%Installation cancelled - govman already exists%RESET%
     call :print_separator "="
     echo.
-    exit /b 1
+    set "ALREADY_INSTALLED=1"
+    exit /b 0
 )
 
 call :print_success "No existing installation found - proceeding with fresh install"

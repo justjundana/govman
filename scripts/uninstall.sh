@@ -1,451 +1,257 @@
 #!/usr/bin/env bash
- # govman uninstallation script
-# This script removes govman from $HOME/.govman/bin and removes it from PATH
- set -e
- # Colors and styles
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-GRAY='\033[0;90m'
-NC='\033[0m'
- # Style effects
-BOLD='\033[1m'
-DIM='\033[2m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
- # Unicode characters for better UI
-CHECKMARK="✓"
-CROSSMARK="✗"
-ARROW="→"
-TRASH="🗑"
-WARNING="⚠"
-QUESTION="❓"
-STOP="🛑"
-CLEAN="🧹"
-SHIELD="🛡"
-INFO="ℹ"
- # Terminal width detection
-TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
- # Print separator line
-print_separator() {
-    local char="${1:--}"
-    printf "%*s\n" "$TERM_WIDTH" | tr ' ' "$char"
+set -euo pipefail
+
+readonly GOVMAN_MARKER_START="# GOVMAN - Go Version Manager"
+readonly GOVMAN_MARKER_END="# END GOVMAN"
+
+SHELL_CONFIGS=()
+CONFIGS_TO_CLEAN=()
+MARKER_STATE="absent"
+
+log_info() {
+    printf 'INFO: %s\n' "$*"
 }
- # Print fancy header
-print_header() {
-    clear
-    print_separator "═"
-    echo
-    echo
-    echo '    ██╗   ██╗███╗   ██╗██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗'
-    echo '    ██║   ██║████╗  ██║██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║'
-    echo '    ██║   ██║██╔██╗ ██║██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║'
-    echo '    ██║   ██║██║╚██╗██║██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║'
-    echo '    ╚██████╔╝██║ ╚████║██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗'
-    echo '     ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝'
-    echo
-    echo
-    echo -e "${BOLD}${WHITE}                        Go Version Manager Uninstaller${NC}"
-    echo -e "${DIM}${GRAY}                  Safe and complete uninstallation process${NC}"
-    echo
-    print_separator "═"
-    echo
+
+log_success() {
+    printf 'SUCCESS: %s\n' "$*"
 }
- # Print functions with icons and styling
-print_info() {
-    echo -e "${BLUE}${BOLD} ${INFO}  INFO${NC} ${GRAY}│${NC} $1"
+
+log_error() {
+    printf 'ERROR: %s\n' "$*" >&2
 }
- print_success() {
-    echo -e "${GREEN}${BOLD} ${CHECKMARK}  SUCCESS${NC} ${GRAY}│${NC} $1"
-}
- print_warning() {
-    echo -e "${YELLOW}${BOLD} ${WARNING}  WARNING${NC} ${GRAY}│${NC} $1"
-}
- print_error() {
-    echo -e "${RED}${BOLD} ${CROSSMARK}  ERROR${NC} ${GRAY}│${NC} $1"
-}
- print_step() {
-    echo -e "${PURPLE}${BOLD} ${ARROW}  STEP${NC} ${GRAY}│${NC} $1"
-}
- print_clean() {
-    echo -e "${CYAN}${BOLD} ${CLEAN}  CLEANING${NC} ${GRAY}│${NC} $1"
-}
- print_question() {
-    echo -e "${YELLOW}${BOLD} ${QUESTION}  QUESTION${NC} ${GRAY}│${NC} $1"
-}
- # User input function
-get_user_input() {
-    local prompt="$1"
-    local response=""
-     # Always read from /dev/tty when available
-    if [[ -e /dev/tty ]]; then
-        read -r -p "$(echo -e "$prompt")" response </dev/tty
-    else
-        # Fallback to standard input
-        read -r -p "$(echo -e "$prompt")" response
-    fi
-     echo "$response"
-}
- # Get shell configuration files
+
 get_shell_configs() {
-    local configs=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc")
-    [[ -f "$HOME/.config/fish/config.fish" ]] && configs+=("$HOME/.config/fish/config.fish")
-    printf '%s ' "${configs[@]}"
+    SHELL_CONFIGS=(
+        "$HOME/.bashrc"
+        "$HOME/.bash_profile"
+        "$HOME/.profile"
+        "$HOME/.zshrc"
+        "$HOME/.config/fish/config.fish"
+    )
 }
- # Check if govman is installed
-check_govman_installation() {
-    local install_dir="$HOME/.govman/bin"
-    local govman_dir="$HOME/.govman"
-    local shell_configs_str
-    shell_configs_str=$(get_shell_configs)
-    local shell_configs=($shell_configs_str)
-    local binary_found=false
-    local config_found=false
-    local data_found=false
-         print_step "Checking govman installation..."
-         # Check binary directory
-    if [[ -d "$install_dir" ]]; then
-        binary_found=true
-    fi
-         # Check shell configurations
-    for shell_config in "${shell_configs[@]}"; do
-        if [[ -f "$shell_config" ]] && grep -q "# GOVMAN - Go Version Manager" "$shell_config" 2>/dev/null; then
-            config_found=true
-            break
+
+has_govman_marker() {
+    local config_path="$1"
+    [[ -f "$config_path" ]] || return 1
+    grep -Fxq "$GOVMAN_MARKER_START" "$config_path" 2>/dev/null \
+        || grep -Fxq "$GOVMAN_MARKER_END" "$config_path" 2>/dev/null
+}
+
+inspect_marker_block() {
+    local config_path="$1"
+    local marker_data
+    local start_count end_count start_line end_line
+
+    MARKER_STATE="absent"
+    [[ -e "$config_path" || -L "$config_path" ]] || return 0
+
+    if [[ -L "$config_path" ]]; then
+        if has_govman_marker "$config_path"; then
+            log_error "Refusing to modify symlinked shell configuration: $config_path"
+            return 1
         fi
-    done
-         # Check data directory
-    if [[ -d "$govman_dir" ]]; then
-        data_found=true
-    fi
-         # Check if govman command is available in PATH
-    local command_found=false
-    if command -v govman >/dev/null 2>&1; then
-        command_found=true
-    fi
-         echo
-    print_separator "┄"
-    echo -e "${BOLD}${WHITE}Installation Status:${NC}"
-    print_separator "┄"
-         if [[ "$binary_found" == true ]]; then
-        echo -e "${GREEN} ${CHECKMARK}${NC} Binary directory: ${BOLD}$install_dir${NC}"
-    else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Binary directory: ${DIM}$install_dir (not found)${NC}"
-    fi
-         if [[ "$config_found" == true ]]; then
-        echo -e "${GREEN} ${CHECKMARK}${NC} Shell configuration: ${BOLD}Found in PATH${NC}"
-    else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Shell configuration: ${DIM}No govman configuration found${NC}"
-    fi
-         if [[ "$command_found" == true ]]; then
-        local version=$(govman --version 2>/dev/null | head -1 || echo "unknown")
-        echo -e "${GREEN} ${CHECKMARK}${NC} Command available: ${BOLD}govman${NC} ${DIM}($version)${NC}"
-    else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Command available: ${DIM}govman (not in PATH)${NC}"
-    fi
-         if [[ "$data_found" == true ]]; then
-        local dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
-        echo -e "${BLUE} ${INFO}${NC} Data directory: ${BOLD}$govman_dir${NC} ${DIM}($dir_size)${NC}"
-    else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Data directory: ${DIM}$govman_dir (not found)${NC}"
-    fi
-         print_separator "┄"
-    echo
-         # Return status: 0 if something to uninstall, 1 if nothing found
-    if [[ "$binary_found" == true || "$config_found" == true || "$data_found" == true ]]; then
         return 0
-    else
+    fi
+    if [[ ! -f "$config_path" ]]; then
+        return 0
+    fi
+
+    marker_data=$(awk -v start="$GOVMAN_MARKER_START" -v end="$GOVMAN_MARKER_END" '
+        $0 == start { start_count++; if (start_line == 0) start_line = NR }
+        $0 == end { end_count++; if (end_line == 0) end_line = NR }
+        END { printf "%d %d %d %d\n", start_count + 0, end_count + 0, start_line + 0, end_line + 0 }
+    ' "$config_path")
+    read -r start_count end_count start_line end_line <<<"$marker_data"
+
+    if (( start_count == 0 && end_count == 0 )); then
+        return 0
+    fi
+    if (( start_count != 1 || end_count != 1 || end_line <= start_line )); then
+        log_error "Malformed or duplicate govman marker block: $config_path"
         return 1
     fi
+
+    MARKER_STATE="valid"
 }
- # Show what will be removed based on option
-show_removal_preview() {
-    local option="$1"
-     echo -e "${BOLD}${WHITE}Removal Preview:${NC}"
-    print_separator "┄"
-     local install_dir="$HOME/.govman/bin"
-    local govman_dir="$HOME/.govman"
-    local shell_configs_str
-    shell_configs_str=$(get_shell_configs)
-    local shell_configs=($shell_configs_str)
-         # Check binary
-    if [[ -d "$install_dir" ]]; then
-        echo -e "${RED} ${TRASH}${NC} Binary directory: ${BOLD}$install_dir${NC}"
+
+file_mode() {
+    local config_path="$1"
+    if stat -f '%Lp' "$config_path" >/dev/null 2>&1; then
+        stat -f '%Lp' "$config_path"
     else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Binary directory: ${DIM}$install_dir (not found)${NC}"
+        stat -c '%a' "$config_path"
     fi
-         # Check shell configurations
-    local config_found=false
-    for shell_config in "${shell_configs[@]}"; do
-        if [[ -f "$shell_config" ]] && grep -q "# GOVMAN - Go Version Manager" "$shell_config" 2>/dev/null; then
-            echo -e "${RED} ${TRASH}${NC} Shell config: ${BOLD}$shell_config${NC}"
-            config_found=true
+}
+
+remove_govman_block() {
+    local config_path="$1"
+    local config_dir config_name timestamp backup_path temp_path mode
+
+    inspect_marker_block "$config_path" || return 1
+    [[ "$MARKER_STATE" == "valid" ]] || return 0
+
+    config_dir=$(dirname "$config_path")
+    config_name=$(basename "$config_path")
+    timestamp=$(date -u '+%Y%m%dT%H%M%SZ')
+    backup_path="${config_path}.govman-backup.${timestamp}.$$"
+    temp_path=$(mktemp "${config_dir}/.${config_name}.govman.XXXXXX") || {
+        log_error "Unable to create a temporary file beside $config_path"
+        return 1
+    }
+
+    if ! cp -p "$config_path" "$backup_path"; then
+        rm -f "$temp_path"
+        log_error "Unable to back up shell configuration: $config_path"
+        return 1
+    fi
+
+    if ! awk -v start="$GOVMAN_MARKER_START" -v end="$GOVMAN_MARKER_END" '
+        $0 == start { removing = 1; next }
+        removing && $0 == end { removing = 0; next }
+        !removing { print }
+        END { if (removing) exit 2 }
+    ' "$config_path" >"$temp_path"; then
+        rm -f "$temp_path"
+        log_error "Unable to remove govman block from $config_path; backup: $backup_path"
+        return 1
+    fi
+
+    mode=$(file_mode "$config_path") || {
+        rm -f "$temp_path"
+        log_error "Unable to read permissions for $config_path; backup: $backup_path"
+        return 1
+    }
+    if ! chmod "$mode" "$temp_path"; then
+        rm -f "$temp_path"
+        log_error "Unable to preserve permissions for $config_path; backup: $backup_path"
+        return 1
+    fi
+    if [[ -L "$config_path" ]]; then
+        rm -f "$temp_path"
+        log_error "Shell configuration became a symlink during update: $config_path"
+        return 1
+    fi
+    if ! mv -f "$temp_path" "$config_path"; then
+        rm -f "$temp_path"
+        log_error "Unable to replace shell configuration: $config_path; backup: $backup_path"
+        return 1
+    fi
+
+    log_success "Removed govman integration from $config_path"
+    log_info "Backup saved to $backup_path"
+}
+
+preflight_shell_configs() {
+    local config_path
+
+    CONFIGS_TO_CLEAN=()
+    get_shell_configs
+    for config_path in "${SHELL_CONFIGS[@]}"; do
+        inspect_marker_block "$config_path" || return 1
+        if [[ "$MARKER_STATE" == "valid" ]]; then
+            CONFIGS_TO_CLEAN+=("$config_path")
         fi
     done
-         if [[ "$config_found" == false ]]; then
-        echo -e "${GRAY} ${CROSSMARK}${NC} Shell configs: ${DIM}No govman configuration found${NC}"
-    fi
-         # Show data directory based on option
-    if [[ -d "$govman_dir" ]]; then
-        local dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
-        if [[ "$option" == "complete" ]]; then
-            echo -e "${RED} ${TRASH}${NC} Data directory: ${BOLD}$govman_dir${NC} ${DIM}($dir_size)${NC}"
-        else
-            echo -e "${GREEN} ${SHIELD}${NC} Data directory: ${BOLD}$govman_dir${NC} ${DIM}($dir_size - will be kept)${NC}"
-        fi
-    else
-        echo -e "${GRAY} ${CROSSMARK}${NC} Data directory: ${DIM}$govman_dir (not found)${NC}"
-    fi
-         print_separator "┄"
-    echo
 }
- # Animated loading for removal process
-show_removal_progress() {
-    local item="$1"
-    local delay=0.1
-    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    local temp
-         echo -n "   ${DIM}Removing $item... ${NC}"
-    for i in {1..10}; do
-        temp=${spinstr#?}
-        printf "\r   ${DIM}Removing $item... ${CYAN}%c${NC} " "$spinstr"
-        spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
+
+remove_from_path() {
+    local config_path
+    local modified=0
+
+    preflight_shell_configs || return 1
+    for config_path in "${CONFIGS_TO_CLEAN[@]}"; do
+        log_info "Cleaning shell configuration: $config_path"
+        remove_govman_block "$config_path" || return 1
+        modified=$((modified + 1))
     done
-    printf "\r   ${GREEN}${CHECKMARK}${NC} Removed $item successfully.      \n"
+
+    if (( modified == 0 )); then
+        log_info "No complete govman shell integration blocks found"
+    else
+        log_success "Cleaned $modified shell configuration(s)"
+    fi
 }
- # Remove binary with feedback
+
 remove_binary() {
     local install_dir="$HOME/.govman/bin"
-         print_step "Removing govman binary..."
-         if [[ -d "$install_dir" ]]; then
-        show_removal_progress "binary directory"
+    if [[ -e "$install_dir" || -L "$install_dir" ]]; then
+        log_info "Removing binary directory: $install_dir"
         rm -rf "$install_dir"
-        print_success "Removed govman binary from $install_dir"
+        log_success "Removed govman binaries"
     else
-        print_warning "govman binary directory not found at $install_dir"
+        log_info "Binary directory not found: $install_dir"
     fi
 }
- # Remove from PATH with feedback
-remove_from_path() {
-    local shell_configs_str
-    shell_configs_str=$(get_shell_configs)
-    local shell_configs=($shell_configs_str)
-    local configs_modified=0
-         print_step "Cleaning shell configurations..."
-         for shell_config in "${shell_configs[@]}"; do
-        if [[ -f "$shell_config" ]]; then
-            # Check if govman is configured in this config
-            if grep -q "# GOVMAN - Go Version Manager" "$shell_config" 2>/dev/null; then
-                show_removal_progress "$(basename "$shell_config") configuration"
-                 # More portable sed operation
-                sed '/# GOVMAN - Go Version Manager/,/# END GOVMAN/d' "$shell_config" > "${shell_config}.tmp"
-                mv "${shell_config}.tmp" "$shell_config"
-                 # Clean up extra blank lines that might be left
-                awk 'NF || prev_blank {print} {prev_blank = !NF}' "$shell_config" > "${shell_config}.tmp" && mv "${shell_config}.tmp" "$shell_config"
-                 print_success "Cleaned PATH configuration in $(basename "$shell_config")"
-                ((configs_modified++))
-            fi
-        fi
-    done
-         if [[ $configs_modified -eq 0 ]]; then
-        print_info "No shell configurations found with govman setup"
-    else
-        print_success "Cleaned $configs_modified shell configuration(s)"
-    fi
-}
- # Remove entire govman directory with feedback
-remove_govman_dir() {
+
+remove_all_data() {
     local govman_dir="$HOME/.govman"
-         print_step "Removing govman data directory..."
-         if [[ -d "$govman_dir" ]]; then
-        # Show what's being removed
-        local dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown size")
-        print_info "Removing directory: $govman_dir ($dir_size)"
-                 show_removal_progress "data directory"
+    if [[ -e "$govman_dir" || -L "$govman_dir" ]]; then
+        log_info "Removing data directory: $govman_dir"
         rm -rf "$govman_dir"
-        print_success "Removed govman data directory"
+        log_success "Removed all govman data"
     else
-        print_warning "govman directory not found at $govman_dir"
+        log_info "Data directory not found: $govman_dir"
     fi
 }
- # Show uninstall options
-show_uninstall_options() {
-    print_separator "═"
-    echo -e "${BOLD}${WHITE} ${QUESTION}  UNINSTALLATION OPTIONS${NC}"
-    print_separator "═"
-    echo
-    echo -e "${CYAN}${BOLD}1)${NC} ${WHITE}Minimal Removal${NC} ${DIM}(Recommended)${NC}"
-    echo "   • Remove govman binary and executable"
-    echo "   • Clean shell PATH configurations"  
-    echo -e "   • ${GREEN}Keep${NC} downloaded Go versions for future use"
-    echo
-    echo -e "${RED}${BOLD}2)${NC} ${WHITE}Complete Removal${NC} ${DIM}(Permanent)${NC}"
-    echo "   • Remove govman binary and executable"
-    echo "   • Clean shell PATH configurations"
-    echo -e "   • ${RED}Delete${NC} all downloaded Go versions and data"
-    echo -e "   • ${RED}Delete${NC} entire ~/.govman directory"
-    echo
-    echo -e "${GRAY}${BOLD}3)${NC} ${WHITE}Cancel${NC}"
-    echo "   • Exit without making any changes"
-    echo
-    print_separator "┄"
+
+installation_exists() {
+    local config_path
+    [[ -e "$HOME/.govman" || -L "$HOME/.govman" ]] && return 0
+    get_shell_configs
+    for config_path in "${SHELL_CONFIGS[@]}"; do
+        has_govman_marker "$config_path" && return 0
+    done
+    return 1
 }
- # Show completion message
-show_completion() {
-    local complete_removal="$1"
-         echo
-    print_separator "═"
-    echo
-    if [[ "$complete_removal" == "true" ]]; then
-        echo -e "${GREEN}${BOLD} ${CHECKMARK}  COMPLETE UNINSTALLATION SUCCESSFUL!${NC}"
-        echo
-        print_separator "┄"
-        echo -e "${BOLD}${WHITE}What was removed:${NC}"
-        echo " • govman binary and executable"
-        echo " • Shell PATH configurations"
-        echo " • All downloaded Go versions"
-        echo " • Complete .govman directory"
-    else
-        echo -e "${GREEN}${BOLD} ${CHECKMARK}  MINIMAL UNINSTALLATION COMPLETE!${NC}"
-        echo
-        print_separator "┄"
-        echo -e "${BOLD}${WHITE}What was removed:${NC}"
-        echo " • govman binary and executable"
-        echo " • Shell PATH configurations"
-        echo
-        echo -e "${BOLD}${WHITE}What was kept:${NC}"
-        echo " • Downloaded Go versions in ~/.govman"
-    fi
-    print_separator "┄"
-    echo -e "${BOLD}${WHITE}Final Steps:${NC}"
-    echo " 1. Restart your terminal to complete the process"
-    echo " 2. Verify with 'govman --version' (should show 'command not found')"
-    if [[ "$complete_removal" != "true" ]]; then
-        echo " 3. Manually remove '~/.govman' if you change your mind later"
-    fi
-    print_separator "┄"
-    echo "Thank you for using govman!"
-    print_separator "═"
-    echo
+
+read_answer() {
+    local prompt="$1"
+    local answer=""
+    printf '%s' "$prompt" >&2
+    IFS= read -r answer || true
+    printf '%s' "$answer"
 }
- # Main uninstallation function
+
 main() {
-    # Show header
-    print_header
-         print_info "Starting govman uninstallation process..."
-    echo
-         # Check if govman is installed
-    if ! check_govman_installation; then
-        print_warning "govman does not appear to be installed on this system"
-        echo
-        print_separator "┄"
-        echo -e "${BOLD}${WHITE}No govman installation found!${NC}"
-        print_separator "┄"
-        echo "It looks like govman is not installed or has already been removed."
-        echo "Common reasons:"
-        echo " • govman was never installed"
-        echo " • govman was already uninstalled"
-        echo " • govman was installed in a different location"
-        echo " • Installation was incomplete or corrupted"
-        print_separator "┄"
-        echo
-        local response
-        response=$(get_user_input "Do you want to clean any remaining traces? ${DIM}(y/N):${NC} ")
-                 if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo
-            print_info "Exiting without making changes"
-            print_separator "═"
-            echo -e "${DIM}${GRAY}No changes were made to your system.${NC}"
-            print_separator "═"
-            echo
-            exit 0
-        fi
-                 echo
-        print_info "Proceeding with cleanup of any remaining traces..."
-        echo
-    else
-        print_success "govman installation detected"
-        echo
+    local choice confirm
+
+    if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+        clear 2>/dev/null || true
     fi
-         # Show uninstall options
-    show_uninstall_options
-         # Get user choice
-    local response
-    response=$(get_user_input "Choose an option ${DIM}(1/2/3):${NC} ")
-         echo
-         case "$response" in
+    printf 'govman uninstaller\n\n'
+
+    if ! installation_exists; then
+        log_info "No govman installation or shell integration was found"
+        return 0
+    fi
+
+    printf '1) Minimal removal (keep downloaded Go versions)\n'
+    printf '2) Complete removal (delete all govman data)\n'
+    printf '3) Cancel\n'
+    choice=$(read_answer 'Choose an option (1/2/3): ')
+
+    case "$choice" in
         1)
-            print_info "Proceeding with minimal removal..."
-            echo
-            show_removal_preview "minimal"
-                         # Final confirmation for minimal removal
-            print_separator "┄"
-            echo -e "${YELLOW}${BOLD} ${STOP}  FINAL CONFIRMATION${NC}"
-            print_separator "┄"
-            local confirm
-            confirm=$(get_user_input "Proceed with minimal removal? ${DIM}(y/N):${NC} ")
-                         if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                echo
-                remove_binary
-                echo
-                remove_from_path
-                echo
-                show_completion "false"
-            else
-                echo
-                print_info "Uninstallation cancelled by user"
-                print_separator "═"
-                echo -e "${DIM}${GRAY}No changes were made to your system.${NC}"
-                print_separator "═"
-                echo
-            fi
+            confirm=$(read_answer 'Proceed with minimal removal? (y/N): ')
+            [[ "$confirm" =~ ^[Yy]$ ]] || { log_info "Uninstallation cancelled"; return 0; }
+            remove_from_path || return 1
+            remove_binary
+            log_success "Minimal uninstallation completed; downloaded Go versions were retained"
             ;;
-                     2)
-            print_info "Proceeding with complete removal..."
-            echo
-            show_removal_preview "complete"
-                         # Final confirmation for complete removal
-            print_separator "┄"
-            echo -e "${RED}${BOLD} ${STOP}  DANGER: COMPLETE REMOVAL${NC}"
-            print_separator "┄"
-            echo -e "${RED}This will permanently delete ALL govman data and cannot be undone!${NC}"
-            print_separator "┄"
-            local confirm
-            confirm=$(get_user_input "Type 'DELETE' to confirm complete removal: ")
-                         if [[ "$confirm" == "DELETE" ]]; then
-                echo
-                remove_binary
-                echo
-                remove_from_path
-                echo
-                remove_govman_dir
-                echo
-                show_completion "true"
-            else
-                echo
-                print_info "Complete removal cancelled - confirmation text did not match"
-                print_separator "═"
-                echo -e "${DIM}${GRAY}No changes were made to your system.${NC}"
-                print_separator "═"
-                echo
-            fi
+        2)
+            confirm=$(read_answer "Type 'DELETE' to remove all govman data: ")
+            [[ "$confirm" == "DELETE" ]] || { log_info "Uninstallation cancelled"; return 0; }
+            remove_from_path || return 1
+            remove_all_data
+            log_success "Complete uninstallation completed"
             ;;
-                     3|*)
-            echo
-            print_info "Uninstallation cancelled by user"
-            print_separator "═"
-            echo -e "${DIM}${GRAY}No changes were made to your system.${NC}"
-            print_separator "═"
-            echo
+        *)
+            log_info "Uninstallation cancelled"
             ;;
     esac
 }
- # Trap to ensure clean exit
-trap 'echo -e "\n${RED}Uninstallation interrupted. Incomplete removal may have occurred.${NC}"; exit 1' INT TERM
- # Run main function
-main "$@"
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    trap 'printf "ERROR: uninstallation interrupted; some state may have been retained\n" >&2; exit 1' INT TERM
+    main "$@"
+fi
