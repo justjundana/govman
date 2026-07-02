@@ -35,6 +35,7 @@ const (
 type Downloader struct {
 	config            *_config.Config
 	client            *http.Client
+	logger            *_logger.Logger
 	maxFileSize       int64
 	maxTotalSize      int64
 	maxArchiveEntries int
@@ -43,11 +44,20 @@ type Downloader struct {
 // New creates a Downloader using the provided configuration.
 // It initializes an HTTP client with the timeout from cfg.Download.Timeout and returns *Downloader.
 func New(cfg *_config.Config) *Downloader {
+	return NewWithLogger(cfg, _logger.Get())
+}
+
+// NewWithLogger creates a Downloader whose output is isolated to logger.
+func NewWithLogger(cfg *_config.Config, logger *_logger.Logger) *Downloader {
+	if logger == nil {
+		logger = _logger.New()
+	}
 	return &Downloader{
 		config: cfg,
 		client: &http.Client{
 			Timeout: cfg.Download.Timeout,
 		},
+		logger:            logger,
 		maxFileSize:       maxExtractFileSize,
 		maxTotalSize:      maxExtractTotalSize,
 		maxArchiveEntries: maxArchiveEntries,
@@ -62,29 +72,29 @@ func (d *Downloader) Download(url, installDir, version string) error {
 
 // DownloadContext is Download with caller-controlled cancellation.
 func (d *Downloader) DownloadContext(ctx context.Context, url, installDir, version string) error {
-	_logger.InternalProgress("Retrieving file information")
-	timer := _logger.StartTimer("file info retrieval")
+	d.logger.InternalProgress("Retrieving file information")
+	timer := d.logger.StartTimer("file info retrieval")
 	fileInfo, err := _golang.GetFileInfoWithConfig(version,
 		d.config.GoReleases.APIURL,
 		d.config.GoReleases.CacheExpiry)
 	if err != nil {
-		_logger.StopTimer(timer)
+		d.logger.StopTimer(timer)
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
-	_logger.StopTimer(timer)
+	d.logger.StopTimer(timer)
 
 	var archivePath string
 	for attempt := 0; attempt < 2; attempt++ {
-		_logger.InternalProgress("Downloading file")
+		d.logger.InternalProgress("Downloading file")
 		archivePath, err = d.downloadFileContext(ctx, url, fileInfo)
 		if err != nil {
 			return fmt.Errorf("failed to download: %w", err)
 		}
 
-		_logger.InternalProgress("Verifying checksum")
-		timer = _logger.StartTimer("checksum verification")
+		d.logger.InternalProgress("Verifying checksum")
+		timer = d.logger.StartTimer("checksum verification")
 		err = d.verifyChecksum(archivePath, fileInfo.Sha256)
-		_logger.StopTimer(timer)
+		d.logger.StopTimer(timer)
 		if err == nil {
 			break
 		}
@@ -94,16 +104,16 @@ func (d *Downloader) DownloadContext(ctx context.Context, url, installDir, versi
 		if attempt == 1 {
 			return fmt.Errorf("checksum verification failed after a fresh download: %w", err)
 		}
-		_logger.Warning("Cached archive checksum was invalid; retrying with a fresh download")
+		d.logger.Warning("Cached archive checksum was invalid; retrying with a fresh download")
 	}
 
-	_logger.InternalProgress("Extracting archive")
-	timer = _logger.StartTimer("archive extraction")
+	d.logger.InternalProgress("Extracting archive")
+	timer = d.logger.StartTimer("archive extraction")
 	if err := d.installArchive(archivePath, installDir, version); err != nil {
-		_logger.StopTimer(timer)
+		d.logger.StopTimer(timer)
 		return fmt.Errorf("failed to extract archive: %w", err)
 	}
-	_logger.StopTimer(timer)
+	d.logger.StopTimer(timer)
 
 	return nil
 }
@@ -111,7 +121,7 @@ func (d *Downloader) DownloadContext(ctx context.Context, url, installDir, versi
 // handleResumeResponse checks if the server supports resume and truncates the file if needed.
 func (d *Downloader) handleResumeResponse(file *os.File, resp *http.Response, currentSize, expectedSize int64) (int64, error) {
 	if currentSize > 0 && resp.StatusCode == http.StatusOK {
-		_logger.Verbose("Server does not support resume, restarting download from scratch")
+		d.logger.Verbose("Server does not support resume, restarting download from scratch")
 		if err := file.Truncate(0); err != nil {
 			return 0, fmt.Errorf("failed to truncate file for fresh download: %w", err)
 		}
@@ -197,7 +207,7 @@ func (d *Downloader) downloadWithRetry(req *http.Request) (*http.Response, error
 			if delay < 0 {
 				delay = 0
 			}
-			_logger.Warning("Download failed, retrying in %v... (%d/%d)",
+			d.logger.Warning("Download failed, retrying in %v... (%d/%d)",
 				delay, attempt+1, attempts)
 			if err := waitForRetry(req.Context(), delay); err != nil {
 				return nil, err
@@ -294,7 +304,7 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 	defer unlock()
 
 	if stat, err := os.Lstat(cachePath); err == nil && stat.Mode().IsRegular() && stat.Size() == fileInfo.Size {
-		_logger.Success("Using cached file: %s", filename)
+		d.logger.Success("Using cached file: %s", filename)
 		return cachePath, nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("failed to inspect cached file: %w", err)
@@ -328,9 +338,9 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 		return "", err
 	}
 	if currentSize > 0 {
-		_logger.Download("Resuming download: %s", filename)
+		d.logger.Download("Resuming download: %s", filename)
 	} else {
-		_logger.Download("Downloading: %s", filename)
+		d.logger.Download("Downloading: %s", filename)
 	}
 
 	for requestAttempt := 0; requestAttempt < 2; requestAttempt++ {
@@ -362,7 +372,7 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 		validatedSize, resumeErr := d.handleResumeResponse(file, resp, currentSize, fileInfo.Size)
 		if resumeErr != nil && currentSize > 0 && requestAttempt == 0 {
 			resp.Body.Close()
-			_logger.Warning("Server returned an invalid resume response; restarting download")
+			d.logger.Warning("Server returned an invalid resume response; restarting download")
 			if err := resetPartialFile(file); err != nil {
 				return "", err
 			}
@@ -491,7 +501,7 @@ func acquireCacheLock(ctx context.Context, lockPath string, maxWait time.Duratio
 // verifyChecksum computes the SHA-256 of filePath and compares it to expectedSHA256.
 // Returns an error on mismatch or I/O failure; nil when the checksum matches.
 func (d *Downloader) verifyChecksum(filePath, expectedSHA256 string) error {
-	_logger.Verify("Verifying checksum...")
+	d.logger.Verify("Verifying checksum...")
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -510,7 +520,7 @@ func (d *Downloader) verifyChecksum(filePath, expectedSHA256 string) error {
 			expectedSHA256, actualSHA256)
 	}
 
-	_logger.Success("Checksum verified")
+	d.logger.Success("Checksum verified")
 	return nil
 }
 
@@ -569,7 +579,7 @@ func validateExtractedInstallation(installDir, version string) error {
 // extractArchive ensures installDir exists and extracts archivePath based on its extension (.tar.gz or .zip).
 // Returns an error for unsupported formats or extraction failures.
 func (d *Downloader) extractArchive(archivePath, installDir string) error {
-	_logger.Extract("Extracting archive...")
+	d.logger.Extract("Extracting archive...")
 
 	if !strings.HasSuffix(archivePath, ".tar.gz") && !strings.HasSuffix(archivePath, ".zip") {
 		return fmt.Errorf("unsupported archive format")

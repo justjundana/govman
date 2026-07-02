@@ -11,6 +11,7 @@ import (
 	_config "github.com/justjundana/govman/internal/config"
 	_downloader "github.com/justjundana/govman/internal/downloader"
 	_golang "github.com/justjundana/govman/internal/golang"
+	_logger "github.com/justjundana/govman/internal/logger"
 )
 
 // mockShell implements Shell interface for testing
@@ -126,10 +127,27 @@ func createInstalledVersion(t *testing.T, config *_config.Config, version string
 	return goPath
 }
 
+func TestNewWithLogger(t *testing.T) {
+	config := createTestConfig(t)
+	injected := _logger.New()
+
+	manager := NewWithLogger(config, injected)
+	if manager.logger != injected {
+		t.Fatal("NewWithLogger did not preserve the injected logger")
+	}
+	if manager.downloader == nil {
+		t.Fatal("NewWithLogger did not initialize the downloader")
+	}
+	if fallback := NewWithLogger(config, nil); fallback.logger == nil {
+		t.Fatal("NewWithLogger did not create a fallback logger")
+	}
+}
+
 func createTestManager(t *testing.T, config *_config.Config) *Manager {
 	return &Manager{
 		config:     config,
 		downloader: _downloader.New(config),
+		logger:     _logger.New(),
 		shell: &mockShell{
 			name:         "bash",
 			displayName:  "Bash",

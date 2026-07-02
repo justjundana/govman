@@ -307,7 +307,10 @@ func expandInstallPatterns(args []string, mgr *_manager.Manager, includeUnstable
 		if _util.IsWildcardPattern(arg) {
 			_logger.Progress("Fetching available versions for pattern '%s'...", arg)
 
-			matched := _util.MatchVersionPattern(arg, remoteVersions)
+			matched, err := _util.MatchVersionPattern(arg, remoteVersions)
+			if err != nil {
+				return nil, fmt.Errorf("failed to match install pattern %q: %w", arg, err)
+			}
 			if len(matched) == 0 {
 				_logger.Warning("No versions matched pattern '%s'", arg)
 				continue
@@ -329,17 +332,6 @@ func expandInstallPatterns(args []string, mgr *_manager.Manager, includeUnstable
 	}
 
 	return allVersions, nil
-}
-
-// filterPrereleaseVersions returns only versions that are prerelease (contain rc, beta, or alpha).
-func filterPrereleaseVersions(versions []string) []string {
-	var prerelease []string
-	for _, v := range versions {
-		if isPrerelease(v) {
-			prerelease = append(prerelease, v)
-		}
-	}
-	return prerelease
 }
 
 // isPrerelease checks if a version string is a prerelease version (beta, rc, or alpha).
@@ -370,7 +362,10 @@ func expandUninstallPatterns(args []string, mgr *_manager.Manager) ([]string, er
 	for _, arg := range args {
 		if _util.IsWildcardPattern(arg) {
 			// Filter installed versions by pattern
-			matched := _util.MatchVersionPattern(arg, installedVersions)
+			matched, err := _util.MatchVersionPattern(arg, installedVersions)
+			if err != nil {
+				return nil, fmt.Errorf("failed to match uninstall pattern %q: %w", arg, err)
+			}
 			if len(matched) == 0 {
 				_logger.Warning("No installed versions matched pattern '%s'", arg)
 				continue

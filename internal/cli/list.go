@@ -130,7 +130,7 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 // countVersionStats counts stable, unstable, and installed versions.
 func countVersionStats(versions []string, mgr *_manager.Manager) (stableCount, unstableCount, installedCount int) {
 	for _, version := range versions {
-		if strings.Contains(version, "rc") || strings.Contains(version, "beta") || strings.Contains(version, "alpha") {
+		if isPrerelease(version) {
 			unstableCount++
 		} else {
 			stableCount++

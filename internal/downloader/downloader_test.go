@@ -20,6 +20,7 @@ import (
 
 	_config "github.com/justjundana/govman/internal/config"
 	_golang "github.com/justjundana/govman/internal/golang"
+	_logger "github.com/justjundana/govman/internal/logger"
 )
 
 // createTestConfig creates a test configuration with temporary directories
@@ -110,6 +111,19 @@ func TestDownloader_New(t *testing.T) {
 				t.Errorf("Expected timeout %v, got %v", tc.config.Download.Timeout, downloader.client.Timeout)
 			}
 		})
+	}
+}
+
+func TestDownloader_NewWithLogger(t *testing.T) {
+	config := createTestConfig(t)
+	injected := _logger.New()
+
+	downloader := NewWithLogger(config, injected)
+	if downloader.logger != injected {
+		t.Fatal("NewWithLogger did not preserve the injected logger")
+	}
+	if fallback := NewWithLogger(config, nil); fallback.logger == nil {
+		t.Fatal("NewWithLogger did not create a fallback logger")
 	}
 }
 

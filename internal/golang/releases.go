@@ -1,6 +1,8 @@
 package golang
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +21,9 @@ import (
 )
 
 var (
-	releasesCache = make(map[releasesCacheKey]*releasesCacheEntry)
-	cacheMutex    sync.Mutex
+	releasesCache      = make(map[releasesCacheKey]*releasesCacheEntry)
+	cacheMutex         sync.Mutex
+	releasesHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 	// Pre-compiled regex patterns to avoid repeated compilation
 	versionParseRegex     = regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?(?:-?(rc\d+|beta\d+|alpha\d+))?$`)
@@ -43,7 +46,9 @@ type releasesCacheEntry struct {
 }
 
 const (
-	GoDownloadURLTemplate = "%s"
+	installMetadataFilename = ".govman-install.json"
+	maxInstallMetadataSize  = 4 << 10
+	maxReleasesResponseSize = 32 << 20
 )
 
 var (
@@ -77,6 +82,11 @@ type VersionInfo struct {
 	Size        int64
 }
 
+type installMetadata struct {
+	Version     string    `json:"version"`
+	InstalledAt time.Time `json:"installed_at"`
+}
+
 // GetAvailableVersions returns all available Go versions, optionally including unstable ones.
 // Parameter includeUnstable controls inclusion. Returns a sorted slice of version strings or an error.
 func GetAvailableVersions(includeUnstable bool) ([]string, error) {
@@ -98,11 +108,15 @@ func GetAvailableVersionsWithConfig(includeUnstable bool, apiURL string, cacheDu
 		}
 
 		version := strings.TrimPrefix(release.Version, "go")
+		if _, err := parseVersion(normalizeVersion(version)); err != nil {
+			return nil, fmt.Errorf("Go releases API returned invalid version %q: %w", release.Version, err)
+		}
 		versions = append(versions, version)
 	}
 
 	sort.Slice(versions, func(i, j int) bool {
-		return CompareVersions(versions[i], versions[j]) > 0
+		comparison, _ := CompareVersions(versions[i], versions[j])
+		return comparison > 0
 	})
 
 	return versions, nil
@@ -147,7 +161,8 @@ func GetDownloadURLWithConfig(version string, apiURL string, cacheDuration time.
 // Parameters: version, goos, goarch. Returns the resolved architecture string.
 func resolveArch(version, goos, goarch string) string {
 	if goos == "darwin" && goarch == "arm64" {
-		if CompareVersions(version, "1.16") < 0 {
+		comparison, err := CompareVersions(version, "1.16")
+		if err == nil && comparison < 0 {
 			return "amd64"
 		}
 	}
@@ -198,17 +213,25 @@ func GetVersionInfo(installPath string) (*VersionInfo, error) {
 		goBinary += ".exe"
 	}
 
-	stat, err := os.Stat(goBinary)
+	_, err := os.Stat(goBinary)
 	if err != nil {
 		return nil, fmt.Errorf("go binary not found in %s", installPath)
 	}
 
 	version := filepath.Base(installPath)
 	version = strings.TrimPrefix(version, "go")
+	if _, err := parseVersion(normalizeVersion(version)); err != nil {
+		return nil, fmt.Errorf("invalid installed Go version directory %q: %w", filepath.Base(installPath), err)
+	}
+
+	installDate, err := readInstallDate(installPath, version)
+	if err != nil {
+		return nil, err
+	}
 
 	size, err := getDirSize(installPath)
 	if err != nil {
-		size = 0
+		return nil, fmt.Errorf("failed to calculate Go %s installation size: %w", version, err)
 	}
 
 	return &VersionInfo{
@@ -216,42 +239,165 @@ func GetVersionInfo(installPath string) (*VersionInfo, error) {
 		Path:        installPath,
 		OS:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
-		InstallDate: stat.ModTime(),
+		InstallDate: installDate,
 		Size:        size,
 	}, nil
 }
 
-// CompareVersions compares two semantic version strings with prerelease awareness.
-// Returns 1 if v1 > v2, -1 if v1 < v2, and 0 if equal.
-func CompareVersions(v1, v2 string) int {
-	// Early return for identical strings
-	if v1 == v2 {
-		return 0
+// WriteInstallMetadata records the completion time for a committed Go installation.
+// The metadata is written atomically inside the installation directory.
+func WriteInstallMetadata(installPath, version string, installedAt time.Time) error {
+	normalizedVersion := normalizeVersion(version)
+	if _, err := parseVersion(normalizedVersion); err != nil {
+		return fmt.Errorf("invalid install metadata version %q: %w", version, err)
+	}
+	if installedAt.IsZero() {
+		return fmt.Errorf("install timestamp cannot be zero")
+	}
+	info, err := os.Lstat(installPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect installation directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("installation path is not a regular directory: %s", installPath)
 	}
 
-	// Normalize once and check again
+	metadata := installMetadata{
+		Version:     normalizedVersion,
+		InstalledAt: installedAt.UTC(),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to encode install metadata: %w", err)
+	}
+	encoded = append(encoded, '\n')
+
+	tempFile, err := os.CreateTemp(installPath, ".govman-install-*")
+	if err != nil {
+		return fmt.Errorf("failed to create install metadata temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := tempFile.Chmod(0600); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to secure install metadata temp file: %w", err)
+	}
+	if _, err := tempFile.Write(encoded); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to write install metadata: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to sync install metadata: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close install metadata: %w", err)
+	}
+
+	metadataPath := filepath.Join(installPath, installMetadataFilename)
+	if _, err := os.Lstat(metadataPath); err == nil {
+		return fmt.Errorf("install metadata already exists: %s", metadataPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect install metadata path: %w", err)
+	}
+	if err := os.Rename(tempPath, metadataPath); err != nil {
+		return fmt.Errorf("failed to commit install metadata: %w", err)
+	}
+	removeTemp = false
+	return nil
+}
+
+func readInstallDate(installPath, version string) (time.Time, error) {
+	metadataPath := filepath.Join(installPath, installMetadataFilename)
+	metadataInfo, err := os.Lstat(metadataPath)
+	if os.IsNotExist(err) {
+		// Legacy installations predate explicit metadata. The installation
+		// directory mtime reflects extraction/commit time more accurately than
+		// the archive-preserved mtime of bin/go.
+		installInfo, statErr := os.Lstat(installPath)
+		if statErr != nil {
+			return time.Time{}, fmt.Errorf("failed to inspect installation directory: %w", statErr)
+		}
+		if !installInfo.IsDir() || installInfo.Mode()&os.ModeSymlink != 0 {
+			return time.Time{}, fmt.Errorf("installation path is not a regular directory: %s", installPath)
+		}
+		return installInfo.ModTime(), nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to inspect install metadata: %w", err)
+	}
+	if !metadataInfo.Mode().IsRegular() || metadataInfo.Mode()&os.ModeSymlink != 0 {
+		return time.Time{}, fmt.Errorf("install metadata is not a regular file: %s", metadataPath)
+	}
+	if metadataInfo.Size() > maxInstallMetadataSize {
+		return time.Time{}, fmt.Errorf("install metadata exceeds %d bytes", maxInstallMetadataSize)
+	}
+
+	file, err := os.Open(metadataPath)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to open install metadata: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxInstallMetadataSize+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return time.Time{}, fmt.Errorf("failed to read install metadata: %w", readErr)
+	}
+	if closeErr != nil {
+		return time.Time{}, fmt.Errorf("failed to close install metadata: %w", closeErr)
+	}
+	if len(data) > maxInstallMetadataSize {
+		return time.Time{}, fmt.Errorf("install metadata exceeds %d bytes", maxInstallMetadataSize)
+	}
+
+	var metadata installMetadata
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil {
+		return time.Time{}, fmt.Errorf("failed to decode install metadata: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return time.Time{}, fmt.Errorf("install metadata contains trailing data")
+	}
+	if metadata.Version != version {
+		return time.Time{}, fmt.Errorf("install metadata version %q does not match directory version %q", metadata.Version, version)
+	}
+	if metadata.InstalledAt.IsZero() {
+		return time.Time{}, fmt.Errorf("install metadata timestamp is missing")
+	}
+	return metadata.InstalledAt, nil
+}
+
+// CompareVersions compares two semantic version strings with prerelease awareness.
+// Returns 1 if v1 > v2, -1 if v1 < v2, and 0 if equal. Invalid versions return an error.
+func CompareVersions(v1, v2 string) (int, error) {
 	v1Norm := normalizeVersion(v1)
 	v2Norm := normalizeVersion(v2)
-
-	if v1Norm == v2Norm {
-		return 0
+	parts1, err := parseVersion(v1Norm)
+	if err != nil {
+		return 0, fmt.Errorf("invalid version %q: %w", v1, err)
 	}
-
-	// Parse both versions
-	parts1 := parseVersion(v1Norm)
-	parts2 := parseVersion(v2Norm)
+	parts2, err := parseVersion(v2Norm)
+	if err != nil {
+		return 0, fmt.Errorf("invalid version %q: %w", v2, err)
+	}
 
 	// Compare version numbers
 	for i := 0; i < 3; i++ {
 		if parts1.numbers[i] > parts2.numbers[i] {
-			return 1
+			return 1, nil
 		} else if parts1.numbers[i] < parts2.numbers[i] {
-			return -1
+			return -1, nil
 		}
 	}
 
 	// Compare prerelease tags
-	return comparePrerelease(parts1.prerelease, parts2.prerelease)
+	return comparePrerelease(parts1.prerelease, parts2.prerelease), nil
 }
 
 type versionParts struct {
@@ -261,38 +407,38 @@ type versionParts struct {
 
 // parseVersion parses a normalized version into numeric components and a prerelease tag.
 // Parameter version. Returns a versionParts struct.
-func parseVersion(version string) versionParts {
+func parseVersion(version string) (versionParts, error) {
 	var parts versionParts
 
 	matches := versionParseRegex.FindStringSubmatch(version)
 
 	if len(matches) == 0 {
-		return parts
+		return parts, fmt.Errorf("must use major.minor[.patch][-prerelease] format")
 	}
 
-	if len(matches) > 1 {
-		if num, err := strconv.Atoi(matches[1]); err == nil {
-			parts.numbers[0] = num
+	major, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return parts, fmt.Errorf("invalid major version: %w", err)
+	}
+	minor, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return parts, fmt.Errorf("invalid minor version: %w", err)
+	}
+	parts.numbers[0] = major
+	parts.numbers[1] = minor
+	if matches[3] != "" {
+		patch, err := strconv.Atoi(matches[3])
+		if err != nil {
+			return parts, fmt.Errorf("invalid patch version: %w", err)
 		}
+		parts.numbers[2] = patch
 	}
 
-	if len(matches) > 2 {
-		if num, err := strconv.Atoi(matches[2]); err == nil {
-			parts.numbers[1] = num
-		}
-	}
-
-	if len(matches) > 3 && matches[3] != "" {
-		if num, err := strconv.Atoi(matches[3]); err == nil {
-			parts.numbers[2] = num
-		}
-	}
-
-	if len(matches) > 4 && matches[4] != "" {
+	if matches[4] != "" {
 		parts.prerelease = matches[4]
 	}
 
-	return parts
+	return parts, nil
 }
 
 // normalizeVersion strips leading "go" or "v" prefixes from version strings.
@@ -409,10 +555,16 @@ func fetchReleasesWithConfig(apiURL string, cacheDuration time.Duration) ([]Rele
 }
 
 func fetchReleases(apiURL string) ([]Release, error) {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return fetchReleasesContext(ctx, releasesHTTPClient, apiURL)
+}
+
+func fetchReleasesContext(ctx context.Context, client *http.Client, apiURL string) ([]Release, error) {
+	if client == nil {
+		return nil, fmt.Errorf("Go releases HTTP client is nil")
 	}
-	request, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create releases request: %w", err)
 	}
@@ -428,7 +580,6 @@ func fetchReleases(apiURL string) ([]Release, error) {
 		return nil, fmt.Errorf("failed to fetch releases: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
-	const maxReleasesResponseSize = 32 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleasesResponseSize+1))
 	closeErr := resp.Body.Close()
 	if err != nil {

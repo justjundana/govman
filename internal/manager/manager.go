@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	_config "github.com/justjundana/govman/internal/config"
 	_downloader "github.com/justjundana/govman/internal/downloader"
@@ -39,15 +40,25 @@ var ErrNoActiveVersion = errors.New("no managed Go version is active")
 type Manager struct {
 	config     *_config.Config
 	downloader *_downloader.Downloader
+	logger     *_logger.Logger
 	shell      _shell.Shell
 }
 
 // New constructs a Manager with the provided configuration.
 // It initializes a downloader and detects the user's shell.
 func New(cfg *_config.Config) *Manager {
+	return NewWithLogger(cfg, _logger.Get())
+}
+
+// NewWithLogger constructs a Manager whose service output is isolated to logger.
+func NewWithLogger(cfg *_config.Config, logger *_logger.Logger) *Manager {
+	if logger == nil {
+		logger = _logger.New()
+	}
 	return &Manager{
 		config:     cfg,
-		downloader: _downloader.New(cfg),
+		downloader: _downloader.NewWithLogger(cfg, logger),
+		logger:     logger,
 		shell:      _shell.Detect(),
 	}
 }
@@ -60,20 +71,20 @@ func (m *Manager) Install(version string) error {
 		return fmt.Errorf("invalid version format: %s", version)
 	}
 
-	timer := _logger.StartTimer("version resolution")
+	timer := m.logger.StartTimer("version resolution")
 	resolvedVersion, err := m.ResolveVersion(version)
 	if err != nil {
-		_logger.StopTimer(timer)
+		m.logger.StopTimer(timer)
 		return fmt.Errorf("failed to resolve version %s: %w", version, err)
 	}
-	_logger.StopTimer(timer)
+	m.logger.StopTimer(timer)
 
 	installDir, err := m.versionDir(resolvedVersion)
 	if err != nil {
 		return err
 	}
 
-	_logger.InternalProgress("Checking if version is already installed")
+	m.logger.InternalProgress("Checking if version is already installed")
 	if m.IsInstalled(resolvedVersion) {
 		return fmt.Errorf("go version %s is already installed", resolvedVersion)
 	}
@@ -83,27 +94,35 @@ func (m *Manager) Install(version string) error {
 		return fmt.Errorf("failed to inspect installation path for Go %s: %w", resolvedVersion, err)
 	}
 
-	_logger.Info("Installing Go %s...", resolvedVersion)
+	m.logger.Info("Installing Go %s...", resolvedVersion)
 
-	timer = _logger.StartTimer("download URL retrieval")
+	timer = m.logger.StartTimer("download URL retrieval")
 	downloadURL, err := _golang.GetDownloadURLWithConfig(resolvedVersion,
 		m.config.GoReleases.APIURL,
 		m.config.GoReleases.CacheExpiry,
 		m.config.GoReleases.DownloadURL)
 	if err != nil {
-		_logger.StopTimer(timer)
+		m.logger.StopTimer(timer)
 		return fmt.Errorf("failed to get download URL: %w", err)
 	}
-	_logger.StopTimer(timer)
+	m.logger.StopTimer(timer)
 
-	timer = _logger.StartTimer("download and installation")
+	timer = m.logger.StartTimer("download and installation")
 	if err := m.downloader.Download(downloadURL, installDir, resolvedVersion); err != nil {
-		_logger.StopTimer(timer)
+		m.logger.StopTimer(timer)
 		return fmt.Errorf("failed to download and install: %w", err)
 	}
-	_logger.StopTimer(timer)
+	if err := _golang.WriteInstallMetadata(installDir, resolvedVersion, time.Now()); err != nil {
+		m.logger.StopTimer(timer)
+		metadataErr := fmt.Errorf("failed to record installation metadata: %w", err)
+		if cleanupErr := os.RemoveAll(installDir); cleanupErr != nil {
+			return errors.Join(metadataErr, fmt.Errorf("failed to roll back installation: %w", cleanupErr))
+		}
+		return metadataErr
+	}
+	m.logger.StopTimer(timer)
 
-	_logger.Success("Go %s installed successfully", resolvedVersion)
+	m.logger.Success("Go %s installed successfully", resolvedVersion)
 	return nil
 }
 
@@ -115,7 +134,7 @@ func (m *Manager) Uninstall(version string) error {
 		return err
 	}
 
-	_logger.InternalProgress("Checking if version is installed")
+	m.logger.InternalProgress("Checking if version is installed")
 	info, err := os.Lstat(installDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -127,7 +146,7 @@ func (m *Manager) Uninstall(version string) error {
 		return fmt.Errorf("go version %s is not installed", version)
 	}
 
-	_logger.InternalProgress("Checking if version is currently active")
+	m.logger.InternalProgress("Checking if version is currently active")
 	current, err := m.Current()
 	if err == nil && current == version {
 		return fmt.Errorf("cannot uninstall currently active version %s", version)
@@ -146,15 +165,15 @@ func (m *Manager) Uninstall(version string) error {
 		return fmt.Errorf("cannot uninstall project-local version %s; change or remove %s first", version, m.config.AutoSwitch.ProjectFile)
 	}
 
-	_logger.InternalProgress("Removing installation directory: %s", installDir)
-	timer := _logger.StartTimer("uninstallation")
+	m.logger.InternalProgress("Removing installation directory: %s", installDir)
+	timer := m.logger.StartTimer("uninstallation")
 	if err := os.RemoveAll(installDir); err != nil {
-		_logger.StopTimer(timer)
+		m.logger.StopTimer(timer)
 		return fmt.Errorf("failed to remove installation directory: %w", err)
 	}
-	_logger.StopTimer(timer)
+	m.logger.StopTimer(timer)
 
-	_logger.Success("Go %s uninstalled successfully", version)
+	m.logger.Success("Go %s uninstalled successfully", version)
 	return nil
 }
 
@@ -174,7 +193,7 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 			return fmt.Errorf("invalid concrete version format: %s", version)
 		}
 		// Validate version is installed
-		_logger.InternalProgress("Checking if version is installed")
+		m.logger.InternalProgress("Checking if version is installed")
 		if !m.IsInstalled(version) {
 			return fmt.Errorf("go version %s is not installed. Run 'govman install %s' first", version, version)
 		}
@@ -188,7 +207,7 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 
 	switch {
 	case setLocal:
-		_logger.InternalProgress("Setting local version for project")
+		m.logger.InternalProgress("Setting local version for project")
 		snapshot, err := snapshotFile(m.config.AutoSwitch.ProjectFile)
 		if err != nil {
 			return fmt.Errorf("failed to snapshot local version state: %w", err)
@@ -202,26 +221,26 @@ func (m *Manager) Use(version string, setDefault, setLocal bool) error {
 			}
 			return fmt.Errorf("failed to update PATH; local version was restored: %w", err)
 		}
-		_logger.Success("Set Go %s as local version for this project", version)
+		m.logger.Success("Set Go %s as local version for this project", version)
 		return nil
 
 	case setDefault:
-		_logger.InternalProgress("Setting as system default version")
+		m.logger.InternalProgress("Setting as system default version")
 		oldDefault := m.config.DefaultVersion
 		links, err := m.snapshotToolchainLinks(version)
 		if err != nil {
 			return err
 		}
-		_logger.InternalProgress("Activating toolchain links for Go %s", version)
-		timer := _logger.StartTimer("symlink creation")
+		m.logger.InternalProgress("Activating toolchain links for Go %s", version)
+		timer := m.logger.StartTimer("symlink creation")
 		if err := m.createSymlink(version); err != nil {
-			_logger.StopTimer(timer)
+			m.logger.StopTimer(timer)
 			if rollbackErr := restoreLinks(links); rollbackErr != nil {
 				return fmt.Errorf("failed to activate toolchain links: %w; rollback failed: %v", err, rollbackErr)
 			}
 			return fmt.Errorf("failed to activate toolchain links: %w", err)
 		}
-		_logger.StopTimer(timer)
+		m.logger.StopTimer(timer)
 
 		m.config.DefaultVersion = version
 		if err := m.config.Save(); err != nil {
@@ -258,7 +277,7 @@ func (m *Manager) Current() (string, error) {
 		if !errors.Is(err, exec.ErrNotFound) {
 			return "", err
 		}
-		_logger.Verbose("No Go executable found in PATH")
+		m.logger.Verbose("No Go executable found in PATH")
 	} else if sessionVersion != "" {
 		return sessionVersion, nil
 	}
@@ -420,7 +439,8 @@ func (m *Manager) ListInstalled() ([]string, error) {
 	}
 
 	sort.Slice(versions, func(i, j int) bool {
-		return _golang.CompareVersions(versions[i], versions[j]) > 0
+		comparison, _ := _golang.CompareVersions(versions[i], versions[j])
+		return comparison > 0
 	})
 
 	return versions, nil
@@ -465,7 +485,7 @@ func (m *Manager) Clean() error {
 		return fmt.Errorf("failed to recreate cache directory: %w", err)
 	}
 
-	_logger.Success("Cache cleaned successfully")
+	m.logger.Success("Cache cleaned successfully")
 	return nil
 }
 
