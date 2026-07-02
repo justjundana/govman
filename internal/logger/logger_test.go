@@ -6,64 +6,18 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	viper "github.com/spf13/viper"
 )
 
 func TestNew(t *testing.T) {
-	testCases := []struct {
-		name          string
-		quiet         bool
-		verbose       bool
-		expectedLevel LogLevel
-	}{
-		{
-			name:          "Default normal level",
-			quiet:         false,
-			verbose:       false,
-			expectedLevel: NormalLevel,
-		},
-		{
-			name:          "Quiet level when quiet flag is true",
-			quiet:         true,
-			verbose:       false,
-			expectedLevel: QuietLevel,
-		},
-		{
-			name:          "Verbose level when verbose flag is true",
-			quiet:         false,
-			verbose:       true,
-			expectedLevel: VerboseLevel,
-		},
-		{
-			name:          "Quiet takes precedence over verbose",
-			quiet:         true,
-			verbose:       true,
-			expectedLevel: QuietLevel,
-		},
+	logger := New()
+	if logger.Level() != NormalLevel {
+		t.Errorf("Expected normal level, got %v", logger.Level())
 	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Reset viper for each test
-			viper.Reset()
-			viper.Set("quiet", tc.quiet)
-			viper.Set("verbose", tc.verbose)
-
-			logger := New()
-
-			if logger.Level() != tc.expectedLevel {
-				t.Errorf("Expected level %v, got %v", tc.expectedLevel, logger.Level())
-			}
-
-			if logger.NormalWriter() == nil {
-				t.Error("Normal writer should not be nil")
-			}
-
-			if logger.VerboseWriter() == nil {
-				t.Error("Verbose writer should not be nil")
-			}
-		})
+	if logger.NormalWriter() == nil {
+		t.Error("Normal writer should not be nil")
+	}
+	if logger.VerboseWriter() == nil {
+		t.Error("Verbose writer should not be nil")
 	}
 }
 
@@ -88,7 +42,6 @@ func TestSetLevel(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			logger.SetLevel(tc.newLevel)
 
@@ -130,7 +83,6 @@ func TestSetWriters(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			tc.test(t, logger)
 		})
@@ -174,7 +126,6 @@ func TestError(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -227,7 +178,6 @@ func TestInfo(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -272,7 +222,6 @@ func TestSuccess(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -317,7 +266,6 @@ func TestWarning(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -370,7 +318,6 @@ func TestVerbose(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetVerboseWriter(buf)
@@ -415,7 +362,6 @@ func TestDebug(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetVerboseWriter(buf)
@@ -460,7 +406,6 @@ func TestProgress(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -505,7 +450,6 @@ func TestDownload(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -550,7 +494,6 @@ func TestExtract(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -595,7 +538,6 @@ func TestVerify(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetNormalWriter(buf)
@@ -640,7 +582,6 @@ func TestInternalProgress(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetVerboseWriter(buf)
@@ -688,7 +629,6 @@ func TestTimer(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			buf := &bytes.Buffer{}
 			logger.SetVerboseWriter(buf)
@@ -714,7 +654,6 @@ func TestTimer(t *testing.T) {
 }
 
 func TestTimerNil(t *testing.T) {
-	viper.Reset()
 	logger := New()
 	buf := &bytes.Buffer{}
 	logger.SetVerboseWriter(buf)
@@ -747,7 +686,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Error function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -768,7 +706,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Info function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -789,7 +726,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Success function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -810,7 +746,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Warning function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -831,7 +766,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Verbose function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -852,7 +786,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Debug function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -873,7 +806,6 @@ func TestGlobalLogger(t *testing.T) {
 		{
 			name: "Global Progress function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -908,7 +840,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global Download function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -929,7 +860,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global Extract function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -950,7 +880,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global Verify function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -971,7 +900,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global StartTimer function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -996,7 +924,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global StopTimer function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -1019,7 +946,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global ErrorWithHelp function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -1040,7 +966,6 @@ func TestGlobalLoggerExtended(t *testing.T) {
 		{
 			name: "Global InternalProgress function",
 			test: func(t *testing.T) {
-				viper.Reset()
 				globalLogger = nil
 				once = sync.Once{}
 
@@ -1075,7 +1000,6 @@ func TestConcurrency(t *testing.T) {
 		{
 			name: "Concurrent SetLevel calls",
 			test: func(t *testing.T) {
-				viper.Reset()
 				logger := New()
 				var wg sync.WaitGroup
 
@@ -1099,7 +1023,6 @@ func TestConcurrency(t *testing.T) {
 		{
 			name: "Concurrent writer updates",
 			test: func(t *testing.T) {
-				viper.Reset()
 				logger := New()
 				var wg sync.WaitGroup
 
@@ -1131,7 +1054,6 @@ func TestConcurrency(t *testing.T) {
 		{
 			name: "Concurrent log writes",
 			test: func(t *testing.T) {
-				viper.Reset()
 				logger := New()
 				buf := &bytes.Buffer{}
 				logger.SetNormalWriter(buf)
@@ -1217,7 +1139,6 @@ func TestTimerFields(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			viper.Reset()
 			logger := New()
 			logger.SetLevel(VerboseLevel)
 

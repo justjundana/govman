@@ -62,6 +62,18 @@ func (m *mockShell) ExecutePathCommand(path string) error {
 
 func createTestConfig(t *testing.T) *_config.Config {
 	tempDir := t.TempDir()
+	originalWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("failed to enter test project directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWorkingDir); err != nil {
+			t.Errorf("failed to restore working directory: %v", err)
+		}
+	})
 
 	// Mock HOME directory to ensure GetBinPath uses the temporary directory
 	originalHome := os.Getenv("HOME")
@@ -78,12 +90,9 @@ func createTestConfig(t *testing.T) *_config.Config {
 	config.InstallDir = filepath.Join(tempDir, "versions")
 	config.CacheDir = filepath.Join(tempDir, "cache")
 	config.DefaultVersion = ""
-	config.GoReleases = _config.GoReleasesConfig{
-		APIURL:      "https://api.github.com/repos/golang/go/releases",
-		CacheExpiry: 3600,
-		DownloadURL: "",
-	}
-	config.AutoSwitch = _config.AutoSwitchConfig{ProjectFile: filepath.Join(tempDir, ".govman-goversion")}
+	config.GoReleases.APIURL = "https://api.github.com/repos/golang/go/releases"
+	config.GoReleases.CacheExpiry = 3600
+	config.AutoSwitch = _config.AutoSwitchConfig{ProjectFile: ".govman-goversion"}
 
 	// Create directories
 	os.MkdirAll(config.InstallDir, 0755)
@@ -645,7 +654,7 @@ func TestManager_Use(t *testing.T) {
 				createInstalledVersion(t, c, "1.20.0")
 
 				// Make directory read-only to cause write failure
-				projectDir := filepath.Dir(c.AutoSwitch.ProjectFile)
+				projectDir := filepath.Dir(c.ConfigPath())
 				os.Chmod(projectDir, 0444)
 			},
 			wantErr: true,
@@ -692,7 +701,7 @@ func TestManager_Use(t *testing.T) {
 
 			// Cleanup permissions after test
 			t.Cleanup(func() {
-				os.Chmod(filepath.Dir(config.AutoSwitch.ProjectFile), 0755)
+				os.Chmod(filepath.Dir(config.ConfigPath()), 0755)
 				os.Chmod(config.GetBinPath(), 0755)
 			})
 
@@ -962,7 +971,7 @@ func TestManager_setLocalVersion(t *testing.T) {
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
 				// Make directory read-only
-				projectDir := filepath.Dir(c.AutoSwitch.ProjectFile)
+				projectDir := filepath.Dir(c.ConfigPath())
 				os.Chmod(projectDir, 0444)
 			},
 			wantErr: true,
@@ -978,7 +987,7 @@ func TestManager_setLocalVersion(t *testing.T) {
 
 			// Cleanup permissions after test
 			t.Cleanup(func() {
-				os.Chmod(filepath.Dir(config.AutoSwitch.ProjectFile), 0755)
+				os.Chmod(filepath.Dir(config.ConfigPath()), 0755)
 			})
 
 			err := manager.setLocalVersion(tt.version)

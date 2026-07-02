@@ -5,18 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	cobra "github.com/spf13/cobra"
 
 	_config "github.com/justjundana/govman/internal/config"
+	_logger "github.com/justjundana/govman/internal/logger"
 	_version "github.com/justjundana/govman/internal/version"
 )
 
 var (
-	cfgFile string
-	cfg     *_config.Config
-	cfgOnce sync.Once
+	cfgFile     string
+	quietFlag   bool
+	verboseFlag bool
+	cfg         *_config.Config
 )
 
 var rootCmd = &cobra.Command{
@@ -26,7 +27,7 @@ var rootCmd = &cobra.Command{
 	Version: _version.BuildVersion(),
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cleanupOldBackups()
-		return initConfig()
+		return initConfig(cmd.Flags().Changed("quiet"), cmd.Flags().Changed("verbose"))
 	},
 }
 
@@ -90,23 +91,64 @@ func showBanner() {
 	fmt.Println()
 }
 
-// initConfig lazily loads the application configuration once using sync.Once.
-// Returns an error if configuration loading fails; otherwise nil.
-func initConfig() error {
-	var initErr error
-	cfgOnce.Do(func() {
-		var err error
-		cfg, err = _config.Load(cfgFile)
-		if err != nil {
-			initErr = fmt.Errorf("failed to load config: %w", err)
+// initConfig loads a fresh isolated configuration and then applies explicit
+// output flags. Failed loads are never cached.
+func initConfig(quietChanged, verboseChanged bool) error {
+	loaded, err := _config.Load(cfgFile)
+	if err != nil {
+		cfg = nil
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	if err := applyOutputFlags(
+		loaded,
+		quietFlag,
+		quietChanged,
+		verboseFlag,
+		verboseChanged,
+	); err != nil {
+		cfg = nil
+		return err
+	}
+	if err := loaded.Validate(); err != nil {
+		cfg = nil
+		return fmt.Errorf("invalid effective config: %w", err)
+	}
+
+	level := _logger.NormalLevel
+	if loaded.Quiet {
+		level = _logger.QuietLevel
+	} else if loaded.Verbose {
+		level = _logger.VerboseLevel
+	}
+	_logger.Get().SetLevel(level)
+	cfg = loaded
+	return nil
+}
+
+func applyOutputFlags(config *_config.Config, quiet bool, quietChanged bool, verbose bool, verboseChanged bool) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if quietChanged && verboseChanged && quiet && verbose {
+		return fmt.Errorf("--quiet and --verbose cannot be enabled together")
+	}
+	if verboseChanged {
+		config.Verbose = verbose
+		if verbose {
+			config.Quiet = false
 		}
-	})
-	return initErr
+	}
+	if quietChanged {
+		config.Quiet = quiet
+		if quiet {
+			config.Verbose = false
+		}
+	}
+	return nil
 }
 
 // getConfig returns the loaded configuration instance.
 // No parameters; returns a pointer to Config.
-// Thread-safe after initConfig completes via sync.Once.
 func getConfig() *_config.Config {
 	return cfg
 }

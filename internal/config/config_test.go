@@ -486,6 +486,154 @@ func TestSaveFailure(t *testing.T) {
 	}
 }
 
+func TestLoadUsesIsolatedViperInstances(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	firstDir := t.TempDir()
+	secondDir := t.TempDir()
+	firstPath := filepath.Join(firstDir, "first.yaml")
+	secondPath := filepath.Join(secondDir, "second.yaml")
+	if err := os.WriteFile(firstPath, []byte("default_version: 1.21.1\ninstall_dir: first-versions\ncache_dir: first-cache\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("default_version: 1.22.2\ninstall_dir: second-versions\ncache_dir: second-cache\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Load(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.decoder == nil || second.decoder == nil || first.decoder == second.decoder {
+		t.Fatal("config loads must retain distinct decoder instances")
+	}
+	if first.DefaultVersion != "1.21.1" || second.DefaultVersion != "1.22.2" {
+		t.Fatalf("config values leaked across instances: first=%q second=%q", first.DefaultVersion, second.DefaultVersion)
+	}
+	if first.InstallDir != filepath.Join(firstDir, "first-versions") {
+		t.Fatalf("first relative install path = %q", first.InstallDir)
+	}
+	if second.CacheDir != filepath.Join(secondDir, "second-cache") {
+		t.Fatalf("second relative cache path = %q", second.CacheDir)
+	}
+}
+
+func TestLoadRejectsUnknownKeysAndSymlinks(t *testing.T) {
+	setTestHome(t, t.TempDir())
+
+	t.Run("unknown top-level key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("download_typo: true\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid keys") {
+			t.Fatalf("expected strict unmarshal error, got %v", err)
+		}
+	})
+
+	t.Run("unknown nested key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("download:\n  retries: 3\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid keys") {
+			t.Fatalf("expected strict nested-key error, got %v", err)
+		}
+	})
+
+	if runtime.GOOS != "windows" {
+		t.Run("symlink", func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "target.yaml")
+			link := filepath.Join(directory, "config.yaml")
+			if err := os.WriteFile(target, []byte("{}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(link); err == nil || !strings.Contains(err.Error(), "not a symlink") {
+				t.Fatalf("expected symlink rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	newValidConfig := func(t *testing.T) *Config {
+		t.Helper()
+		setTestHome(t, t.TempDir())
+		config := &Config{}
+		config.setDefaults()
+		return config
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"zero timeout", func(c *Config) { c.Download.Timeout = 0 }, "download.timeout"},
+		{"zero retries", func(c *Config) { c.Download.RetryCount = 0 }, "download.retry_count"},
+		{"negative retry delay", func(c *Config) { c.Download.RetryDelay = -time.Second }, "download.retry_delay"},
+		{"zero max connections", func(c *Config) { c.Download.MaxConnections = 0 }, "download.max_connections"},
+		{"zero cache expiry", func(c *Config) { c.GoReleases.CacheExpiry = 0 }, "cache_expiry"},
+		{"overlapping paths", func(c *Config) { c.CacheDir = filepath.Join(c.InstallDir, "cache") }, "must not overlap"},
+		{"path project filename", func(c *Config) { c.AutoSwitch.ProjectFile = "nested/version" }, "project_file"},
+		{"windows project filename", func(c *Config) { c.AutoSwitch.ProjectFile = `nested\version` }, "project_file"},
+		{"conflicting output", func(c *Config) { c.Quiet, c.Verbose = true, true }, "cannot both"},
+		{"invalid mirror URL", func(c *Config) { c.Mirror.URL = "ftp://example.com" }, "mirror.url"},
+		{"credentialed URL", func(c *Config) { c.SelfUpdate.GitHubAPIURL = "https://user:pass@example.com/releases" }, "github_api_url"},
+		{"missing download placeholder", func(c *Config) { c.GoReleases.DownloadURL = "https://go.dev/dl/archive" }, "exactly one"},
+		{"duplicate download placeholder", func(c *Config) { c.GoReleases.DownloadURL = "https://go.dev/%s/%s" }, "exactly one"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := newValidConfig(t)
+			test.mutate(config)
+			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("prefix paths do not overlap", func(t *testing.T) {
+		config := newValidConfig(t)
+		config.InstallDir = filepath.Join(t.TempDir(), "go")
+		config.CacheDir = config.InstallDir + "-cache"
+		if err := config.Validate(); err != nil {
+			t.Fatalf("prefix-like paths should be valid: %v", err)
+		}
+	})
+}
+
+func TestConfigFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permissions := info.Mode().Perm(); permissions != 0600 {
+		t.Fatalf("config permissions = %o, want 600", permissions)
+	}
+}
+
 func TestGetVersionDir(t *testing.T) {
 	cfg := &Config{
 		InstallDir: "/opt/govman/versions",

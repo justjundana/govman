@@ -6,8 +6,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	viper "github.com/spf13/viper"
 )
 
 type LogLevel int
@@ -30,22 +28,14 @@ type Timer struct {
 	name  string
 }
 
-// New constructs a Logger and sets its initial level based on viper flags (quiet/verbose).
+// New constructs a Logger at normal verbosity. Effective configuration is applied
+// by the CLI after its config file and explicit flags have been resolved.
 func New() *Logger {
-	l := &Logger{
+	return &Logger{
+		level:         NormalLevel,
 		normalWriter:  os.Stderr,
 		verboseWriter: os.Stderr,
 	}
-
-	if viper.GetBool("quiet") {
-		l.level = QuietLevel
-	} else if viper.GetBool("verbose") {
-		l.level = VerboseLevel
-	} else {
-		l.level = NormalLevel
-	}
-
-	return l
 }
 
 // SetLevel updates the logger's verbosity level in a thread-safe manner.
