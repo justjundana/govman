@@ -28,7 +28,7 @@ func Create(target, symlinkPath string) error {
 	}
 	tempLink := tempFile.Name()
 	if err := tempFile.Close(); err != nil {
-		os.Remove(tempLink)
+		_ = os.Remove(tempLink) // Best effort; preserve the state-critical close error.
 		return fmt.Errorf("failed to close temporary symlink reservation: %w", err)
 	}
 	if err := os.Remove(tempLink); err != nil {
@@ -40,7 +40,7 @@ func Create(target, symlinkPath string) error {
 	}
 
 	if err := replaceSymlink(tempLink, symlinkPath); err != nil {
-		os.Remove(tempLink)
+		_ = os.Remove(tempLink) // Best effort; preserve the state-critical replacement error.
 		return fmt.Errorf("failed to replace symlink at final location: %w", err)
 	}
 

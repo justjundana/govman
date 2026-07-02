@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -184,7 +185,7 @@ func checksumForAsset(manifest, assetName string) (string, error) {
 }
 
 // downloadBinary downloads, bounds, and verifies a release binary before it is executable.
-func downloadBinary(ctx context.Context, asset *GitHubAsset, binaryDir, expectedChecksum string) (string, error) {
+func downloadBinary(ctx context.Context, asset *GitHubAsset, binaryDir, expectedChecksum string) (resultPath string, resultErr error) {
 	if asset == nil {
 		return "", fmt.Errorf("binary release asset is missing")
 	}
@@ -224,7 +225,9 @@ func downloadBinary(ctx context.Context, asset *GitHubAsset, binaryDir, expected
 	succeeded := false
 	defer func() {
 		if !succeeded {
-			os.Remove(tempPath)
+			if removeErr := os.Remove(tempPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				resultErr = errors.Join(resultErr, fmt.Errorf("failed to clean temporary update binary: %w", removeErr))
+			}
 		}
 	}()
 

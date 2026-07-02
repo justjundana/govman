@@ -775,7 +775,9 @@ func writeFileAtomic(path string, data []byte, defaultMode os.FileMode) (resultE
 			}
 		}
 		if resultErr != nil {
-			os.Remove(tempPath)
+			if removeErr := os.Remove(tempPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				resultErr = errors.Join(resultErr, fmt.Errorf("failed to clean temporary file: %w", removeErr))
+			}
 		}
 	}()
 	if err := tempFile.Chmod(mode); err != nil {

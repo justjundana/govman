@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -149,6 +150,17 @@ func TestRetryDelayVariants(t *testing.T) {
 				t.Fatalf("retryDelay(%q)=%v, want %v", test.value, got, test.want)
 			}
 		})
+	}
+	if err := waitForRetry(context.Background(), 0); err != nil {
+		t.Fatalf("zero retry delay error=%v", err)
+	}
+	if err := waitForRetry(context.Background(), time.Nanosecond); err != nil {
+		t.Fatalf("elapsed retry delay error=%v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForRetry(cancelled, time.Second); err != context.Canceled {
+		t.Fatalf("cancelled retry delay error=%v", err)
 	}
 }
 

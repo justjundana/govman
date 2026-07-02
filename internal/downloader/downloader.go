@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -301,7 +302,11 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 	if err != nil {
 		return "", err
 	}
-	defer unlock()
+	defer func() {
+		if unlockErr := unlock(); unlockErr != nil {
+			resultErr = errors.Join(resultErr, unlockErr)
+		}
+	}()
 
 	if stat, err := os.Lstat(cachePath); err == nil && stat.Mode().IsRegular() && stat.Size() == fileInfo.Size {
 		d.logger.Success("Using cached file: %s", filename)
@@ -330,7 +335,9 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 				}
 			}
 		}
-		os.Remove(partialPath)
+		if removeErr := os.Remove(partialPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("failed to clean partial cache file: %w", removeErr))
+		}
 	}()
 
 	currentSize, err := seedPartialDownload(file, resumePath, cachePath, fileInfo.Size)
@@ -419,7 +426,9 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 	if err := replaceFile(partialPath, cachePath); err != nil {
 		return "", fmt.Errorf("failed to commit downloaded file to cache: %w", err)
 	}
-	os.Remove(resumePath)
+	if err := os.Remove(resumePath); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("download committed but stale resume file could not be removed: %w", err)
+	}
 	return cachePath, nil
 }
 
@@ -472,7 +481,7 @@ func replaceFile(sourcePath, targetPath string) error {
 	return os.Rename(sourcePath, targetPath)
 }
 
-func acquireCacheLock(ctx context.Context, lockPath string, maxWait time.Duration) (func(), error) {
+func acquireCacheLock(ctx context.Context, lockPath string, maxWait time.Duration) (func() error, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, maxWait)
 	defer cancel()
 	for {
@@ -482,7 +491,12 @@ func acquireCacheLock(ctx context.Context, lockPath string, maxWait time.Duratio
 				os.Remove(lockPath)
 				return nil, fmt.Errorf("failed to close cache lock: %w", closeErr)
 			}
-			return func() { os.Remove(lockPath) }, nil
+			return func() error {
+				if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("failed to release cache lock: %w", err)
+				}
+				return nil
+			}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("failed to create cache lock: %w", err)
@@ -524,7 +538,7 @@ func (d *Downloader) verifyChecksum(filePath, expectedSHA256 string) error {
 	return nil
 }
 
-func (d *Downloader) installArchive(archivePath, installDir, version string) error {
+func (d *Downloader) installArchive(archivePath, installDir, version string) (resultErr error) {
 	parentDir := filepath.Dir(installDir)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		return fmt.Errorf("failed to create installation parent directory: %w", err)
@@ -536,7 +550,9 @@ func (d *Downloader) installArchive(archivePath, installDir, version string) err
 	committed := false
 	defer func() {
 		if !committed {
-			os.RemoveAll(stagingDir)
+			if cleanupErr := os.RemoveAll(stagingDir); cleanupErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("failed to clean installation staging directory: %w", cleanupErr))
+			}
 		}
 	}()
 
