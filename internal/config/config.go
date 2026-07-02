@@ -246,6 +246,11 @@ func (c *Config) GetCurrentSymlink() string {
 	return filepath.Join(c.GetBinPath(), "go")
 }
 
+// ConfigPath returns the effective configuration file path.
+func (c *Config) ConfigPath() string {
+	return c.configPath
+}
+
 // getHomeDir returns the current user's HOME directory (USERPROFILE on Windows).
 // Returns an error if it cannot be determined.
 func getHomeDir() (string, error) {

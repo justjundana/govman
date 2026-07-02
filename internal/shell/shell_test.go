@@ -744,24 +744,29 @@ func TestContainsGovmanConfig(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "Contains GOVMAN header",
-			content:  "# GOVMAN - Go Version Manager\necho test",
+			name:     "Contains complete GOVMAN block",
+			content:  "# GOVMAN - Go Version Manager\necho test\n# END GOVMAN",
 			expected: true,
 		},
 		{
-			name:     "Contains govman_auto_switch",
+			name:     "Keyword without markers",
 			content:  "govman_auto_switch() {\n  echo test\n}",
-			expected: true,
+			expected: false,
 		},
 		{
-			name:     "Contains Invoke-GovmanAutoSwitch",
+			name:     "PowerShell keyword without markers",
 			content:  "function Invoke-GovmanAutoSwitch {\n  Write-Host test\n}",
-			expected: true,
+			expected: false,
 		},
 		{
-			name:     "Contains __govman_cd_hook",
+			name:     "Fish keyword without markers",
 			content:  "function __govman_cd_hook --on-variable PWD\n  echo test\nend",
-			expected: true,
+			expected: false,
+		},
+		{
+			name:     "Opening marker only",
+			content:  "# GOVMAN - Go Version Manager\necho test",
+			expected: false,
 		},
 		{
 			name:     "No govman config",
@@ -1037,7 +1042,7 @@ func TestInitializeUnixShellReadError(t *testing.T) {
 		t.Error("Expected error due to permission denied reading config file")
 	}
 
-	if !strings.Contains(err.Error(), "failed to read config file") {
+	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("Expected config file read error, got: %v", err)
 	}
 }
@@ -1079,7 +1084,7 @@ func TestInitializePowerShellReadError(t *testing.T) {
 		t.Error("Expected error due to permission denied reading profile")
 	}
 
-	if !strings.Contains(err.Error(), "failed to read profile") {
+	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("Expected profile read error, got: %v", err)
 	}
 }
@@ -1758,7 +1763,7 @@ func TestInitializeShellWithExistingConfig(t *testing.T) {
 			existingCfg: "# GOVMAN - Go Version Manager\n$env:PATH = \"/test\"\n# END GOVMAN",
 			force:       false,
 			expectError: true,
-			errorMsg:    "govman is already configured in PowerShell profile (use --force to override)",
+			errorMsg:    "govman is already configured",
 		},
 		{
 			name:        "PowerShell with existing config with force",
@@ -1820,4 +1825,219 @@ func TestAutoSwitchPartialVersionComparison(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeMockGovman(t *testing.T, binDir, mode string) string {
+	t.Helper()
+	path := filepath.Join(binDir, "govman")
+	script := `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GOVMAN_TEST_LOG"
+if [[ "` + mode + `" == "missing-path" ]]; then
+    echo "command completed without a path"
+else
+    echo 'export PATH="/managed/go/bin:$PATH"'
+fi
+`
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestGeneratedBashWrapperExecutesOnce(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+	for _, mode := range []string{"valid", "missing-path"} {
+		t.Run(mode, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeMockGovman(t, binDir, mode)
+			logPath := filepath.Join(t.TempDir(), "calls.log")
+			shell := &BashShell{options: &IntegrationOptions{BinPath: binDir, AutoSwitch: false}}
+			script := strings.Join(shell.SetupCommands(binDir), "\n") + "\n" +
+				`govman --verbose --config "/config path/config.yaml" use 1.25` + "\n"
+			command := exec.Command("bash", "--noprofile", "--norc", "-c", script)
+			command.Env = append(os.Environ(), "GOVMAN_TEST_LOG="+logPath)
+			output, err := command.CombinedOutput()
+			if mode == "valid" && err != nil {
+				t.Fatalf("generated wrapper failed: %v\n%s", err, output)
+			}
+			if mode == "missing-path" && err == nil {
+				t.Fatalf("wrapper accepted success without a PATH command: %s", output)
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+			if len(lines) != 1 {
+				t.Fatalf("govman invocation count = %d, want 1; calls=%q", len(lines), calls)
+			}
+			if !strings.Contains(lines[0], "use 1.25") {
+				t.Fatalf("global flags prevented use detection: %q", lines[0])
+			}
+		})
+	}
+}
+
+func TestGeneratedZshWrapperExecutesOnce(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh is not available")
+	}
+	binDir := t.TempDir()
+	writeMockGovman(t, binDir, "valid")
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	shell := &ZshShell{options: &IntegrationOptions{BinPath: binDir, AutoSwitch: false}}
+	script := strings.Join(shell.SetupCommands(binDir), "\n") + "\n" +
+		`govman --verbose --config "/config path/config.yaml" use 1.25` + "\n"
+	command := exec.Command("zsh", "-f", "-c", script)
+	command.Env = append(os.Environ(), "GOVMAN_TEST_LOG="+logPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generated Zsh wrapper failed: %v\n%s", err, output)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.Split(strings.TrimSpace(string(calls)), "\n")) != 1 {
+		t.Fatalf("Zsh wrapper invoked govman more than once: %q", calls)
+	}
+}
+
+func TestGeneratedBashAutoSwitchAndDefaultRestore(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+	for _, requiredVersion := range []string{"1.25", "1.25.4", "1.26rc1", "stable", "latest"} {
+		t.Run(requiredVersion, func(t *testing.T) {
+			root := t.TempDir()
+			binDir := filepath.Join(root, "bin")
+			projectDir := filepath.Join(root, "project")
+			outsideDir := filepath.Join(root, "outside")
+			installDir := filepath.Join(root, "versions")
+			for _, directory := range []string{binDir, projectDir, outsideDir, installDir} {
+				if err := os.MkdirAll(directory, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeMockGovman(t, binDir, "valid")
+			if err := os.WriteFile(filepath.Join(projectDir, ".custom-go-version"), []byte(requiredVersion+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			logPath := filepath.Join(root, "calls.log")
+			shell := &BashShell{options: &IntegrationOptions{
+				BinPath:        binDir,
+				ProjectFile:    ".custom-go-version",
+				InstallDir:     installDir,
+				DefaultVersion: "1.24.1",
+				AutoSwitch:     true,
+			}}
+			script := `cd "` + projectDir + `"` + "\n" + strings.Join(shell.SetupCommands(binDir), "\n") + "\n" +
+				`cd "` + outsideDir + `"` + "\n" + `govman_auto_switch` + "\n"
+			command := exec.Command("bash", "--noprofile", "--norc", "-c", script)
+			command.Env = append(os.Environ(), "GOVMAN_TEST_LOG="+logPath)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("generated auto-switch failed: %v\n%s", err, output)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			callText := string(calls)
+			if !strings.Contains(callText, "use "+requiredVersion) {
+				t.Fatalf("custom project version was not activated: %q", callText)
+			}
+			if !strings.Contains(callText, "use default") {
+				t.Fatalf("default was not restored after leaving project: %q", callText)
+			}
+		})
+	}
+}
+
+func TestConfiguredShellUsesEffectiveConfig(t *testing.T) {
+	options := IntegrationOptions{
+		BinPath:        "/opt/govman/bin",
+		ConfigPath:     "/config path/custom.yaml",
+		ProjectFile:    ".custom-version",
+		InstallDir:     "/toolchains/go versions",
+		DefaultVersion: "1.25.4",
+		AutoSwitch:     true,
+	}
+	for _, shell := range []Shell{&BashShell{}, &ZshShell{}, &FishShell{}, &PowerShell{}} {
+		Configure(shell, options)
+		generated := strings.Join(shell.SetupCommands(options.BinPath), "\n")
+		for _, expected := range []string{"custom.yaml", ".custom-version", "go versions"} {
+			if !strings.Contains(generated, expected) {
+				t.Errorf("%s integration omitted effective %q", shell.Name(), expected)
+			}
+		}
+	}
+}
+
+func TestShellConfigMarkerSafetyAndAtomicProperties(t *testing.T) {
+	t.Run("malformed marker is preserved", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), ".bashrc")
+		original := "before\n# GOVMAN - Go Version Manager\nuser content\n"
+		if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err := writeShellIntegration(path, (&BashShell{}).SetupCommands(t.TempDir()), true, "\n")
+		if err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Fatalf("malformed marker error = %v", err)
+		}
+		data, _ := os.ReadFile(path)
+		if string(data) != original {
+			t.Fatalf("malformed config was modified: %q", data)
+		}
+	})
+
+	t.Run("mode and CRLF are preserved", func(t *testing.T) {
+		directory := t.TempDir()
+		path := filepath.Join(directory, "profile.ps1")
+		original := "user-line\r\n"
+		if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+			t.Fatal(err)
+		}
+		commands := (&PowerShell{}).SetupCommands(directory)
+		if err := writeShellIntegration(path, commands, false, "\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ReplaceAll(string(data), "\r\n", ""), "\n") {
+			t.Fatalf("mixed newline style in PowerShell profile")
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("profile mode = %v", info.Mode().Perm())
+		}
+		backups, err := filepath.Glob(filepath.Join(directory, ".govman-backup-*"))
+		if err != nil || len(backups) != 0 {
+			t.Fatalf("shell config backup was not cleaned: %v, err=%v", backups, err)
+		}
+	})
+
+	t.Run("symlink config is rejected", func(t *testing.T) {
+		directory := t.TempDir()
+		target := filepath.Join(directory, "target")
+		link := filepath.Join(directory, ".bashrc")
+		if err := os.WriteFile(target, []byte("preserve"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := writeShellIntegration(link, (&BashShell{}).SetupCommands(directory), false, "\n"); err == nil {
+			t.Fatal("symlink shell config was replaced")
+		}
+		data, _ := os.ReadFile(target)
+		if string(data) != "preserve" {
+			t.Fatalf("symlink target changed: %q", data)
+		}
+	})
 }

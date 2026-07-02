@@ -57,6 +57,14 @@ Go version when you navigate to different projects.`,
 
 			cfg := getConfig()
 			binPath := cfg.GetBinPath()
+			sh = _shell.Configure(sh, _shell.IntegrationOptions{
+				BinPath:        binPath,
+				ConfigPath:     cfg.ConfigPath(),
+				ProjectFile:    cfg.AutoSwitch.ProjectFile,
+				InstallDir:     cfg.InstallDir,
+				DefaultVersion: cfg.DefaultVersion,
+				AutoSwitch:     cfg.AutoSwitch.Enabled,
+			})
 
 			_logger.Info("Initializing shell integration for %s...", sh.Name())
 			_logger.Progress("Configuring PATH and environment variables")
