@@ -8,6 +8,11 @@
 /docs/v1.3.4-codebase-audit.md
 *.test
 
+# Local test helpers are ignored; maintained integration tests are tracked.
+/test/*
+!/test/installers.sh
+!/test/windows-path.ps1
+
 # Compiled binaries and libraries
 *.exe
 *.exe~
