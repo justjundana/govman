@@ -28,7 +28,7 @@ func getActivationMode(setDefault, setLocal bool) string {
 func resolveAlias(mgr *_manager.Manager, version string) (string, error) {
 	installedVersions, err := mgr.ListInstalled()
 	if err != nil {
-		_logger.Verbose("Failed to list installed versions: %v", err)
+		return "", fmt.Errorf("failed to list installed versions: %w", err)
 	}
 	if len(installedVersions) > 0 {
 		resolved := installedVersions[0] // installed versions are sorted in descending order
@@ -42,7 +42,7 @@ func resolveAlias(mgr *_manager.Manager, version string) (string, error) {
 func resolvePartialVersion(mgr *_manager.Manager, version string) (string, error) {
 	installedVersions, err := mgr.ListInstalled()
 	if err != nil {
-		_logger.Verbose("Failed to list installed versions: %v", err)
+		return "", fmt.Errorf("failed to list installed versions: %w", err)
 	}
 	if len(installedVersions) > 0 {
 		if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
@@ -53,20 +53,8 @@ func resolvePartialVersion(mgr *_manager.Manager, version string) (string, error
 	return mgr.ResolveVersion(version)
 }
 
-// resolveFullVersion attempts to find the exact version or a close match among installed versions.
-func resolveFullVersion(mgr *_manager.Manager, version string) string {
-	if mgr.IsInstalled(version) {
-		return version
-	}
-	installedVersions, err := mgr.ListInstalled()
-	if err != nil {
-		_logger.Verbose("Failed to list installed versions: %v", err)
-		return version
-	}
-	if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-		_logger.Verbose("Exact version %s not found, using %s (closest match)", version, matchedVersion)
-		return matchedVersion
-	}
+// resolveFullVersion preserves exact full-version requests; patch versions are never substituted.
+func resolveFullVersion(version string) string {
 	return version
 }
 
@@ -81,12 +69,41 @@ func resolveVersionForUse(mgr *_manager.Manager, version string) (string, error)
 	} else if isPartialVersion {
 		version, err = resolvePartialVersion(mgr, version)
 	} else {
-		version = resolveFullVersion(mgr, version)
+		version = resolveFullVersion(version)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve version %s: %w", version, err)
 	}
 	return version, nil
+}
+
+// resolveInstalledVersion resolves aliases and partial versions only against
+// installed versions. Full versions remain exact.
+func resolveInstalledVersion(mgr *_manager.Manager, requested string) (string, error) {
+	installed, err := mgr.ListInstalled()
+	if err != nil {
+		return "", fmt.Errorf("failed to list installed versions: %w", err)
+	}
+	return resolveInstalledVersionFromList(requested, installed)
+}
+
+func resolveInstalledVersionFromList(requested string, installed []string) (string, error) {
+	if requested == "latest" || requested == "stable" {
+		if len(installed) == 0 {
+			return "", fmt.Errorf("cannot resolve %s: no Go versions are installed", requested)
+		}
+		_logger.Verbose("Resolved %s to installed version %s", requested, installed[0])
+		return installed[0], nil
+	}
+	if strings.Count(requested, ".") == 1 {
+		matched, err := _util.FindBestMatchingVersion(requested, installed)
+		if err != nil {
+			return "", fmt.Errorf("no installed version matches %s: %w", requested, err)
+		}
+		_logger.Verbose("Resolved %s to installed version %s", requested, matched)
+		return matched, nil
+	}
+	return requested, nil
 }
 
 // newUseCmd creates the 'use' Cobra command to activate a Go version.
@@ -118,7 +135,7 @@ Examples:
   govman use 1.25.1                 # Session-only activation
   govman use 1.25.1 --default       # Set as system default
   govman use 1.25.1 --local         # Project-specific version`,
-		Args: cobra.ExactArgs(1),
+		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			version := args[0]
 			mgr := _manager.New(getConfig())
@@ -132,8 +149,7 @@ Examples:
 
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s', or check available versions with 'govman list'.", version)
-					_logger.ErrorWithHelp("Go version %s is not installed", helpMsg, version)
-					return fmt.Errorf("version %s not installed", version)
+					return withHelp(fmt.Errorf("Go version %s is not installed", version), helpMsg)
 				}
 			}
 
@@ -141,8 +157,7 @@ Examples:
 
 			err := mgr.Use(version, setDefault, setLocal)
 			if err != nil {
-				_logger.ErrorWithHelp("Failed to activate Go %s", "Ensure the version is properly installed and you have sufficient permissions.", version)
-				return err
+				return withHelp(fmt.Errorf("failed to activate Go %s: %w", version, err), "Ensure the version is properly installed and you have sufficient permissions.")
 			}
 
 			if setLocal {

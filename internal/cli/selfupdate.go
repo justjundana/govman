@@ -71,6 +71,7 @@ func newSelfUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "selfupdate",
 		Short: "Update govman to the latest version with smart management",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Automatically check for and install the latest version of govman.
 
 Smart Update Features:
@@ -376,15 +377,13 @@ func replaceBinary(currentBinary, tempFilePath, targetVersion string) (string, e
 	}
 	backupBinary := currentBinary + ".bak." + fmt.Sprintf("%d", time.Now().UnixNano())
 	if err := selfUpdateRename(currentBinary, backupBinary); err != nil {
-		_logger.ErrorWithHelp("Failed to create backup of current binary", "Check if you have permission to modify the binary directory.")
-		return "", fmt.Errorf("failed to rename current binary to backup: %w", err)
+		return "", withHelp(fmt.Errorf("failed to rename current binary to backup: %w", err), "Check if you have permission to modify the binary directory.")
 	}
 
 	if err := selfUpdateRename(tempFilePath, currentBinary); err != nil {
 		_logger.Warning("Failed to install new binary, restoring backup")
 		if restoreErr := selfUpdateRename(backupBinary, currentBinary); restoreErr != nil {
-			_logger.ErrorWithHelp("Failed to restore backup binary", "You may need to manually restore the binary from the backup file.")
-			return "", fmt.Errorf("failed to install new binary: %w; failed to restore backup binary: %v", err, restoreErr)
+			return "", withHelp(fmt.Errorf("failed to install new binary: %w; failed to restore backup binary: %v", err, restoreErr), "Manually restore the binary from the reported backup if it remains present.")
 		}
 		return "", fmt.Errorf("failed to move downloaded binary to current binary path: %w", err)
 	}
@@ -410,16 +409,26 @@ func cleanupBackupFiles(currentBinary, backupBinary string) {
 	}
 
 	_logger.Verbose("Cleaning up backup files")
-	os.Remove(backupBinary)
+	if err := os.Remove(backupBinary); err != nil && !os.IsNotExist(err) {
+		_logger.Verbose("Failed to remove update backup %s: %v", backupBinary, err)
+	}
 
 	dir := filepath.Dir(currentBinary)
 	baseName := filepath.Base(currentBinary)
-	entries, _ := os.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		_logger.Verbose("Failed to scan update backups in %s: %v", dir, err)
+		return
+	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
+		prefix := baseName + ".bak."
+		if strings.HasPrefix(entry.Name(), prefix) && isDecimal(strings.TrimPrefix(entry.Name(), prefix)) {
 			oldBackup := filepath.Join(dir, entry.Name())
-			os.Remove(oldBackup)
-			_logger.Verbose("Removed old backup: %s", entry.Name())
+			if err := os.Remove(oldBackup); err != nil && !os.IsNotExist(err) {
+				_logger.Verbose("Failed to remove old backup %s: %v", entry.Name(), err)
+			} else {
+				_logger.Verbose("Removed old backup: %s", entry.Name())
+			}
 		}
 	}
 }
@@ -448,8 +457,7 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 	_logger.Verbose("Retrieving latest release information from GitHub")
 	latest, err := getLatestReleaseContext(ctx, prerelease)
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to fetch update information", "Verify your internet connection and that GitHub API is accessible.")
-		return fmt.Errorf("failed to check for updates: %w", err)
+		return withHelp(fmt.Errorf("failed to check for updates: %w", err), "Verify your internet connection and the configured GitHub API endpoint.")
 	}
 	if err := validateReleaseMetadata(latest, prerelease); err != nil {
 		return err
@@ -504,8 +512,7 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 	_logger.Verbose("Getting current binary path")
 	currentBinary, err := os.Executable()
 	if err != nil {
-		_logger.ErrorWithHelp("Failed to get current binary path", "Check if the binary has proper permissions.")
-		return fmt.Errorf("failed to get current binary path: %w", err)
+		return withHelp(fmt.Errorf("failed to get current binary path: %w", err), "Check if the binary has proper permissions.")
 	}
 	currentBinary, err = filepath.EvalSymlinks(currentBinary)
 	if err != nil {
@@ -523,7 +530,9 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 	}
 	defer func() {
 		if _, err := os.Stat(tempFilePath); err == nil {
-			os.Remove(tempFilePath)
+			if removeErr := os.Remove(tempFilePath); removeErr != nil {
+				_logger.Verbose("Failed to remove temporary update file %s: %v", tempFilePath, removeErr)
+			}
 		}
 	}()
 

@@ -4,6 +4,7 @@ package cli
 // registers subcommands, and disables the default completion command.
 // It runs automatically before main execution.
 func init() {
+	rootCmd.SetFlagErrorFunc(flagUsageError)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.govman/config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&verboseFlag, "verbose", false, "verbose output")
 	rootCmd.PersistentFlags().BoolVar(&quietFlag, "quiet", false, "quiet output (errors only)")

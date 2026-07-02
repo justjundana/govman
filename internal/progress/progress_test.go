@@ -1,6 +1,9 @@
 package progress
 
 import (
+	"bytes"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +40,55 @@ func TestNew(t *testing.T) {
 				t.Errorf("Expected lastPct -1, got %d", pb.lastPct)
 			}
 		})
+	}
+}
+
+func TestProgressBarWriterAndEnabledState(t *testing.T) {
+	t.Run("enabled writes once at completion", func(t *testing.T) {
+		var output bytes.Buffer
+		bar := NewWithWriter(100, "download", &output, true)
+		bar.Set(100)
+		bar.Finish()
+		if count := bytes.Count(output.Bytes(), []byte("100%")); count != 1 {
+			t.Fatalf("final render count = %d, output %q", count, output.String())
+		}
+	})
+
+	t.Run("disabled is silent", func(t *testing.T) {
+		var output bytes.Buffer
+		bar := NewWithWriter(100, "download", &output, false)
+		bar.Add(100)
+		bar.Finish()
+		if output.Len() != 0 {
+			t.Fatalf("disabled progress wrote %q", output.String())
+		}
+	})
+
+	t.Run("resume speed excludes existing bytes", func(t *testing.T) {
+		var output bytes.Buffer
+		bar := NewWithWriter(1000, "resume", &output, true)
+		bar.Set(500)
+		output.Reset()
+		bar.startTime = time.Now().Add(-2 * time.Second)
+		bar.Add(100)
+		if strings.Contains(output.String(), "300 B/s") || (!strings.Contains(output.String(), "49 B/s") && !strings.Contains(output.String(), "50 B/s")) {
+			t.Fatalf("resume speed used the wrong byte baseline: %q", output.String())
+		}
+	})
+}
+
+func TestIsTerminalWriterRejectsPipeAndBuffer(t *testing.T) {
+	if IsTerminalWriter(&bytes.Buffer{}) {
+		t.Fatal("buffer reported as terminal")
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	if IsTerminalWriter(writer) {
+		t.Fatal("pipe reported as terminal")
 	}
 }
 

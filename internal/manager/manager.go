@@ -33,6 +33,9 @@ var ConcreteVersionRegex = regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:-?(?:rc|bet
 // configured govman installation root.
 var ErrUnmanagedGo = errors.New("active Go executable is not managed by govman")
 
+// ErrNoActiveVersion indicates that no managed session, local, or global Go version is active.
+var ErrNoActiveVersion = errors.New("no managed Go version is active")
+
 type Manager struct {
 	config     *_config.Config
 	downloader *_downloader.Downloader
@@ -129,10 +132,17 @@ func (m *Manager) Uninstall(version string) error {
 	if err == nil && current == version {
 		return fmt.Errorf("cannot uninstall currently active version %s", version)
 	}
+	if err != nil && !errors.Is(err, ErrNoActiveVersion) && !errors.Is(err, ErrUnmanagedGo) {
+		return fmt.Errorf("failed to determine active Go version: %w", err)
+	}
 	if m.config.DefaultVersion == version {
 		return fmt.Errorf("cannot uninstall default version %s; activate a different default version first", version)
 	}
-	if localVersion := m.getLocalVersion(); localVersion == version {
+	localVersion, err := m.resolveLocalVersion()
+	if err != nil {
+		return fmt.Errorf("failed to read project-local version: %w", err)
+	}
+	if localVersion == version {
 		return fmt.Errorf("cannot uninstall project-local version %s; change or remove %s first", version, m.config.AutoSwitch.ProjectFile)
 	}
 
@@ -245,12 +255,19 @@ func (m *Manager) Current() (string, error) {
 		if errors.Is(err, ErrUnmanagedGo) {
 			return "", err
 		}
-		_logger.Verbose("Could not get session version: %v", err)
+		if !errors.Is(err, exec.ErrNotFound) {
+			return "", err
+		}
+		_logger.Verbose("No Go executable found in PATH")
 	} else if sessionVersion != "" {
 		return sessionVersion, nil
 	}
 
-	if localVersion := m.getLocalVersion(); localVersion != "" {
+	localVersion, localErr := m.resolveLocalVersion()
+	if localErr != nil {
+		return "", fmt.Errorf("failed to read project-local version: %w", localErr)
+	}
+	if localVersion != "" {
 		if !m.IsInstalled(localVersion) {
 			return "", fmt.Errorf("local version %s specified in %s is not installed - run 'govman install %s' to install it",
 				localVersion, m.config.AutoSwitch.ProjectFile, localVersion)
@@ -260,10 +277,14 @@ func (m *Manager) Current() (string, error) {
 	}
 
 	// Check if there's a raw local version that doesn't have a matching installed version
-	if rawLocalVersion := m.getLocalVersionRaw(); rawLocalVersion != "" {
+	rawLocalVersion, rawLocalErr := m.ReadLocalVersionRaw()
+	if rawLocalErr != nil {
+		return "", fmt.Errorf("failed to read project-local version: %w", rawLocalErr)
+	}
+	if rawLocalVersion != "" {
 		installedVersions, err := m.ListInstalled()
 		if err != nil {
-			_logger.Verbose("Failed to list installed versions: %v", err)
+			return "", fmt.Errorf("failed to list installed versions: %w", err)
 		}
 		if len(installedVersions) > 0 {
 			return "", fmt.Errorf("no installed version matches %s (from %s) - install a version with matching major.minor (e.g., 'govman install %s')",
@@ -307,8 +328,7 @@ func (m *Manager) CurrentGlobal() (string, error) {
 				}
 			}
 
-			return "", fmt.Errorf("no Go version is currently active - no symlink found at %s and no default version configured. Install a version with 'govman install <version>' and activate it with 'govman use <version>'",
-				symlinkPath)
+			return "", fmt.Errorf("%w: no symlink found at %s and no default version configured", ErrNoActiveVersion, symlinkPath)
 		}
 
 		return "", fmt.Errorf("failed to check symlink at %s: %w - this may indicate a permissions issue or corrupted installation",
@@ -825,13 +845,23 @@ func (m *Manager) validateInstallation(version string) (string, error) {
 // getLocalVersionRaw reads the project's autoswitch file and returns the raw version string.
 // Returns an empty string if the file does not exist or cannot be read.
 func (m *Manager) getLocalVersionRaw() string {
+	version, _ := m.ReadLocalVersionRaw()
+	return version
+}
+
+// ReadLocalVersionRaw reads the project version file, distinguishing absence
+// from permission and I/O failures.
+func (m *Manager) ReadLocalVersionRaw() (string, error) {
 	filename := m.config.AutoSwitch.ProjectFile
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return ""
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
 	}
 
-	return strings.TrimSpace(string(data))
+	return strings.TrimSpace(string(data)), nil
 }
 
 // GetLocalVersionRaw returns the raw version string from the project's autoswitch file.
@@ -844,25 +874,32 @@ func (m *Manager) GetLocalVersionRaw() string {
 // It uses flexible version matching based on major.minor version (e.g., "1.25" matches "1.25.4").
 // Returns an empty string if the file does not exist or no matching version is installed.
 func (m *Manager) getLocalVersion() string {
-	rawVersion := m.getLocalVersionRaw()
+	version, _ := m.resolveLocalVersion()
+	return version
+}
+
+func (m *Manager) resolveLocalVersion() (string, error) {
+	rawVersion, err := m.ReadLocalVersionRaw()
+	if err != nil {
+		return "", err
+	}
 	if rawVersion == "" {
-		return ""
+		return "", nil
 	}
 
 	// Get all installed versions
 	installedVersions, err := m.ListInstalled()
 	if err != nil || len(installedVersions) == 0 {
-		return ""
+		return "", err
 	}
 
 	// Find a matching version based on major.minor
 	matchedVersion, err := _util.FindBestMatchingVersion(rawVersion, installedVersions)
 	if err != nil {
-		// No matching version found, return empty string
-		return ""
+		return "", nil
 	}
 
-	return matchedVersion
+	return matchedVersion, nil
 }
 
 // DefaultVersion returns the configured default version string.

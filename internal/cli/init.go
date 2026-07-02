@@ -22,6 +22,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize smart shell integration for seamless Go version switching",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Set up intelligent shell integration for automatic Go version management.
 
 Integration Features:
@@ -47,8 +48,7 @@ Go version when you navigate to different projects.`,
 			if shellName != "" {
 				sh = getShellByName(shellName)
 				if sh == nil {
-					_logger.ErrorWithHelp("Unsupported shell: %s", "Supported shells: bash, zsh, fish, powershell, cmd. Use --shell flag to specify.", shellName)
-					return fmt.Errorf("unsupported shell: %s", shellName)
+					return withUsageHelp(cmd, fmt.Errorf("unsupported shell: %s", shellName), "Supported shells: bash, zsh, fish, powershell, cmd.")
 				}
 				_logger.Info("Using manually specified shell: %s", sh.Name())
 			} else {
@@ -72,8 +72,7 @@ Go version when you navigate to different projects.`,
 
 			_logger.Verbose("Setting up shell integration with binary path: %s", binPath)
 			if err := _shell.InitializeShell(sh, binPath, force); err != nil {
-				_logger.ErrorWithHelp("Failed to configure shell integration", "Ensure you have write permissions to your shell configuration file and try again.")
-				return err
+				return withHelp(fmt.Errorf("failed to configure shell integration: %w", err), "Ensure you have write permissions to your shell configuration file and try again.")
 			}
 
 			_logger.Success("Shell integration configured successfully!")

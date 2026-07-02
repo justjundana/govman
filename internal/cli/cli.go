@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,10 +22,12 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "govman",
-	Short:   "Go Version Manager - Install and manage multiple Go versions",
-	Long:    createLongDescription(),
-	Version: _version.BuildVersion(),
+	Use:           "govman",
+	Short:         "Go Version Manager - Install and manage multiple Go versions",
+	Long:          createLongDescription(),
+	Version:       _version.BuildVersion(),
+	SilenceErrors: true,
+	SilenceUsage:  true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cleanupOldBackups()
 		return initConfig(cmd.Flags().Changed("quiet"), cmd.Flags().Changed("verbose"))
@@ -56,17 +59,30 @@ func createLongDescription() string {
 // Execute runs the root Cobra command.
 // It shows an ASCII banner when no CLI arguments are provided and returns any execution error.
 func Execute() error {
-
 	if len(os.Args) <= 1 {
 		showBanner()
 	}
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	if err != nil {
+		renderCommandError(rootCmd.ErrOrStderr(), rootCmd, err)
+	}
+	return err
 }
 
 // showBanner prints a colored ASCII banner to stdout.
 // It has no parameters and no return value.
 func showBanner() {
-	fmt.Println()
+	colorEnabled := false
+	if os.Getenv("NO_COLOR") == "" {
+		if info, err := os.Stdout.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			colorEnabled = true
+		}
+	}
+	renderBanner(os.Stdout, colorEnabled)
+}
+
+func renderBanner(writer io.Writer, colorEnabled bool) {
+	_, _ = fmt.Fprintln(writer)
 	banner := `
 	 ██████╗  ██████╗ ██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗
 	██╔════╝ ██╔═══██╗██║   ██║████╗ ████║██╔══██╗████╗  ██║
@@ -77,18 +93,19 @@ func showBanner() {
 
 	lines := strings.Split(banner, "\n")
 
-	const (
+	color, bold, reset := "", "", ""
+	if colorEnabled {
 		color = "\033[38;5;75m"
-		bold  = "\033[1m"
+		bold = "\033[1m"
 		reset = "\033[0m"
-	)
+	}
 
 	for _, line := range lines {
 		if strings.TrimSpace(line) != "" {
-			fmt.Printf("%s%s%s%s\n", color, bold, line, reset)
+			_, _ = fmt.Fprintf(writer, "%s%s%s%s\n", color, bold, line, reset)
 		}
 	}
-	fmt.Println()
+	_, _ = fmt.Fprintln(writer)
 }
 
 // initConfig loads a fresh isolated configuration and then applies explicit
@@ -171,9 +188,34 @@ func cleanupOldBackups() {
 	}
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
-			oldBackup := filepath.Join(dir, entry.Name())
-			os.Remove(oldBackup) // Best-effort, ignore errors
+		prefix := baseName + ".bak."
+		if !strings.HasPrefix(entry.Name(), prefix) || !isDecimal(strings.TrimPrefix(entry.Name(), prefix)) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			_logger.Verbose("Failed to inspect old backup %s: %v", entry.Name(), err)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			_logger.Verbose("Skipping non-regular backup candidate: %s", entry.Name())
+			continue
+		}
+		oldBackup := filepath.Join(dir, entry.Name())
+		if err := os.Remove(oldBackup); err != nil {
+			_logger.Verbose("Failed to remove old backup %s: %v", entry.Name(), err)
 		}
 	}
+}
+
+func isDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }

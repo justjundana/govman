@@ -239,8 +239,8 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 }
 
 // setupProgressReader wraps the response body with a progress bar if available.
-func setupProgressReader(body io.Reader, totalSize, currentSize int64, filename string) (io.Reader, *_progress.ProgressBar) {
-	progressBar := _progress.New(totalSize, fmt.Sprintf("Downloading %s", filename))
+func setupProgressReader(body io.Reader, totalSize, currentSize int64, filename string, enabled bool) (io.Reader, *_progress.ProgressBar) {
+	progressBar := _progress.NewWithWriter(totalSize, fmt.Sprintf("Downloading %s", filename), os.Stderr, enabled)
 	if progressBar != nil {
 		progressBar.Set(currentSize)
 		return io.TeeReader(body, progressBar), progressBar
@@ -374,7 +374,8 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 			return "", resumeErr
 		}
 		currentSize = validatedSize
-		reader, progressBar := setupProgressReader(resp.Body, fileInfo.Size, currentSize, filename)
+		progressEnabled := !d.config.Quiet && _progress.IsTerminalWriter(os.Stderr)
+		reader, progressBar := setupProgressReader(resp.Body, fileInfo.Size, currentSize, filename, progressEnabled)
 		remaining := fileInfo.Size - currentSize
 		written, copyErr := io.Copy(file, io.LimitReader(reader, remaining+1))
 		closeErr := resp.Body.Close()

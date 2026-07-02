@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ func newListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List and manage Go versions with detailed information",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Display comprehensive information about Go versions on your system.
 
 Features:
@@ -39,6 +41,9 @@ Pro Tips:
   • The * marker indicates your currently active version`,
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !remote && (beta || pattern != "") {
+				return withUsageHelp(cmd, fmt.Errorf("--beta and --pattern require --remote"), "Add --remote to query and filter available releases.")
+			}
 			mgr := _manager.New(getConfig())
 
 			if remote {
@@ -62,8 +67,7 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 	_logger.Verbose("Scanning installation directory for Go versions")
 	versions, err := mgr.ListInstalled()
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to scan for installed Go versions", "Verify that ~/.govman/versions exists and is accessible.")
-		return fmt.Errorf("failed to list installed versions: %w", err)
+		return withHelp(fmt.Errorf("failed to list installed versions: %w", err), "Verify that the configured install directory exists and is accessible.")
 	}
 
 	if len(versions) == 0 {
@@ -73,7 +77,13 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 		return nil
 	}
 
-	current, _ := mgr.Current()
+	current, currentErr := mgr.Current()
+	if currentErr != nil && !errors.Is(currentErr, _manager.ErrNoActiveVersion) && !errors.Is(currentErr, _manager.ErrUnmanagedGo) {
+		return fmt.Errorf("failed to determine active Go version: %w", currentErr)
+	}
+	if currentErr != nil {
+		_logger.Verbose("No managed Go version is active: %v", currentErr)
+	}
 	defaultVersion := mgr.DefaultVersion()
 
 	_logger.Info("Installed Go Versions (%d total):", len(versions))
@@ -90,8 +100,7 @@ func listInstalledVersions(mgr *_manager.Manager) error {
 
 		info, err := mgr.Info(version)
 		if err != nil {
-			_logger.Info("%s%s %s (unable to read installation info)", marker, statusIcon, version)
-			continue
+			return fmt.Errorf("failed to read installation info for Go %s: %w", version, err)
 		}
 
 		versionDisplay := version
@@ -145,23 +154,30 @@ func formatVersionTypeDesc(includeUnstable bool, stableCount, unstableCount int)
 // Parameters: mgr (Manager), includeUnstable (include beta/rc), pattern (glob filter). Returns an error on fetch failures.
 func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern string) error {
 	_logger.Verbose("Fetching available versions from Go's official release API")
+	if pattern != "" {
+		if !strings.ContainsAny(pattern, "*?[]") {
+			pattern += "*"
+			_logger.Verbose("Pattern auto-expanded to '%s' for broader matching", pattern)
+		}
+		if err := validateGlobPattern(pattern); err != nil {
+			return fmt.Errorf("invalid version pattern %q: %w", pattern, err)
+		}
+	}
 	versions, err := mgr.ListRemote(includeUnstable)
 	if err != nil {
-		_logger.ErrorWithHelp("Unable to fetch remote Go versions", "Check your internet connection and verify that golang.org is accessible.")
-		return fmt.Errorf("failed to list remote versions: %w", err)
+		return withHelp(fmt.Errorf("failed to list remote versions: %w", err), "Check your internet connection and the configured Go releases endpoint.")
 	}
 
 	if pattern != "" {
 		originalCount := len(versions)
 
-		if !strings.ContainsAny(pattern, "*?[]") {
-			pattern = pattern + "*"
-			_logger.Verbose("Pattern auto-expanded to '%s' for broader matching", pattern)
-		}
-
 		var filtered []string
 		for _, version := range versions {
-			if matched, _ := filepath.Match(pattern, version); matched {
+			matched, err := filepath.Match(pattern, version)
+			if err != nil {
+				return fmt.Errorf("invalid version pattern %q: %w", pattern, err)
+			}
+			if matched {
 				filtered = append(filtered, version)
 			}
 		}
@@ -212,9 +228,5 @@ func listRemoteVersions(mgr *_manager.Manager, includeUnstable bool, pattern str
 		_logger.Info("%d versions already installed (marked with ✓)", installedCount)
 	}
 	_logger.Info("Install any version with: govman install <version>")
-	if !includeUnstable && unstableCount > 0 {
-		_logger.Info("Add --beta flag to see %d pre-release versions", unstableCount)
-	}
-
 	return nil
 }
