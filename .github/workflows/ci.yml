@@ -111,10 +111,46 @@ jobs:
         shell: pwsh
         run: ./test/windows-path.ps1
 
+  docker:
+    name: Docker multi-architecture image
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4.2.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4.2.0
+      - name: Build amd64 and arm64 images
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            DATE=1970-01-01T00:00:00Z
+      - name: Verify native healthcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION=ci --build-arg COMMIT="${GITHUB_SHA}" --build-arg DATE=1970-01-01T00:00:00Z -t govman:ci .
+          container=$(docker run -d --entrypoint /bin/sh govman:ci -c 'while :; do sleep 60; done')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for _ in {1..15}; do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+            [[ $status == healthy ]] && exit 0
+            [[ $status == unhealthy ]] && exit 1
+            sleep 1
+          done
+          docker inspect "$container"
+          exit 1
+
   snapshot:
     name: Release snapshot
     runs-on: ubuntu-latest
-    needs: [quality, test, race, unix-integration, windows-integration]
+    needs: [quality, test, race, unix-integration, windows-integration, docker]
     steps:
       - uses: actions/checkout@v6
         with:
