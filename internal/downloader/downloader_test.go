@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -969,58 +970,49 @@ func TestDownloader_extractZip_PathTraversal(t *testing.T) {
 
 // TestDownloader_Download_ErrorPaths tests error handling in the Download method
 func TestDownloader_Download_ErrorPaths(t *testing.T) {
-	testCases := []struct {
-		name          string
-		version       string
-		mockResponse  string
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name:          "Invalid version - no file info",
-			version:       "invalid-version",
-			mockResponse:  `[{"version":"go1.20.0","stable":true,"files":[{"filename":"go1.20.0.darwin-amd64.tar.gz","os":"darwin","arch":"amd64","version":"go1.20.0","sha256":"1234567890abcdef","size":1024,"kind":"archive"}]}]`,
-			expectError:   true,
-			errorContains: "no file info available",
-		},
-		{
-			name:          "Network error during download",
-			version:       "1.20.0",
-			mockResponse:  `[{"version":"go1.20.0","stable":true,"files":[{"filename":"go1.20.0.darwin-arm64.tar.gz","os":"darwin","arch":"arm64","version":"go1.20.0","sha256":"1234567890abcdef","size":1024,"kind":"archive"}]}]`,
-			expectError:   true,
-			errorContains: "failed to get file info",
-		},
+	extension := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		extension = ".zip"
 	}
+	filename := fmt.Sprintf("go1.20.0.%s-%s%s", runtime.GOOS, runtime.GOARCH, extension)
+	metadata := fmt.Sprintf(`[{"version":"go1.20.0","stable":true,"files":[{"filename":%q,"os":%q,"arch":%q,"version":"go1.20.0","sha256":"1234567890abcdef","size":1024,"kind":"archive"}]}]`, filename, runtime.GOOS, runtime.GOARCH)
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			config := createTestConfig(t)
-			downloader := createTestDownloader(t, config)
+	t.Run("Invalid version - no file info", func(t *testing.T) {
+		config := createTestConfig(t)
+		downloader := createTestDownloader(t, config)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(metadata))
+		}))
+		defer server.Close()
+		config.GoReleases.APIURL = server.URL
 
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := downloader.Download(server.URL+"/"+filename, filepath.Join(config.InstallDir, "invalid-version"), "invalid-version")
+		if err == nil || !strings.Contains(err.Error(), "no file info available") {
+			t.Fatalf("expected no file info error, got: %v", err)
+		}
+	})
+
+	t.Run("Network error during download", func(t *testing.T) {
+		config := createTestConfig(t)
+		config.Download.RetryCount = 1
+		downloader := createTestDownloader(t, config)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metadata" {
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(tc.mockResponse))
-			}))
-			defer server.Close()
-
-			config.GoReleases.APIURL = server.URL
-
-			installDir := filepath.Join(config.InstallDir, "test-error")
-			err := downloader.Download("http://invalid-url-that-will-fail.com/test.tar.gz", installDir, tc.version)
-
-			if tc.expectError {
-				if err == nil {
-					t.Error("Expected error but got none")
-				} else if !strings.Contains(err.Error(), tc.errorContains) {
-					t.Errorf("Expected error containing %q, got: %v", tc.errorContains, err)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error but got: %v", err)
-				}
+				_, _ = w.Write([]byte(metadata))
+				return
 			}
-		})
-	}
+			http.Error(w, "download unavailable", http.StatusInternalServerError)
+		}))
+		defer server.Close()
+		config.GoReleases.APIURL = server.URL + "/metadata"
+
+		err := downloader.Download(server.URL+"/"+filename, filepath.Join(config.InstallDir, "network-error"), "1.20.0")
+		if err == nil || !strings.Contains(err.Error(), "failed to download") {
+			t.Fatalf("expected download error, got: %v", err)
+		}
+	})
 }
 
 // TestDownloader_extractTarGz_ErrorHandling tests error handling in tar.gz extraction
