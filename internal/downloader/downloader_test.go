@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,6 +125,125 @@ func TestDownloader_NewWithLogger(t *testing.T) {
 	}
 	if fallback := NewWithLogger(config, nil); fallback.logger == nil {
 		t.Fatal("NewWithLogger did not create a fallback logger")
+	}
+}
+
+func TestRetryDelayVariants(t *testing.T) {
+	now := time.Date(2026, time.July, 3, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "empty", value: "", want: 0},
+		{name: "seconds", value: "2", want: 2 * time.Second},
+		{name: "negative", value: "-1", want: 0},
+		{name: "seconds capped", value: "120", want: time.Minute},
+		{name: "HTTP date", value: now.Add(5 * time.Second).Format(http.TimeFormat), want: 5 * time.Second},
+		{name: "past HTTP date", value: now.Add(-time.Second).Format(http.TimeFormat), want: 0},
+		{name: "invalid", value: "soon", want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := retryDelay(test.value, now); got != test.want {
+				t.Fatalf("retryDelay(%q)=%v, want %v", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandleResumeResponseBranches(t *testing.T) {
+	config := createTestConfig(t)
+	downloader := New(config)
+
+	partial, err := os.CreateTemp(t.TempDir(), "partial-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = partial.Close() })
+	if _, err := partial.WriteString("partial"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := downloader.handleResumeResponse(partial, &http.Response{StatusCode: http.StatusOK}, 7, 10); err != nil || got != 0 {
+		t.Fatalf("200 resume reset got=%d err=%v", got, err)
+	}
+	if info, err := partial.Stat(); err != nil || info.Size() != 0 {
+		t.Fatalf("partial was not truncated: info=%v err=%v", info, err)
+	}
+
+	response := func(contentRange string, contentLength int64) *http.Response {
+		return &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			ContentLength: contentLength,
+			Header:        http.Header{"Content-Range": []string{contentRange}},
+		}
+	}
+	if got, err := downloader.handleResumeResponse(partial, response("bytes 5-9/10", 5), 5, 10); err != nil || got != 5 {
+		t.Fatalf("valid resume got=%d err=%v", got, err)
+	}
+	for _, test := range []struct {
+		name   string
+		header string
+		length int64
+		start  int64
+		total  int64
+	}{
+		{name: "missing header", header: "", length: 5, start: 5, total: 10},
+		{name: "wrong start", header: "bytes 4-9/10", length: 6, start: 5, total: 10},
+		{name: "wrong total", header: "bytes 5-10/11", length: 6, start: 5, total: 10},
+		{name: "wrong end", header: "bytes 5-8/10", length: 4, start: 5, total: 10},
+		{name: "wrong length", header: "bytes 5-9/10", length: 4, start: 5, total: 10},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := downloader.handleResumeResponse(partial, response(test.header, test.length), test.start, test.total); err == nil {
+				t.Fatal("invalid resume response was accepted")
+			}
+		})
+	}
+}
+
+func TestPartialFileResetAndReplacementErrors(t *testing.T) {
+	directory := t.TempDir()
+	partial, err := os.CreateTemp(directory, "partial-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := partial.WriteString("data"); err != nil {
+		t.Fatal(err)
+	}
+	if err := resetPartialFile(partial); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := partial.Seek(0, io.SeekCurrent); err != nil || offset != 0 {
+		t.Fatalf("reset offset=%d err=%v", offset, err)
+	}
+	if err := partial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := resetPartialFile(partial); err == nil {
+		t.Fatal("resetPartialFile accepted a closed file")
+	}
+
+	targetDirectory := filepath.Join(directory, "target-directory")
+	if err := os.Mkdir(targetDirectory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDirectory, "child"), []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(filepath.Join(directory, "missing"), targetDirectory); err == nil {
+		t.Fatal("replaceFile accepted a missing source and non-empty target directory")
+	}
+
+	targetFile := filepath.Join(directory, "target-file")
+	if err := os.WriteFile(targetFile, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(filepath.Join(directory, "still-missing"), targetFile); err == nil {
+		t.Fatal("replaceFile accepted a missing source")
+	}
+	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+		t.Fatalf("fallback target removal did not occur: %v", err)
 	}
 }
 

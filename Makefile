@@ -101,7 +101,13 @@ test-coverage: ## Generate an HTML coverage report
 	mkdir -p $(COVERAGE_DIR)
 	go test -timeout=10m -tags=$(BUILD_TAGS) -covermode=atomic -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o $(COVERAGE_DIR)/coverage.html
-	go tool cover -func=coverage.out | tail -n 1
+	@set -eu; \
+	total=$$(awk 'NR > 1 { statements += $$2; if ($$3 > 0) covered += $$2 } END { if (statements == 0) print 0; else printf "%.2f", 100 * covered / statements }' coverage.out); \
+	cli=$$(awk 'NR > 1 && $$1 ~ /\/internal\/cli\// { statements += $$2; if ($$3 > 0) covered += $$2 } END { if (statements == 0) print 0; else printf "%.2f", 100 * covered / statements }' coverage.out); \
+	printf 'total coverage: %s%% (required: 80.00%%)\n' "$$total"; \
+	printf 'CLI coverage:   %s%% (required: 70.00%%)\n' "$$cli"; \
+	awk -v value="$$total" 'BEGIN { exit !(value + 0 >= 80) }' || { echo 'total coverage is below 80%' >&2; exit 1; }; \
+	awk -v value="$$cli" 'BEGIN { exit !(value + 0 >= 70) }' || { echo 'CLI coverage is below 70%' >&2; exit 1; }
 
 test-integration: ## Run maintained installer integration tests
 	bash test/installers.sh
@@ -174,7 +180,7 @@ check-release-tag: ## Require an annotated SemVer tag pointing at HEAD
 	[ "$$(git cat-file -t refs/tags/$$tag)" = tag ] || { echo "release tag must be annotated: $$tag" >&2; exit 1; }; \
 	[ "$$(git rev-list -n 1 "$$tag")" = "$$(git rev-parse HEAD)" ] || { echo 'release tag does not point at HEAD' >&2; exit 1; }
 
-pre-release-checks: check-git-clean check-release-tag validate test test-race test-integration ## Run release gates
+pre-release-checks: check-git-clean check-release-tag validate test test-race test-coverage test-integration ## Run release gates
 
 release: pre-release-checks ## Publish a release with GoReleaser
 	@command -v goreleaser >/dev/null || { echo 'goreleaser is required; run make dev-setup' >&2; exit 1; }
@@ -241,7 +247,7 @@ clean: ## Remove project-local build artifacts only
 
 check: validate test test-integration ## Run standard local quality gates
 
-ci: deps validate test test-race test-integration build-binaries checksums verify-artifacts ## Run the complete local CI pipeline
+ci: deps validate test test-race test-coverage test-integration build-binaries checksums verify-artifacts ## Run the complete local CI pipeline
 
 update-deps: ## Explicitly update dependencies and module files
 	go get -u ./...

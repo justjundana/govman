@@ -1,7 +1,13 @@
 package manager
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -140,6 +146,26 @@ func TestNewWithLogger(t *testing.T) {
 	}
 	if fallback := NewWithLogger(config, nil); fallback.logger == nil {
 		t.Fatal("NewWithLogger did not create a fallback logger")
+	}
+}
+
+func TestLocalVersionCompatibilityAccessors(t *testing.T) {
+	config := createTestConfig(t)
+	manager := createTestManager(t, config)
+	if err := os.WriteFile(config.AutoSwitch.ProjectFile, []byte(" 1.25.4\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.getLocalVersionRaw(); got != "1.25.4" {
+		t.Fatalf("getLocalVersionRaw()=%q", got)
+	}
+	if got := manager.GetLocalVersionRaw(); got != "1.25.4" {
+		t.Fatalf("GetLocalVersionRaw()=%q", got)
+	}
+	if err := os.Remove(config.AutoSwitch.ProjectFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.GetLocalVersionRaw(); got != "" {
+		t.Fatalf("missing local version=%q", got)
 	}
 }
 
@@ -1361,6 +1387,119 @@ func TestManager_ResolveVersion(t *testing.T) {
 				t.Errorf("ResolveVersion() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManagerResolveVersionFromReleaseAPI(t *testing.T) {
+	_golang.ClearReleasesCache()
+	t.Cleanup(_golang.ClearReleasesCache)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(writer, `[
+            {"version":"go1.27rc1","stable":false,"files":[]},
+            {"version":"go1.26.1","stable":true,"files":[]},
+            {"version":"go1.25.4","stable":true,"files":[]}
+        ]`)
+	}))
+	defer server.Close()
+
+	config := createTestConfig(t)
+	config.GoReleases.APIURL = server.URL
+	config.GoReleases.CacheExpiry = 0
+	manager := createTestManager(t, config)
+
+	for _, test := range []struct {
+		requested string
+		want      string
+		wantError bool
+	}{
+		{requested: "latest", want: "1.26.1"},
+		{requested: "stable", want: "1.26.1"},
+		{requested: "1.25", want: "1.25.4"},
+		{requested: "1.24", wantError: true},
+	} {
+		got, err := manager.ResolveVersion(test.requested)
+		if test.wantError {
+			if err == nil {
+				t.Fatalf("ResolveVersion(%q)=%q, want error", test.requested, got)
+			}
+			continue
+		}
+		if err != nil || got != test.want {
+			t.Fatalf("ResolveVersion(%q)=%q err=%v, want %q", test.requested, got, err, test.want)
+		}
+	}
+}
+
+func TestManagerInstallEndToEndWithVerifiedArchive(t *testing.T) {
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	goName := "go/bin/go"
+	if runtime.GOOS == "windows" {
+		goName += ".exe"
+	}
+	entries := []struct {
+		name string
+		data string
+	}{
+		{name: goName, data: "#!/bin/sh\necho 'go version go1.30.1 test/test'\n"},
+		{name: "go/bin/gofmt", data: "#!/bin/sh\nexit 0\n"},
+	}
+	for _, entry := range entries {
+		header := &tar.Header{Name: entry.name, Mode: 0755, Size: int64(len(entry.data)), Typeflag: tar.TypeReg}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write([]byte(entry.data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archiveBytes := archive.Bytes()
+	checksum := fmt.Sprintf("%x", sha256.Sum256(archiveBytes))
+	filename := fmt.Sprintf("go1.30.1.%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(writer, `[{"version":"go1.30.1","stable":true,"files":[{"filename":%q,"os":%q,"arch":%q,"version":"go1.30.1","sha256":%q,"size":%d,"kind":"archive"}]}]`, filename, runtime.GOOS, runtime.GOARCH, checksum, len(archiveBytes))
+		case "/" + filename:
+			writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(archiveBytes)))
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	_golang.ClearReleasesCache()
+	t.Cleanup(_golang.ClearReleasesCache)
+	config := createTestConfig(t)
+	config.GoReleases.APIURL = server.URL + "/api"
+	config.GoReleases.DownloadURL = server.URL + "/%s"
+	config.GoReleases.CacheExpiry = 0
+	config.Download.RetryCount = 1
+	manager := createTestManager(t, config)
+
+	if err := manager.Install("1.30.1"); err != nil {
+		t.Fatalf("Install() error=%v", err)
+	}
+	if !manager.IsInstalled("1.30.1") {
+		t.Fatal("committed installation is not valid")
+	}
+	info, err := manager.Info("1.30.1")
+	if err != nil || info.InstallDate.IsZero() {
+		t.Fatalf("installed metadata info=%v err=%v", info, err)
+	}
+	if err := manager.Install("1.30.1"); err == nil || !strings.Contains(err.Error(), "already installed") {
+		t.Fatalf("duplicate Install() error=%v", err)
 	}
 }
 

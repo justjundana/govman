@@ -60,6 +60,17 @@ jobs:
           cache: true
       - run: go test -race -timeout=10m ./...
 
+  coverage:
+    name: Coverage thresholds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - run: make test-coverage
+
   static-analysis:
     name: Static and security analysis
     runs-on: ubuntu-latest
@@ -94,7 +105,7 @@ jobs:
         run: bash test/installers.sh
       - name: Run shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck scripts/install.sh scripts/uninstall.sh test/installers.sh test/ci-local.sh
+        run: shellcheck scripts/install.sh scripts/uninstall.sh test/installers.sh
 
   windows-integration:
     name: Windows script validation
@@ -150,7 +161,7 @@ jobs:
   snapshot:
     name: Release snapshot
     runs-on: ubuntu-latest
-    needs: [quality, test, race, unix-integration, windows-integration, docker]
+    needs: [quality, test, race, coverage, unix-integration, windows-integration, docker]
     steps:
       - uses: actions/checkout@v6
         with:
