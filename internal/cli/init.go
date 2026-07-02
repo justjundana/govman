@@ -37,6 +37,7 @@ Supported Shells:
   • Zsh (.zshrc)
   • Fish (config.fish)
   • PowerShell (profile)
+  • Command Prompt (govman.cmd wrapper)
 
 After initialization, govman will automatically activate the correct
 Go version when you navigate to different projects.`,
@@ -46,7 +47,7 @@ Go version when you navigate to different projects.`,
 			if shellName != "" {
 				sh = getShellByName(shellName)
 				if sh == nil {
-					_logger.ErrorWithHelp("Unsupported shell: %s", "Supported shells: bash, zsh, fish, powershell. Use --shell flag to specify.", shellName)
+					_logger.ErrorWithHelp("Unsupported shell: %s", "Supported shells: bash, zsh, fish, powershell, cmd. Use --shell flag to specify.", shellName)
 					return fmt.Errorf("unsupported shell: %s", shellName)
 				}
 				_logger.Info("Using manually specified shell: %s", sh.Name())
@@ -91,13 +92,13 @@ Go version when you navigate to different projects.`,
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force re-initialization (overwrite existing configuration)")
-	cmd.Flags().StringVar(&shellName, "shell", "", "Target specific shell (bash, zsh, fish, powershell)")
+	cmd.Flags().StringVar(&shellName, "shell", "", "Target specific shell (bash, zsh, fish, powershell, cmd)")
 
 	return cmd
 }
 
 // getShellByName maps a shell name to its Shell implementation.
-// Supported values: bash, zsh, fish, powershell/pwsh. Returns nil if unsupported.
+// Supported values: bash, zsh, fish, powershell/pwsh, and cmd. Returns nil if unsupported.
 func getShellByName(name string) _shell.Shell {
 	switch name {
 	case "bash":

@@ -95,6 +95,7 @@ call :add_to_path
 if !errorlevel! neq 0 exit /b !errorlevel!
 
 call :verify_installation
+if !errorlevel! neq 0 exit /b !errorlevel!
 call :show_completion
 
 goto :eof
@@ -175,6 +176,7 @@ set "BINARY_FOUND=0"
 set "COMMAND_FOUND=0"
 set "DATA_FOUND=0"
 
+if exist "%USERPROFILE%\.govman\bin\govman-real.exe" set "BINARY_FOUND=1"
 if exist "%USERPROFILE%\.govman\bin\govman.exe" set "BINARY_FOUND=1"
 if exist "%USERPROFILE%\.govman" set "DATA_FOUND=1"
 
@@ -187,7 +189,7 @@ if !BINARY_FOUND!==1 (
     call :print_separator "-"
     echo %BOLD%%WHITE%Existing Installation Detected:%RESET%
     call :print_separator "-"
-    echo %GREEN% %CHECKMARK%%RESET% Binary found: %BOLD%%USERPROFILE%\.govman\bin\govman.exe%RESET%
+    echo %GREEN% %CHECKMARK%%RESET% Binary found in: %BOLD%%USERPROFILE%\.govman\bin%RESET%
 
     if !COMMAND_FOUND!==1 (
         for /f "tokens=*" %%i in ('govman --version 2^>nul') do set "VERSION=%%i"
@@ -298,7 +300,7 @@ set "ASSET_NAME=govman-windows-!ARCH!.exe"
 set "RELEASE_BASE=https://github.com/justjundana/govman/releases/download/!VERSION!"
 set "DOWNLOAD_URL=!RELEASE_BASE!/!ASSET_NAME!"
 set "CHECKSUM_URL=!RELEASE_BASE!/checksums.txt"
-set "BINARY_PATH=!INSTALL_DIR!\govman.exe"
+set "BINARY_PATH=!INSTALL_DIR!\govman-real.exe"
 set "TEMP_BINARY=!INSTALL_DIR!\.govman-download-!RANDOM!-!RANDOM!.exe"
 set "TEMP_CHECKSUMS=!INSTALL_DIR!\.govman-checksums-!RANDOM!-!RANDOM!.txt"
 set "BACKUP_PATH=!BINARY_PATH!.bak.!RANDOM!"
@@ -373,36 +375,22 @@ exit /b 1
 :add_to_path
 call :print_step "Configuring Windows environment..."
 
-REM Get current user PATH
-for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
-
-REM Check if install directory is already in PATH
-echo "!USER_PATH!" | find "!INSTALL_DIR!" >nul
-if !errorlevel!==0 (
-    call :print_info "Install directory already in PATH"
-) else (
-    REM Add to PATH
-    if defined USER_PATH (
-        set "NEW_PATH=!USER_PATH!;!INSTALL_DIR!"
-    ) else (
-        set "NEW_PATH=!INSTALL_DIR!"
-    )
-
-    reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "!NEW_PATH!" /f >nul
-    if !errorlevel!==0 (
-        call :print_success "Added !INSTALL_DIR! to user PATH"
-    ) else (
-        call :print_error "Failed to update PATH"
-        exit /b 1
-    )
+REM PowerShell reads the registry value directly so cmd delayed expansion never
+REM observes or corrupts PATH entries containing !, &, spaces, or %VAR%.
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; function N([string]$p) { if ($null -eq $p) { return '' }; return $p.Trim().TrimEnd([char[]]@('\','/')) }; $entry=$env:INSTALL_DIR; $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); if ($null -eq $key) { throw 'Unable to open HKCU\Environment' }; try { $had=@($key.GetValueNames()) -contains 'Path'; $old=if($had){[string]$key.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}else{''}; $kind=if($had){$key.GetValueKind('Path')}else{[Microsoft.Win32.RegistryValueKind]::ExpandString}; $found=$false; foreach($part in $old.Split([char[]]@(';'),[StringSplitOptions]::None)){if([StringComparer]::OrdinalIgnoreCase.Equals((N $part),(N $entry))){$found=$true}}; if(-not $found){$new=if([string]::IsNullOrEmpty($old)){$entry}else{$old+';'+$entry}; $backup='Path.govman-backup-'+$PID+'-'+[Guid]::NewGuid().ToString('N'); $key.SetValue($backup,$old,$kind); try{$key.SetValue('Path',$new,$kind); $actual=[string]$key.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); if($actual -cne $new -or $key.GetValueKind('Path') -ne $kind){throw 'PATH verification failed'}}catch{if($had){$key.SetValue('Path',$old,$kind)}else{$key.DeleteValue('Path',$false)};throw}finally{$key.DeleteValue($backup,$false)}} } finally { $key.Dispose() }" >nul 2>&1
+if !errorlevel! neq 0 (
+    call :print_error "Failed to update PATH; the original registry value was restored"
+    exit /b 1
 )
+call :print_success "User PATH contains an exact govman entry"
 
 REM Try to run govman init
-"!BINARY_PATH!" init --force >nul 2>&1
+"!BINARY_PATH!" init --force --shell cmd >nul 2>&1
 if !errorlevel!==0 (
     call :print_success "Shell configuration completed successfully"
 ) else (
-    call :print_warning "Shell configuration had issues. You may need to run 'govman init' manually."
+    call :print_error "Shell configuration failed"
+    exit /b 1
 )
 
 echo.
@@ -416,17 +404,11 @@ if !errorlevel!==0 (
     for /f "tokens=*" %%i in ('"!BINARY_PATH!" --version 2^>nul') do set "INSTALLED_VERSION=%%i"
     call :print_success "Installation verified: %BOLD%!INSTALLED_VERSION!%RESET%"
 ) else (
-    call :print_warning "Installation completed, but verification failed"
-    echo.
-    call :print_separator "-"
-    echo %BOLD%%WHITE%Manual Steps Required:%RESET%
-    echo  1. Restart your Command Prompt
-    echo  2. Try running 'govman --version'
-    echo  3. If issues persist, run 'govman init' manually
-    call :print_separator "-"
+    call :print_error "Installation verification failed"
+    exit /b 1
 )
 echo.
-goto :eof
+exit /b 0
 
 :show_completion
 echo.

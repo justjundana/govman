@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Colors and styles for Windows Terminal
@@ -227,7 +228,7 @@ function Download-Binary {
 	$releaseBase = "https://github.com/justjundana/govman/releases/download/$Version"
     $downloadUrl = "$releaseBase/$assetName"
 	$checksumUrl = "$releaseBase/checksums.txt"
-    $binaryPath = Join-Path $InstallDir "govman.exe"
+	$binaryPath = Join-Path $InstallDir "govman-real.exe"
 
     Print-Step "Downloading govman $Version for $Platform..."
     Print-Info "Download URL: $downloadUrl"
@@ -293,11 +294,107 @@ function Download-Binary {
     return $binaryPath
 }
 
+# Compare PATH entries without expanding environment-variable references.
+function Normalize-WindowsPathEntry {
+    param([AllowEmptyString()][string]$Entry)
+
+    if ($null -eq $Entry) { return "" }
+    return $Entry.Trim().TrimEnd([char[]]@('\', '/'))
+}
+
+function Test-WindowsPathEntry {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry
+    )
+
+    $expected = Normalize-WindowsPathEntry $Entry
+    foreach ($candidate in $PathValue.Split([char[]]@(';'), [StringSplitOptions]::None)) {
+        if ([StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $candidate), $expected)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Update-WindowsPathValue {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry,
+        [ValidateSet("Add", "Remove")][string]$Action
+    )
+
+    $matches = Test-WindowsPathEntry $PathValue $Entry
+    if ($Action -eq "Add") {
+        if ($matches) { return $PathValue }
+        if ([string]::IsNullOrEmpty($PathValue)) { return $Entry }
+        return "$PathValue;$Entry"
+    }
+
+    if (-not $matches) { return $PathValue }
+    $expected = Normalize-WindowsPathEntry $Entry
+    return (@($PathValue.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
+        -not [StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $_), $expected)
+    })) -join ";"
+}
+
+function Set-UserPathEntry {
+    param(
+        [string]$Entry,
+        [ValidateSet("Add", "Remove")][string]$Action
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    if ($null -eq $key) { throw "Unable to open HKCU\Environment" }
+
+    $backupName = "Path.govman-backup-$PID-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        $hadPath = @($key.GetValueNames()) -contains "Path"
+        $oldPath = if ($hadPath) {
+            [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        } else { "" }
+        $valueKind = if ($hadPath) { $key.GetValueKind("Path") } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+        $matches = Test-WindowsPathEntry $oldPath $Entry
+
+        if ($Action -eq "Add") {
+            if ($matches) { return $false }
+        } else {
+            if (-not $matches) { return $false }
+        }
+        $newPath = Update-WindowsPathValue $oldPath $Entry $Action
+
+        # Keep a registry backup until the write and value kind are verified.
+        $key.SetValue($backupName, $oldPath, $valueKind)
+        try {
+            $key.SetValue("Path", $newPath, $valueKind)
+            $actualPath = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($actualPath -cne $newPath -or $key.GetValueKind("Path") -ne $valueKind) {
+                throw "PATH verification failed after registry write"
+            }
+        }
+        catch {
+            if ($hadPath) {
+                $key.SetValue("Path", $oldPath, $valueKind)
+            } else {
+                $key.DeleteValue("Path", $false)
+            }
+            throw
+        }
+        finally {
+            $key.DeleteValue($backupName, $false)
+        }
+        return $true
+    }
+    finally {
+        $key.Dispose()
+    }
+}
+
 # Add to PATH and initialize environment
 function Add-ToPath {
     param([string]$InstallDir)
 
-    $govmanBinary = Join-Path $InstallDir "govman.exe"
+    $govmanBinary = Join-Path $InstallDir "govman-real.exe"
 
     if (-not (Test-Path $govmanBinary)) {
         Print-Error "govman binary not found at $govmanBinary"
@@ -311,36 +408,30 @@ function Add-ToPath {
         Show-InstallProgress "environment configuration"
     }
 
-    # Get current user PATH
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-
-    # Check if install directory is already in PATH
-    if ($userPath -notlike "*$InstallDir*") {
-        # Add to user PATH
-        $newPath = if ($userPath) { "$userPath;$InstallDir" } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+    if (Set-UserPathEntry -Entry $InstallDir -Action Add) {
         Print-Success "Added $InstallDir to user PATH"
     } else {
         Print-Info "Install directory already in PATH"
     }
 
+    if (-not (Test-WindowsPathEntry $env:PATH $InstallDir)) {
+        $env:PATH = if ([string]::IsNullOrEmpty($env:PATH)) { $InstallDir } else { "$($env:PATH);$InstallDir" }
+    }
+
     # Run govman init for additional setup
     try {
-        $initOutput = & $govmanBinary init --force 2>&1
+        $initOutput = & $govmanBinary init --force --shell powershell 2>&1
         if ($LASTEXITCODE -eq 0) {
             Print-Success "Shell configuration completed successfully"
             if ($initOutput -and -not $Quiet) {
                 Write-Host $initOutput
             }
         } else {
-            Print-Warning "Shell configuration had issues. You may need to run 'govman init' manually."
-            if ($initOutput) {
-                Write-Host $initOutput
-            }
+            throw "govman init exited with code $LASTEXITCODE`: $initOutput"
         }
     }
     catch {
-        Print-Warning "Could not run 'govman init'. Please run it manually after installation."
+        throw "Failed to initialize shell integration: $($_.Exception.Message)"
     }
 }
 
@@ -405,7 +496,8 @@ function Show-Completion {
 function Test-ExistingInstallation {
     $installDir = Join-Path $env:USERPROFILE ".govman\bin"
     $govmanDir = Join-Path $env:USERPROFILE ".govman"
-    $binaryFound = Test-Path (Join-Path $installDir "govman.exe")
+    $binaryFound = (Test-Path (Join-Path $installDir "govman-real.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.exe"))
     $commandFound = $null -ne (Get-Command govman -ErrorAction SilentlyContinue)
 
     Print-Step "Checking for existing installation..."
@@ -417,7 +509,7 @@ function Test-ExistingInstallation {
         Print-Separator "┄"
 
         if ($binaryFound) {
-            Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Binary found: $($Colors.Bold)$(Join-Path $installDir 'govman.exe')$($Colors.Reset)"
+            Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Binary found in: $($Colors.Bold)$installDir$($Colors.Reset)"
         }
 
         if ($commandFound) {
@@ -450,7 +542,7 @@ function Test-ExistingInstallation {
         Write-Host "$($Colors.Dim)$($Colors.Gray)Installation cancelled - govman already exists$($Colors.Reset)"
         Print-Separator "═"
         Write-Host ""
-        exit 0
+        exit 1
     } else {
         Print-Success "No existing installation found - proceeding with fresh install"
         Write-Host ""
@@ -505,21 +597,15 @@ function Main {
     # Verify installation
     Print-Step "Verifying installation..."
     try {
-        $null = & $binaryPath --version 2>$null
-        $installedVersion = & $binaryPath --version 2>$null | Select-Object -First 1
+        $installedVersion = (& $binaryPath --version 2>&1 | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "--version exited with code $LASTEXITCODE"
+        }
         Print-Success "Installation verified: $($Colors.Bold)$installedVersion$($Colors.Reset)"
         Show-Completion $version
     }
     catch {
-        Print-Warning "Installation completed, but verification failed"
-        Write-Host ""
-        Print-Separator "┄"
-        Write-Host "$($Colors.Bold)$($Colors.White)Manual Steps Required:$($Colors.Reset)"
-        Write-Host " 1. Restart your PowerShell/Command Prompt"
-        Write-Host " 2. Try running 'govman --version'"
-        Write-Host " 3. If issues persist, run 'govman init' manually"
-        Print-Separator "┄"
-        Write-Host ""
+        throw "Installation verification failed: $($_.Exception.Message)"
     }
 }
 
@@ -530,5 +616,7 @@ trap {
     exit 1
 }
 
-# Run main function
-Main
+# Run only when executed, allowing the path helpers to be dot-sourced by tests.
+if ($MyInvocation.InvocationName -ne ".") {
+    Main
+}

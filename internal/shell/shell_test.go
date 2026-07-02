@@ -723,6 +723,9 @@ func TestInitializeShellCmd(t *testing.T) {
 
 	// Use a temporary directory to avoid conflicts
 	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "govman-real.exe"), []byte("test backend"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	err := InitializeShell(shell, tempDir, false)
 
@@ -730,10 +733,27 @@ func TestInitializeShellCmd(t *testing.T) {
 		t.Errorf("Expected no error but got: %v", err)
 	}
 
-	// Check if wrapper file was created (note: it's govman.bat, not govman_wrapper.bat)
-	wrapperPath := filepath.Join(tempDir, "govman.bat")
+	wrapperPath := filepath.Join(tempDir, "govman.cmd")
 	if _, err := os.Stat(wrapperPath); os.IsNotExist(err) {
 		t.Error("Expected wrapper batch file to be created")
+	}
+	content, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := string(content)
+	for _, forbidden := range []string{"setlocal", "enabledelayedexpansion", `govman.exe`} {
+		if strings.Contains(strings.ToLower(wrapper), forbidden) {
+			t.Errorf("wrapper must not contain %q", forbidden)
+		}
+	}
+	if count := strings.Count(wrapper, `"%GOVMAN_BIN%" %*`); count != 1 {
+		t.Errorf("backend invocation count = %d, want 1", count)
+	}
+	for _, expected := range []string{"govman-real.exe", `if /i "%GOVMAN_COMMAND%"=="use"`, `if /i "%GOVMAN_COMMAND%"=="refresh"`, `%RANDOM%-%RANDOM%`} {
+		if !strings.Contains(wrapper, expected) {
+			t.Errorf("wrapper missing %q", expected)
+		}
 	}
 }
 
@@ -1715,7 +1735,10 @@ func testInitializeCmdShell(t *testing.T, shell *CmdShell, force bool, expectErr
 	t.Helper()
 	tempDir := t.TempDir()
 
-	wrapperPath := filepath.Join(tempDir, "govman.bat")
+	if err := os.WriteFile(filepath.Join(tempDir, "govman-real.exe"), []byte("test backend"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	wrapperPath := filepath.Join(tempDir, "govman.cmd")
 	os.WriteFile(wrapperPath, []byte("@echo off"), 0644)
 
 	err := InitializeShell(shell, tempDir, force)

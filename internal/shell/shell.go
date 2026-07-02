@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"text/template"
 )
 
 var (
@@ -884,7 +883,7 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"",
 		"# Wrapper function for automatic PATH execution",
 		"function govman {",
-		fmt.Sprintf(`    $govman_bin = "%s\govman.exe"`, escapedPath),
+		fmt.Sprintf(`    $govman_bin = "%s\govman-real.exe"`, escapedPath),
 		"    $commandName = $null",
 		"    $expectConfig = $false",
 		"    foreach ($argument in $args) {",
@@ -1071,18 +1070,18 @@ func (s *CmdShell) SetupCommands(binPath string) []string {
 		fmt.Sprintf(`set "PATH=%s;%%PATH%%"`, escapedPath),
 		"set GOTOOLCHAIN=local",
 		"",
-		"REM Ensure GOBIN and GOPATH\\bin are available",
-		`if defined GOBIN set "PATH=%GOBIN%;%PATH%"`,
+		"REM Ensure GOBIN and GOPATH\\bin are available after the managed toolchain",
+		`if defined GOBIN set "PATH=%PATH%;%GOBIN%"`,
 		"",
 		"REM Check for go command and add GOPATH\\bin",
 		`where go >nul 2>&1`,
 		`if %errorlevel% equ 0 (`,
 		`    for /f "delims=" %%i in ('go env GOPATH 2^>nul') do set "GOPATH_BIN=%%i\bin"`,
-		`    if defined GOPATH_BIN if exist "%GOPATH_BIN%" set "PATH=%GOPATH_BIN%;%PATH%"`,
+		`    if defined GOPATH_BIN if exist "%GOPATH_BIN%" set "PATH=%PATH%;%GOPATH_BIN%"`,
 		`)`,
 		"",
 		"REM Add Go's default bin directory",
-		`if exist "%USERPROFILE%\go\bin" set "PATH=%USERPROFILE%\go\bin;%PATH%"`,
+		`if exist "%USERPROFILE%\go\bin" set "PATH=%PATH%;%USERPROFILE%\go\bin"`,
 		"",
 		"REM Note: Auto-switching (.govman-goversion) is not available in Command Prompt",
 		"REM Use 'govman use <version>' to switch versions manually",
@@ -1171,101 +1170,103 @@ func initializePowerShell(shell Shell, binPath string, force bool) error {
 
 // initializeCmdShell creates a batch wrapper for Command Prompt.
 func initializeCmdShell(binPath string, force bool) error {
-	wrapperPath := filepath.Join(binPath, "govman.bat")
+	wrapperPath := filepath.Join(binPath, "govman.cmd")
+	backendPath := filepath.Join(binPath, "govman-real.exe")
 
-	// Check if wrapper exists
 	if !force && fileExists(wrapperPath) {
 		return fmt.Errorf("wrapper already exists at %s (use --force to override)", wrapperPath)
 	}
-
-	// Verify write permissions
-	testFile := filepath.Join(binPath, ".govman_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		return fmt.Errorf("insufficient permissions to write to %s: %w", binPath, err)
+	if !fileExists(backendPath) {
+		return fmt.Errorf("cmd backend not found at %s; install the Windows binary as govman-real.exe before initializing cmd", backendPath)
 	}
-	os.Remove(testFile)
 
-	// Create wrapper content using template for better maintainability
+	escapedBackend := escapeCmdPath(backendPath)
 	tmpl := `@echo off
-setlocal enabledelayedexpansion
-
 REM GOVMAN Wrapper for Command Prompt
-set "GOVMAN_BIN={{.BinPath}}\govman.exe"
+set "GOVMAN_BIN={{GOVMAN_BACKEND}}"
 
-REM Check if govman.exe exists
+REM Delayed expansion and local environment scoping are intentionally disabled. PATH changes made by
+REM a successful use/refresh command must survive in the caller's cmd.exe session.
 if not exist "%GOVMAN_BIN%" (
-    echo Error: govman.exe not found at %GOVMAN_BIN% >&2
+    echo Error: govman backend not found at "%GOVMAN_BIN%" >&2
     exit /b 1
 )
 
-REM Handle 'use' command with special PATH updating logic
-if "%~1"=="use" (
-    if not "%~2"=="" (
-        if not "%~2"=="--help" (
-            if not "%~2"=="-h" (
-                REM Execute govman use and capture output
-                "%GOVMAN_BIN%" %* > "%TEMP%\govman_output.tmp" 2>&1
-                set GOVMAN_EXIT_CODE=!errorlevel!
-                
-                if !GOVMAN_EXIT_CODE! equ 0 (
-                    REM Look for PATH export command in output
-                    set "PATH_UPDATED="
-                    for /f "usebackq delims=" %%i in ("%TEMP%\govman_output.tmp") do (
-                        set "LINE=%%i"
-                        echo !LINE! | findstr /b /c:"set PATH=" >nul
-                        if !errorlevel! equ 0 (
-                            REM Execute the PATH update command
-                            %%i
-                            set "PATH_UPDATED=1"
-                        )
-                    )
-                    del "%TEMP%\govman_output.tmp" 2>nul
-                    if defined PATH_UPDATED (
-                        echo.
-                        echo ✓ Go version switched successfully
-                        echo.
-                        echo Note: This change only affects the current Command Prompt session.
-                        echo To verify, run: go version
-                    ) else (
-                        echo Warning: No PATH update found in govman output >&2
-                    )
-                    exit /b 0
-                ) else (
-                    REM Show error output
-                    type "%TEMP%\govman_output.tmp" >&2
-                    del "%TEMP%\govman_output.tmp" 2>nul
-                    exit /b !GOVMAN_EXIT_CODE!
-                )
-            )
-        )
-    )
+set "GOVMAN_COMMAND="
+set "GOVMAN_EXPECT_CONFIG="
+call :govman_find_command %*
+
+:govman_choose_temp
+set "GOVMAN_OUTPUT=%TEMP%\govman-output-%RANDOM%-%RANDOM%.tmp"
+if exist "%GOVMAN_OUTPUT%" goto govman_choose_temp
+
+REM The backend is invoked exactly once for every wrapper invocation.
+"%GOVMAN_BIN%" %* > "%GOVMAN_OUTPUT%" 2>&1
+set "GOVMAN_RESULT=%errorlevel%"
+if not "%GOVMAN_RESULT%"=="0" goto govman_error
+
+if /i "%GOVMAN_COMMAND%"=="use" goto govman_apply_path
+if /i "%GOVMAN_COMMAND%"=="refresh" goto govman_apply_path
+type "%GOVMAN_OUTPUT%"
+goto govman_cleanup
+
+:govman_apply_path
+for /f %%C in ('findstr /b /c:"set PATH=" "%GOVMAN_OUTPUT%" ^| find /c /v ""') do set "GOVMAN_PATH_COUNT=%%C"
+if not "%GOVMAN_PATH_COUNT%"=="1" (
+    echo Error: govman returned success without exactly one valid PATH command. >&2
+    set "GOVMAN_RESULT=1"
+    goto govman_cleanup
 )
+for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"set PATH=" "%GOVMAN_OUTPUT%"') do set "GOVMAN_PATH_EXPR=%%B"
+if not defined GOVMAN_PATH_EXPR (
+    echo Error: govman returned an empty PATH command. >&2
+    set "GOVMAN_RESULT=1"
+    goto govman_cleanup
+)
+call set "PATH=%%GOVMAN_PATH_EXPR%%"
+findstr /v /b /c:"set PATH=" "%GOVMAN_OUTPUT%"
+goto govman_cleanup
 
-REM For all other commands, just pass through
-"%GOVMAN_BIN%" %*
-exit /b %errorlevel%
+:govman_error
+type "%GOVMAN_OUTPUT%" >&2
+
+:govman_cleanup
+if exist "%GOVMAN_OUTPUT%" del /q "%GOVMAN_OUTPUT%" >nul 2>&1
+set "GOVMAN_EXIT_CODE=%GOVMAN_RESULT%"
+set "GOVMAN_BIN="
+set "GOVMAN_COMMAND="
+set "GOVMAN_EXPECT_CONFIG="
+set "GOVMAN_OUTPUT="
+set "GOVMAN_PATH_COUNT="
+set "GOVMAN_PATH_EXPR="
+set "GOVMAN_RESULT="
+exit /b %GOVMAN_EXIT_CODE%
+
+:govman_find_command
+if "%~1"=="" exit /b 0
+if defined GOVMAN_EXPECT_CONFIG (
+    set "GOVMAN_EXPECT_CONFIG="
+    shift
+    goto govman_find_command
+)
+if /i "%~1"=="--config" (
+    set "GOVMAN_EXPECT_CONFIG=1"
+    shift
+    goto govman_find_command
+)
+if /i "%~1"=="--quiet" shift & goto govman_find_command
+if /i "%~1"=="-q" shift & goto govman_find_command
+if /i "%~1"=="--verbose" shift & goto govman_find_command
+if /i "%~1"=="-V" shift & goto govman_find_command
+if /i "%~1"=="--" shift & goto govman_find_command
+set "GOVMAN_COMMAND=%~1"
+exit /b 0
 `
-
-	// Parse and execute template
-	t, err := template.New("wrapper").Parse(tmpl)
-	if err != nil {
-		return fmt.Errorf("failed to parse wrapper template: %w", err)
-	}
-
-	var buf strings.Builder
-	data := struct {
-		BinPath string
-	}{
-		BinPath: binPath,
-	}
-
-	if err := t.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to generate wrapper: %w", err)
-	}
+	tmpl = strings.ReplaceAll(tmpl, "{{GOVMAN_BACKEND}}", escapedBackend)
 
 	// Write wrapper file with CRLF line endings for Windows
-	content := strings.ReplaceAll(buf.String(), "\n", "\r\n")
-	if err := os.WriteFile(wrapperPath, []byte(content), 0644); err != nil {
+	content := strings.ReplaceAll(tmpl, "\n", "\r\n")
+	if err := atomicWriteShellFile(wrapperPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to create wrapper: %w", err)
 	}
 
@@ -1277,7 +1278,8 @@ exit /b %errorlevel%
 	fmt.Println("Step 1: Add govman to your PATH")
 	fmt.Println()
 	fmt.Println("   Option A - Permanent (Recommended):")
-	fmt.Printf("   setx PATH \"%%PATH%%;%s\"\n", binPath)
+	fmt.Println("   Use the govman installer or add this exact directory through")
+	fmt.Printf("   System Properties > Environment Variables: %s\n", binPath)
 	fmt.Println()
 	fmt.Println("   Option B - Current session only:")
 	fmt.Printf("   set PATH=%%PATH%%;%s\n", binPath)

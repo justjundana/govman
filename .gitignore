@@ -17,6 +17,7 @@
 # Local test scratch files are ignored; maintained integration tests are tracked.
 test/*
 !test/installers.sh
+!test/windows-path.ps1
 
 *~
 
