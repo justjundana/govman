@@ -263,7 +263,127 @@ var (
 	selfUpdateRemove         = os.Remove
 	selfUpdateChmod          = os.Chmod
 	selfUpdateValidateBinary = validateDownloadedBinary
+	selfUpdateGOOS           = runtime.GOOS
+	selfUpdateStartHelper    = startWindowsUpdateHelper
 )
+
+const windowsUpdateHelperScript = `param(
+    [Parameter(Mandatory=$true)][int]$ParentProcessId,
+    [Parameter(Mandatory=$true)][string]$SourcePath,
+    [Parameter(Mandatory=$true)][string]$DestinationPath,
+    [Parameter(Mandatory=$true)][string]$TempPath,
+    [Parameter(Mandatory=$true)][string]$BackupPath,
+    [Parameter(Mandatory=$true)][string]$ExpectedVersion,
+    [Parameter(Mandatory=$true)][int]$MigrateLegacy
+)
+$ErrorActionPreference = 'Stop'
+$scriptPath = $MyInvocation.MyCommand.Path
+try {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'timed out waiting for govman to exit' }
+        Start-Sleep -Milliseconds 100
+    }
+
+    Move-Item -LiteralPath $SourcePath -Destination $BackupPath -Force
+    try {
+        Move-Item -LiteralPath $TempPath -Destination $DestinationPath -Force
+        $output = (& $DestinationPath --version 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "updated binary exited with code $LASTEXITCODE" }
+        $expected = [regex]::Escape($ExpectedVersion.TrimStart('v'))
+        if ($output -notmatch ('(^|[^0-9])v?' + $expected + '([^0-9]|$)')) {
+            throw "updated binary reported unexpected version: $output"
+        }
+        if ($MigrateLegacy -eq 1) {
+            $initOutput = & $DestinationPath init --force --shell cmd 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "cmd wrapper migration failed: $initOutput" }
+        }
+    }
+    catch {
+        Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $BackupPath) {
+            Move-Item -LiteralPath $BackupPath -Destination $SourcePath -Force
+        }
+        throw
+    }
+    Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
+    exit 0
+}
+catch {
+    exit 1
+}
+finally {
+    Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+}
+`
+
+func scheduleWindowsBinaryReplacement(currentBinary, tempFilePath, targetVersion string) error {
+	if err := selfUpdateChmod(tempFilePath, 0755); err != nil {
+		return fmt.Errorf("failed to set executable permission on verified binary: %w", err)
+	}
+	if err := selfUpdateValidateBinary(tempFilePath, targetVersion); err != nil {
+		return err
+	}
+
+	destination := currentBinary
+	migrateLegacy := false
+	if strings.EqualFold(filepath.Base(currentBinary), "govman.exe") {
+		destination = filepath.Join(filepath.Dir(currentBinary), "govman-real.exe")
+		migrateLegacy = true
+		if _, err := os.Lstat(destination); err == nil {
+			return fmt.Errorf("cannot migrate legacy Windows installation because %s already exists", destination)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to inspect Windows update destination: %w", err)
+		}
+	}
+
+	backupPath := destination + ".bak." + fmt.Sprintf("%d", time.Now().UnixNano())
+	helperFile, err := os.CreateTemp(filepath.Dir(currentBinary), ".govman-update-helper-*.ps1")
+	if err != nil {
+		return fmt.Errorf("failed to create Windows update helper: %w", err)
+	}
+	helperPath := helperFile.Name()
+	keepHelper := false
+	defer func() {
+		if !keepHelper {
+			_ = os.Remove(helperPath)
+		}
+	}()
+	if err := helperFile.Chmod(0600); err != nil {
+		_ = helperFile.Close()
+		return fmt.Errorf("failed to secure Windows update helper: %w", err)
+	}
+	if _, err := io.WriteString(helperFile, windowsUpdateHelperScript); err != nil {
+		_ = helperFile.Close()
+		return fmt.Errorf("failed to write Windows update helper: %w", err)
+	}
+	if err := helperFile.Sync(); err != nil {
+		_ = helperFile.Close()
+		return fmt.Errorf("failed to sync Windows update helper: %w", err)
+	}
+	if err := helperFile.Close(); err != nil {
+		return fmt.Errorf("failed to close Windows update helper: %w", err)
+	}
+
+	migrationFlag := "0"
+	if migrateLegacy {
+		migrationFlag = "1"
+	}
+	arguments := []string{
+		"-ParentProcessId", fmt.Sprintf("%d", os.Getpid()),
+		"-SourcePath", currentBinary,
+		"-DestinationPath", destination,
+		"-TempPath", tempFilePath,
+		"-BackupPath", backupPath,
+		"-ExpectedVersion", targetVersion,
+		"-MigrateLegacy", migrationFlag,
+	}
+	if err := selfUpdateStartHelper(helperPath, arguments); err != nil {
+		return fmt.Errorf("failed to start Windows update helper: %w", err)
+	}
+	keepHelper = true
+	return nil
+}
 
 func validateReleaseURL(rawURL string) error {
 	parsed, err := url.ParseRequestURI(rawURL)
@@ -471,7 +591,10 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 		_logger.Info("  Released: %s", latest.PublishedAt.Format("January 2, 2006"))
 	}
 
-	comparison := _golang.CompareVersions(latest.TagName, current)
+	comparison, err := _golang.CompareVersions(latest.TagName, current)
+	if err != nil {
+		return fmt.Errorf("failed to compare release versions: %w", err)
+	}
 	if comparison < 0 {
 		_logger.Warning("Installed version %s is newer than latest eligible release %s; refusing to downgrade", current, latest.TagName)
 		return nil
@@ -528,7 +651,11 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 	if err != nil {
 		return err
 	}
+	removeTempFile := true
 	defer func() {
+		if !removeTempFile {
+			return
+		}
 		if _, err := os.Stat(tempFilePath); err == nil {
 			if removeErr := os.Remove(tempFilePath); removeErr != nil {
 				_logger.Verbose("Failed to remove temporary update file %s: %v", tempFilePath, removeErr)
@@ -537,6 +664,14 @@ func runSelfUpdateContext(ctx context.Context, checkOnly, force, prerelease bool
 	}()
 
 	_logger.Verbose("Installing new binary")
+	if selfUpdateGOOS == "windows" {
+		if err := scheduleWindowsBinaryReplacement(currentBinary, tempFilePath, latest.TagName); err != nil {
+			return err
+		}
+		removeTempFile = false
+		_logger.Success("Update verified and scheduled; it will complete after this process exits")
+		return nil
+	}
 	backupBinary, err := replaceBinary(currentBinary, tempFilePath, latest.TagName)
 	if err != nil {
 		return err

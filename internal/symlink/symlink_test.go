@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,16 @@ func TestCreate_OverwriteExisting(t *testing.T) {
 	resolved, _ := os.Readlink(symlink)
 	if resolved != target2 {
 		t.Errorf("expected %q, got %q", target2, resolved)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".govman-symlink-") {
+			t.Fatalf("temporary symlink was not cleaned up: %s", entry.Name())
+		}
 	}
 }
 

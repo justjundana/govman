@@ -39,9 +39,9 @@ func Create(target, symlinkPath string) error {
 		return fmt.Errorf("failed to create temporary symlink: %w", err)
 	}
 
-	if err := os.Rename(tempLink, symlinkPath); err != nil {
+	if err := replaceSymlink(tempLink, symlinkPath); err != nil {
 		os.Remove(tempLink)
-		return fmt.Errorf("failed to rename symlink to final location: %w", err)
+		return fmt.Errorf("failed to replace symlink at final location: %w", err)
 	}
 
 	return nil

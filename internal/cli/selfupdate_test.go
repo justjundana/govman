@@ -265,6 +265,109 @@ func TestReplaceBinaryChmodFailureKeepsOriginal(t *testing.T) {
 	}
 }
 
+func TestScheduleWindowsBinaryReplacementUsesDetachedHelper(t *testing.T) {
+	originalChmod := selfUpdateChmod
+	originalValidate := selfUpdateValidateBinary
+	originalStarter := selfUpdateStartHelper
+	t.Cleanup(func() {
+		selfUpdateChmod = originalChmod
+		selfUpdateValidateBinary = originalValidate
+		selfUpdateStartHelper = originalStarter
+	})
+
+	directory := t.TempDir()
+	current := filepath.Join(directory, "govman.exe")
+	temporary := filepath.Join(directory, "govman-update.exe")
+	if err := os.WriteFile(current, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temporary, []byte("new"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	selfUpdateChmod = func(string, os.FileMode) error { return nil }
+	selfUpdateValidateBinary = func(path, version string) error {
+		if path != temporary || version != "v1.3.4" {
+			t.Fatalf("validation args = %q, %q", path, version)
+		}
+		return nil
+	}
+
+	var helperPath string
+	var arguments []string
+	selfUpdateStartHelper = func(path string, args []string) error {
+		helperPath = path
+		arguments = append([]string(nil), args...)
+		return nil
+	}
+	if err := scheduleWindowsBinaryReplacement(current, temporary, "v1.3.4"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(helperPath) })
+
+	helperContent, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Get-Process", "Move-Item", "--version", "init --force --shell cmd", "Move-Item -LiteralPath $BackupPath -Destination $SourcePath"} {
+		if !strings.Contains(string(helperContent), expected) {
+			t.Fatalf("Windows helper is missing %q", expected)
+		}
+	}
+	joined := strings.Join(arguments, "\n")
+	for _, expected := range []string{
+		"-SourcePath\n" + current,
+		"-DestinationPath\n" + filepath.Join(directory, "govman-real.exe"),
+		"-TempPath\n" + temporary,
+		"-ExpectedVersion\nv1.3.4",
+		"-MigrateLegacy\n1",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("Windows helper args %q are missing %q", joined, expected)
+		}
+	}
+	if data, err := os.ReadFile(current); err != nil || string(data) != "old" {
+		t.Fatalf("scheduler modified running binary: data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(temporary); err != nil || string(data) != "new" {
+		t.Fatalf("scheduler modified downloaded binary: data=%q err=%v", data, err)
+	}
+}
+
+func TestScheduleWindowsBinaryReplacementCleansHelperOnStartFailure(t *testing.T) {
+	originalChmod := selfUpdateChmod
+	originalValidate := selfUpdateValidateBinary
+	originalStarter := selfUpdateStartHelper
+	t.Cleanup(func() {
+		selfUpdateChmod = originalChmod
+		selfUpdateValidateBinary = originalValidate
+		selfUpdateStartHelper = originalStarter
+	})
+
+	directory := t.TempDir()
+	current := filepath.Join(directory, "govman-real.exe")
+	temporary := filepath.Join(directory, "govman-update.exe")
+	if err := os.WriteFile(current, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temporary, []byte("new"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	selfUpdateChmod = func(string, os.FileMode) error { return nil }
+	selfUpdateValidateBinary = func(string, string) error { return nil }
+	selfUpdateStartHelper = func(string, []string) error { return fmt.Errorf("start failed") }
+
+	if err := scheduleWindowsBinaryReplacement(current, temporary, "v1.3.4"); err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("scheduler start error = %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(directory, ".govman-update-helper-*.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed scheduler left helpers: %v", matches)
+	}
+}
+
 func TestFindReleaseAssetRequiresExactUniqueHTTPSAsset(t *testing.T) {
 	release := &GitHubRelease{Assets: []GitHubAsset{
 		{Name: "govman-linux-amd64-v2", DownloadURL: "https://example.com/v2"},
