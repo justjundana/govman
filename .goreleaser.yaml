@@ -1,0 +1,60 @@
+version: 2
+
+project_name: govman
+
+before:
+  hooks:
+    - go mod verify
+    - go mod tidy -diff
+
+builds:
+  - id: govman
+    main: ./cmd/govman
+    binary: govman
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - darwin_amd64_v1
+      - darwin_arm64
+      - windows_amd64_v1
+      - windows_arm64
+      - windows_386
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    tags:
+      - netgo
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/justjundana/govman/internal/version.Version=v{{ .Version }}
+        -X github.com/justjundana/govman/internal/version.Commit={{ .FullCommit }}
+        -X github.com/justjundana/govman/internal/version.Date={{ .CommitDate }}
+        -X github.com/justjundana/govman/internal/version.BuildBy=goreleaser
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: raw-binaries
+    ids:
+      - govman
+    formats:
+      - binary
+    name_template: "govman-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^Merge '
+
+release:
+  prerelease: auto
