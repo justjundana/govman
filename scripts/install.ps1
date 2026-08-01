@@ -308,14 +308,14 @@ function Update-WindowsPathValue {
         [ValidateSet("Add", "Remove")][string]$Action
     )
 
-    $matches = Test-WindowsPathEntry $PathValue $Entry
+    $hasEntry = Test-WindowsPathEntry $PathValue $Entry
     if ($Action -eq "Add") {
-        if ($matches) { return $PathValue }
+        if ($hasEntry) { return $PathValue }
         if ([string]::IsNullOrEmpty($PathValue)) { return $Entry }
         return "$PathValue;$Entry"
     }
 
-    if (-not $matches) { return $PathValue }
+    if (-not $hasEntry) { return $PathValue }
     $expected = Normalize-WindowsPathEntry $Entry
     return (@($PathValue.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
         -not [StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $_), $expected)
@@ -338,14 +338,14 @@ function Set-UserPathEntry {
             [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         } else { "" }
         $valueKind = if ($hadPath) { $key.GetValueKind("Path") } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
-        $matches = Test-WindowsPathEntry $oldPath $Entry
+        $hasEntry = Test-WindowsPathEntry $oldPath $Entry
 
         if ($Action -eq "Add") {
-            if ($matches) { return $false }
+            if ($hasEntry) { return $false }
         } else {
-            if (-not $matches) { return $false }
+            if (-not $hasEntry) { return $false }
         }
-        $newPath = Update-WindowsPathValue $oldPath $Entry $Action
+        $newPath = Update-WindowsPathValue -PathValue $oldPath -Entry $Entry -Action $Action
 
         # Keep a registry backup until the write and value kind are verified.
         $key.SetValue($backupName, $oldPath, $valueKind)
@@ -429,7 +429,6 @@ function Show-SystemInfo {
     Print-Separator "┄"
 
     $parts = $Platform -split "/"
-    $os = $parts[0]
     $arch = $parts[1]
 
     Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Operating System: $($Colors.Bold)Windows$($Colors.Reset)"
@@ -563,10 +562,10 @@ function Main {
     Write-Host ""
 
     # Show system info
-    Show-SystemInfo $platform $version $installDir
+    Show-SystemInfo -Platform $platform -Version $version -InstallDir $installDir
 
     # Download binary
-    $binaryPath = Download-Binary $version $platform $installDir
+    $binaryPath = Download-Binary -Version $version -Platform $platform -InstallDir $installDir
     Write-Host ""
 
     # Add to PATH

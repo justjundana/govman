@@ -154,13 +154,13 @@ function Update-WindowsPathValue {
         [ValidateSet("Add", "Remove")][string]$Action
     )
 
-    $matches = Test-WindowsPathEntry $PathValue $Entry
+    $hasEntry = Test-WindowsPathEntry $PathValue $Entry
     if ($Action -eq "Add") {
-        if ($matches) { return $PathValue }
+        if ($hasEntry) { return $PathValue }
         if ([string]::IsNullOrEmpty($PathValue)) { return $Entry }
         return "$PathValue;$Entry"
     }
-    if (-not $matches) { return $PathValue }
+    if (-not $hasEntry) { return $PathValue }
 
     $expected = Normalize-WindowsPathEntry $Entry
     return (@($PathValue.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
@@ -182,7 +182,7 @@ function Remove-UserPathEntry {
         $valueKind = $key.GetValueKind("Path")
         if (-not (Test-WindowsPathEntry $oldPath $Entry)) { return $false }
 
-        $newPath = Update-WindowsPathValue $oldPath $Entry Remove
+        $newPath = Update-WindowsPathValue -PathValue $oldPath -Entry $Entry -Action Remove
 
         $key.SetValue($backupName, $oldPath, $valueKind)
         try {

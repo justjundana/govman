@@ -115,7 +115,7 @@ jobs:
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
       - name: Analyze PowerShell scripts
         shell: pwsh
-        run: Get-ChildItem scripts -Filter '*.ps1' | Invoke-ScriptAnalyzer -EnableExit
+        run: Get-ChildItem scripts -Filter '*.ps1' | Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit
 
   docker:
     name: Docker multi-architecture image
