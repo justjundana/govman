@@ -361,6 +361,10 @@ func TestNew(t *testing.T) {
 
 // TestDownloader_Download tests the Download method with a mock server
 func TestDownloader_Download(t *testing.T) {
+	// The downloader matches release files against runtime.GOOS/runtime.GOARCH, so the
+	// mock metadata has to describe the host platform rather than a fixed one.
+	goos, goarch := runtime.GOOS, runtime.GOARCH
+
 	testCases := []struct {
 		name          string
 		version       string
@@ -369,9 +373,11 @@ func TestDownloader_Download(t *testing.T) {
 		setupDownload func(t *testing.T, config *_config.Config) (string, func())
 	}{
 		{
-			name:          "Download with valid file info",
-			version:       "1.20.0",
-			mockResponse:  `[{"version":"go1.20.0","stable":true,"files":[{"filename":"go1.20.0.darwin-arm64.tar.gz","os":"darwin","arch":"arm64","version":"go1.20.0","sha256":"1234567890abcdef","size":1024,"kind":"archive"}]}]`,
+			name:    "Download with valid file info",
+			version: "1.20.0",
+			mockResponse: fmt.Sprintf(
+				`[{"version":"go1.20.0","stable":true,"files":[{"filename":"go1.20.0.%s-%s.tar.gz","os":%q,"arch":%q,"version":"go1.20.0","sha256":"1234567890abcdef","size":1024,"kind":"archive"}]}]`,
+				goos, goarch, goos, goarch),
 			expectedError: "failed to download",
 		},
 		{
@@ -421,7 +427,7 @@ func TestDownloader_Download(t *testing.T) {
 				// Create API server first
 				apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(fmt.Sprintf(`[{"version":"go1.21.0","stable":true,"files":[{"filename":"go1.21.0.darwin-arm64.tar.gz","os":"darwin","arch":"arm64","version":"go1.21.0","sha256":"%s","size":%d,"kind":"archive"}]}]`, expectedSHA256, len(archiveData))))
+					_, _ = fmt.Fprintf(w, `[{"version":"go1.21.0","stable":true,"files":[{"filename":"go1.21.0.%s-%s.tar.gz","os":%q,"arch":%q,"version":"go1.21.0","sha256":"%s","size":%d,"kind":"archive"}]}]`, goos, goarch, goos, goarch, expectedSHA256, len(archiveData))
 				}))
 
 				// Update config to use mock API server BEFORE creating download server
@@ -438,7 +444,9 @@ func TestDownloader_Download(t *testing.T) {
 					_golang.ClearReleasesCache()
 				}
 
-				return downloadServer.URL + "/go1.21.0.darwin-arm64.tar.gz", cleanup
+				// The cached archive name, and therefore the extractor chosen, comes from
+				// the URL basename, so it stays .tar.gz to match the fixture built above.
+				return downloadServer.URL + fmt.Sprintf("/go1.21.0.%s-%s.tar.gz", goos, goarch), cleanup
 			},
 		},
 	}

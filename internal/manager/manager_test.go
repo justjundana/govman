@@ -82,12 +82,12 @@ func createTestConfig(t *testing.T) *_config.Config {
 		}
 	})
 
-	// Mock HOME directory to ensure GetBinPath uses the temporary directory
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	t.Cleanup(func() {
-		os.Setenv("HOME", originalHome)
-	})
+	// Mock the home directory so GetBinPath/GetCurrentSymlink resolve inside the
+	// temporary directory. config.getHomeDir() reads USERPROFILE on Windows and
+	// HOME everywhere else (internal/config/config.go), so both must be set or the
+	// suite would operate on the real home directory on Windows.
+	t.Setenv("HOME", tempDir)
+	t.Setenv("USERPROFILE", tempDir)
 
 	configFile := filepath.Join(tempDir, "config.yaml")
 	config, err := _config.Load(configFile)
@@ -107,6 +107,27 @@ func createTestConfig(t *testing.T) *_config.Config {
 	os.MkdirAll(config.GetBinPath(), 0755)
 
 	return config
+}
+
+// goExeName returns the file name a managed Go executable must have on the
+// current platform. On Windows exec.LookPath only resolves names carrying a
+// PATHEXT extension and validateInstallation looks for bin\go.exe, so hand
+// rolled fake toolchains have to use the suffix as well.
+func goExeName() string {
+	if runtime.GOOS == "windows" {
+		return "go.exe"
+	}
+	return "go"
+}
+
+// currentSymlinkPath mirrors CurrentGlobal, which appends ".exe" to
+// config.GetCurrentSymlink() on Windows before inspecting the link.
+func currentSymlinkPath(config *_config.Config) string {
+	symlinkPath := config.GetCurrentSymlink()
+	if runtime.GOOS == "windows" && !strings.HasSuffix(symlinkPath, ".exe") {
+		symlinkPath += ".exe"
+	}
+	return symlinkPath
 }
 
 func createInstalledVersion(t *testing.T, config *_config.Config, version string) string {
@@ -268,10 +289,11 @@ func TestManager_IsInstalled(t *testing.T) {
 
 func TestManager_ListInstalled(t *testing.T) {
 	tests := []struct {
-		name    string
-		setup   func(*_config.Config)
-		want    []string
-		wantErr bool
+		name          string
+		setup         func(*_config.Config)
+		want          []string
+		wantErr       bool
+		skipOnWindows bool
 	}{
 		{
 			name:    "no versions installed",
@@ -304,11 +326,17 @@ func TestManager_ListInstalled(t *testing.T) {
 		{
 			name: "install directory read error",
 			setup: func(c *_config.Config) {
-				// Create install dir without read permissions
-				os.Chmod(c.InstallDir, 0000)
+				// Put a regular file where the install directory belongs so
+				// os.ReadDir fails with ENOTDIR.
+				os.RemoveAll(c.InstallDir)
+				os.WriteFile(c.InstallDir, []byte("not a directory"), 0644)
 			},
 			want:    nil,
 			wantErr: true,
+			// Windows reports this as a not-exist error, which ListInstalled
+			// deliberately treats as "no versions yet" and returns nil for. There is
+			// no portable way to make os.ReadDir fail with anything else there.
+			skipOnWindows: true,
 		},
 		{
 			name: "mixed directories and files",
@@ -327,6 +355,9 @@ func TestManager_ListInstalled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.skipOnWindows && runtime.GOOS == "windows" {
+				t.Skip("os.ReadDir of a non-directory reports a not-exist error on Windows, which ListInstalled maps to an empty result")
+			}
 			config := createTestConfig(t)
 			manager := createTestManager(t, config)
 
@@ -335,11 +366,6 @@ func TestManager_ListInstalled(t *testing.T) {
 			os.MkdirAll(config.InstallDir, 0755)
 
 			tt.setup(config)
-
-			// Cleanup permissions after test
-			t.Cleanup(func() {
-				os.Chmod(config.InstallDir, 0755)
-			})
 
 			got, err := manager.ListInstalled()
 			if (err != nil) != tt.wantErr {
@@ -381,19 +407,19 @@ func TestManager_Current(t *testing.T) {
 			setup: func(c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-				// Create symlink
-				symlinkPath := c.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create a go binary that reports the correct version
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
+
+				// Create symlink; both the link and its target need the platform
+				// specific executable name for CurrentGlobal to accept them.
+				os.Symlink(goPath, currentSymlinkPath(c))
 
 				// Temporarily replace PATH to use the test go binary
-				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
 			want:    "1.20.0",
 			wantErr: false,
@@ -403,14 +429,15 @@ func TestManager_Current(t *testing.T) {
 			setup: func(c *_config.Config) {
 				version := "1.19.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create a go binary that reports the correct version
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.19.0 darwin/arm64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
 
 				// Temporarily replace PATH to use the test go binary
-				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 				// Write local version file
 				os.WriteFile(c.AutoSwitch.ProjectFile, []byte(version), 0644)
@@ -442,11 +469,13 @@ func TestManager_Current(t *testing.T) {
 		{
 			name: "session version not managed by govman",
 			setup: func(c *_config.Config) {
-				// Create a fake go that returns a version not in GOVMAN
+				// Create a fake go outside the managed install root. The name must
+				// carry the platform suffix or exec.LookPath would ignore it on
+				// Windows and silently fall through to the host toolchain.
 				binDir := filepath.Join(c.GetBinPath(), "systemgo")
 				os.MkdirAll(binDir, 0755)
-				goPath := filepath.Join(binDir, "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.99.0 darwin/arm64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go1.99.0 test/test'\n"), 0755)
 				os.Chmod(goPath, 0755)
 				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
@@ -502,25 +531,15 @@ func TestManager_CurrentGlobal(t *testing.T) {
 			setup: func(c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create go executable
-				goPath := filepath.Join(versionDir, "bin", "go")
-				if runtime.GOOS == "windows" {
-					goPath += ".exe"
-				}
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
 
 				// Create symlink
-				symlinkPath := c.GetCurrentSymlink()
-				if runtime.GOOS == "windows" {
-					symlinkPath += ".exe"
-				}
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				if runtime.GOOS == "windows" {
-					targetPath += ".exe"
-				}
-				os.Symlink(targetPath, symlinkPath)
+				os.Symlink(goPath, currentSymlinkPath(c))
 			},
 			want:    "1.20.0",
 			wantErr: false,
@@ -530,11 +549,10 @@ func TestManager_CurrentGlobal(t *testing.T) {
 			setup: func(c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				targetPath := filepath.Join(versionDir, "bin", "go")
+				targetPath := filepath.Join(versionDir, "bin", goExeName())
 
 				// Create symlink but don't create the version directory
-				symlinkPath := c.GetCurrentSymlink()
-				os.Symlink(targetPath, symlinkPath)
+				os.Symlink(targetPath, currentSymlinkPath(c))
 			},
 			want:    "",
 			wantErr: true,
@@ -542,9 +560,8 @@ func TestManager_CurrentGlobal(t *testing.T) {
 		{
 			name: "symlink is not a symlink",
 			setup: func(c *_config.Config) {
-				symlinkPath := c.GetCurrentSymlink()
 				// Create a regular file instead of a symlink
-				os.WriteFile(symlinkPath, []byte("not a symlink"), 0644)
+				os.WriteFile(currentSymlinkPath(c), []byte("not a symlink"), 0644)
 			},
 			want:    "",
 			wantErr: true,
@@ -553,8 +570,7 @@ func TestManager_CurrentGlobal(t *testing.T) {
 			name: "symlink target format invalid",
 			setup: func(c *_config.Config) {
 				// Create symlink pointing to invalid path
-				symlinkPath := c.GetCurrentSymlink()
-				os.Symlink("/invalid/path/go", symlinkPath)
+				os.Symlink("/invalid/path/go", currentSymlinkPath(c))
 			},
 			want:    "",
 			wantErr: true,
@@ -564,12 +580,11 @@ func TestManager_CurrentGlobal(t *testing.T) {
 			setup: func(c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create symlink but don't create the go executable
-				symlinkPath := c.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
+				os.Symlink(filepath.Join(binDir, goExeName()), currentSymlinkPath(c))
 			},
 			want:    "",
 			wantErr: true,
@@ -636,19 +651,20 @@ func TestManager_CurrentGlobal(t *testing.T) {
 
 func TestManager_Use(t *testing.T) {
 	tests := []struct {
-		name       string
-		version    string
-		setDefault bool
-		setLocal   bool
-		setup      func(*_config.Config)
-		wantErr    bool
+		name          string
+		version       string
+		setDefault    bool
+		setLocal      bool
+		setup         func(*testing.T, *_config.Config)
+		wantErr       bool
+		skipOnWindows bool
 	}{
 		{
 			name:       "use for session only",
 			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   false,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
@@ -658,7 +674,7 @@ func TestManager_Use(t *testing.T) {
 			version:    "1.20.0",
 			setDefault: true,
 			setLocal:   false,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
@@ -668,7 +684,7 @@ func TestManager_Use(t *testing.T) {
 			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   true,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 			},
 			wantErr: false,
@@ -678,7 +694,7 @@ func TestManager_Use(t *testing.T) {
 			version:    "1.19.0",
 			setDefault: false,
 			setLocal:   false,
-			setup:      func(c *_config.Config) {},
+			setup:      func(*testing.T, *_config.Config) {},
 			wantErr:    true,
 		},
 		{
@@ -686,7 +702,7 @@ func TestManager_Use(t *testing.T) {
 			version:    "default",
 			setDefault: false,
 			setLocal:   false,
-			setup:      func(c *_config.Config) {},
+			setup:      func(*testing.T, *_config.Config) {},
 			wantErr:    true,
 		},
 		{
@@ -694,12 +710,14 @@ func TestManager_Use(t *testing.T) {
 			version:    "1.20.0",
 			setDefault: false,
 			setLocal:   true,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 
-				// Make directory read-only to cause write failure
-				projectDir := filepath.Dir(c.ConfigPath())
-				os.Chmod(projectDir, 0444)
+				// Put a directory where the project file belongs so snapshotFile
+				// refuses to touch it. Unlike a read-only parent directory this
+				// fails on Windows too, where the read-only attribute is ignored
+				// for directories.
+				os.MkdirAll(c.AutoSwitch.ProjectFile, 0755)
 			},
 			wantErr: true,
 		},
@@ -708,26 +726,62 @@ func TestManager_Use(t *testing.T) {
 			version:    "1.20.0",
 			setDefault: true,
 			setLocal:   false,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 
-				// Make bin directory read-only to cause symlink creation failure
-				os.Chmod(c.GetBinPath(), 0444)
+				// Occupy the toolchain destination with a regular file so link
+				// activation is refused on every platform.
+				os.MkdirAll(c.GetBinPath(), 0755)
+				os.WriteFile(filepath.Join(c.GetBinPath(), goExeName()), []byte("user file"), 0644)
 			},
 			wantErr: true,
+		},
+		{
+			// Keeps validateInstallation's stat-failure branch covered. Only a
+			// read-only parent makes Lstat fail with EACCES, and Windows ignores
+			// the read-only attribute on directories.
+			name:       "set local version with unreadable version directory",
+			version:    "1.20.0",
+			setDefault: false,
+			setLocal:   true,
+			setup: func(t *testing.T, c *_config.Config) {
+				createInstalledVersion(t, c, "1.20.0")
+
+				versionsDir := filepath.Dir(c.ConfigPath())
+				os.Chmod(versionsDir, 0444)
+				t.Cleanup(func() { os.Chmod(versionsDir, 0755) })
+			},
+			wantErr:       true,
+			skipOnWindows: true,
+		},
+		{
+			// Keeps snapshotToolchainLinks' stat-failure branch covered: ReadDir
+			// still succeeds on a 0444 directory but Lstat of each entry fails.
+			name:       "set as default with unreadable bin directory",
+			version:    "1.20.0",
+			setDefault: true,
+			setLocal:   false,
+			setup: func(t *testing.T, c *_config.Config) {
+				createInstalledVersion(t, c, "1.20.0")
+
+				binPath := c.GetBinPath()
+				os.Chmod(binPath, 0444)
+				t.Cleanup(func() { os.Chmod(binPath, 0755) })
+			},
+			wantErr:       true,
+			skipOnWindows: true,
 		},
 		{
 			name:       "use default that is installed",
 			version:    "default",
 			setDefault: false,
 			setLocal:   false,
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				c.DefaultVersion = "1.20.0"
 				goPath := createInstalledVersion(t, c, "1.20.0")
 
 				// Create symlink so CurrentGlobal() works
-				symlinkPath := c.GetCurrentSymlink()
-				os.Symlink(goPath, symlinkPath)
+				os.Symlink(goPath, currentSymlinkPath(c))
 			},
 			wantErr: false,
 		},
@@ -735,19 +789,16 @@ func TestManager_Use(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.skipOnWindows && runtime.GOOS == "windows" {
+				t.Skip("os.Chmod only toggles FILE_ATTRIBUTE_READONLY, which Windows ignores on directories")
+			}
 			config := createTestConfig(t)
 			manager := createTestManager(t, config)
 
 			// Clean up
 			os.Remove(config.AutoSwitch.ProjectFile)
 
-			tt.setup(config)
-
-			// Cleanup permissions after test
-			t.Cleanup(func() {
-				os.Chmod(filepath.Dir(config.ConfigPath()), 0755)
-				os.Chmod(config.GetBinPath(), 0755)
-			})
+			tt.setup(t, config)
 
 			err := manager.Use(tt.version, tt.setDefault, tt.setLocal)
 			if (err != nil) != tt.wantErr {
@@ -850,20 +901,21 @@ func TestManager_Uninstall(t *testing.T) {
 			name:    "uninstall currently active version",
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
-				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				version := "1.20.0"
+				versionDir := c.GetVersionDir(version)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
+
+				// Create go binary with the platform specific name so that
+				// exec.LookPath and validateInstallation both accept it
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
 
 				// Create symlink to make it current
-				symlinkPath := c.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
-
-				// Create go binary
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+				os.Symlink(goPath, currentSymlinkPath(c))
 
 				// Set as current by mocking go command path
-				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
 			wantErr: true,
 		},
@@ -871,6 +923,8 @@ func TestManager_Uninstall(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalPath := os.Getenv("PATH")
+			defer os.Setenv("PATH", originalPath)
 			config := createTestConfig(t)
 			manager := createTestManager(t, config)
 
@@ -906,9 +960,12 @@ func TestManager_Clean(t *testing.T) {
 		{
 			name: "clean cache with recreation failure",
 			setup: func(c *_config.Config) {
-				// Make parent directory of cache read-only
-				parentDir := filepath.Dir(c.CacheDir)
-				os.Chmod(parentDir, 0444)
+				// Route the cache directory through a regular file. Removing and
+				// recreating it then fails with ENOTDIR on every platform, whereas
+				// a read-only parent directory is not enforced on Windows.
+				blocker := filepath.Join(filepath.Dir(c.CacheDir), "cache-blocker")
+				os.WriteFile(blocker, []byte("not a directory"), 0644)
+				c.CacheDir = filepath.Join(blocker, "cache")
 			},
 			wantErr: true,
 		},
@@ -933,12 +990,6 @@ func TestManager_Clean(t *testing.T) {
 			os.MkdirAll(config.CacheDir, 0755)
 
 			tt.setup(config)
-
-			// Cleanup permissions after test
-			t.Cleanup(func() {
-				os.Chmod(parentDir, 0755)
-				os.Chmod(config.CacheDir, 0755)
-			})
 
 			err := manager.Clean()
 			if (err != nil) != tt.wantErr {
@@ -1014,9 +1065,13 @@ func TestManager_setLocalVersion(t *testing.T) {
 			name:    "set local version with write permission failure",
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
-				// Make directory read-only
-				projectDir := filepath.Dir(c.ConfigPath())
-				os.Chmod(projectDir, 0444)
+				// Put a regular file where the project file's parent belongs so
+				// writeFileAtomic's os.MkdirAll fails with ENOTDIR. A read-only
+				// parent would not fail on Windows, which ignores the read-only
+				// attribute on directories.
+				blocker := filepath.Join(filepath.Dir(c.ConfigPath()), "blocker")
+				os.WriteFile(blocker, []byte("not a directory"), 0644)
+				c.AutoSwitch.ProjectFile = filepath.Join(blocker, ".govman-goversion")
 			},
 			wantErr: true,
 		},
@@ -1028,11 +1083,6 @@ func TestManager_setLocalVersion(t *testing.T) {
 			manager := createTestManager(t, config)
 
 			tt.setup(config)
-
-			// Cleanup permissions after test
-			t.Cleanup(func() {
-				os.Chmod(filepath.Dir(config.ConfigPath()), 0755)
-			})
 
 			err := manager.setLocalVersion(tt.version)
 			if (err != nil) != tt.wantErr {
@@ -1124,14 +1174,16 @@ func TestManager_getLocalVersion(t *testing.T) {
 
 func TestManager_CurrentActivationMethod(t *testing.T) {
 	tests := []struct {
-		name    string
-		setup   func(*_config.Config)
+		name string
+		// setup takes the subtest's *testing.T so it can skip or fail against
+		// the right test rather than the parent.
+		setup   func(*testing.T, *_config.Config)
 		want    string
 		wantErr bool
 	}{
 		{
 			name: "no active version",
-			setup: func(c *_config.Config) {
+			setup: func(_ *testing.T, c *_config.Config) {
 				// Set PATH to non-existent so session check fails
 				os.Setenv("PATH", "/nonexistent/path")
 			},
@@ -1140,7 +1192,7 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 		},
 		{
 			name: "local version set",
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				version := "1.20.0"
 				createInstalledVersion(t, c, version)
 				// Write local version file
@@ -1153,39 +1205,44 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 		},
 		{
 			name: "system default active",
-			setup: func(c *_config.Config) {
+			setup: func(t *testing.T, c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-
-				// Create symlink
-				symlinkPath := c.GetCurrentSymlink()
-				targetPath := filepath.Join(versionDir, "bin", "go")
-				os.Symlink(targetPath, symlinkPath)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create go binary
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
+
+				// Create symlink; CurrentGlobal reads it under the platform
+				// specific name and compares it against bin/go(.exe). Without the
+				// link the session branch wins and the assertion below is wrong,
+				// so an account that may not create symlinks skips instead.
+				if err := os.Symlink(goPath, currentSymlinkPath(c)); err != nil {
+					t.Skipf("symlink creation unsupported for this account: %v", err)
+				}
 
 				// Temporarily replace PATH to make this version active
-				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
 			want:    "system-default",
 			wantErr: false,
 		},
 		{
 			name: "session-only version active",
-			setup: func(c *_config.Config) {
+			setup: func(_ *testing.T, c *_config.Config) {
 				version := "1.20.0"
 				versionDir := c.GetVersionDir(version)
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
 
 				// Create go binary
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go"+version+" test/test'\n"), 0755)
 
 				// Set PATH to include this version but don't create symlink
-				os.Setenv("PATH", filepath.Join(versionDir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+				os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			},
 			want:    "session-only",
 			wantErr: false,
@@ -1194,6 +1251,8 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalPath := os.Getenv("PATH")
+			defer os.Setenv("PATH", originalPath)
 			config := createTestConfig(t)
 			manager := createTestManager(t, config)
 
@@ -1204,7 +1263,7 @@ func TestManager_CurrentActivationMethod(t *testing.T) {
 			os.MkdirAll(config.InstallDir, 0755)
 			os.MkdirAll(config.GetBinPath(), 0755)
 
-			tt.setup(config)
+			tt.setup(t, config)
 
 			got := manager.CurrentActivationMethod()
 			if got != tt.want {
@@ -1232,10 +1291,12 @@ func TestManager_Info(t *testing.T) {
 			version: "1.20.0",
 			setup: func(c *_config.Config) {
 				versionDir := c.GetVersionDir("1.20.0")
-				os.MkdirAll(filepath.Join(versionDir, "bin"), 0755)
-				// Create a mock go binary
-				goPath := filepath.Join(versionDir, "bin", "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version go1.20.0 darwin/arm64'"), 0755)
+				binDir := filepath.Join(versionDir, "bin")
+				os.MkdirAll(binDir, 0755)
+				// Create a mock go binary; validateInstallation looks for
+				// bin\go.exe on Windows
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version go1.20.0 test/test'\n"), 0755)
 			},
 			wantErr: false,
 		},
@@ -1524,9 +1585,11 @@ func TestManager_createSymlink(t *testing.T) {
 			setup: func(c *_config.Config) {
 				createInstalledVersion(t, c, "1.20.0")
 
-				// Make parent directory read-only
-				parentDir := filepath.Dir(c.GetBinPath())
-				os.Chmod(parentDir, 0444)
+				// Put a regular file where the bin directory belongs so
+				// os.MkdirAll fails with ENOTDIR on every platform. A read-only
+				// parent directory would not stop mkdir on Windows.
+				os.RemoveAll(c.GetBinPath())
+				os.WriteFile(c.GetBinPath(), []byte("not a directory"), 0644)
 			},
 			wantErr: true,
 		},
@@ -1633,11 +1696,12 @@ func TestManager_getCurrentSessionVersion(t *testing.T) {
 		{
 			name: "get current session version with invalid output format",
 			setup: func(c *_config.Config) {
-				// Create a fake go binary that outputs invalid format
+				// Create a fake go binary outside the managed install root. The
+				// platform suffix is required or exec.LookPath ignores it on Windows.
 				binDir := filepath.Join(c.GetBinPath(), "fakego")
 				os.MkdirAll(binDir, 0755)
-				goPath := filepath.Join(binDir, "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'invalid output'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'invalid output'\n"), 0755)
 				os.Chmod(goPath, 0755)
 				originalPath := os.Getenv("PATH")
 				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
@@ -1648,11 +1712,12 @@ func TestManager_getCurrentSessionVersion(t *testing.T) {
 		{
 			name: "get current session version with empty version string",
 			setup: func(c *_config.Config) {
-				// Create a fake go binary that outputs version without 'go' prefix
+				// Create a fake go binary outside the managed install root that
+				// reports no version, again with the platform specific name.
 				binDir := filepath.Join(c.GetBinPath(), "fakego")
 				os.MkdirAll(binDir, 0755)
-				goPath := filepath.Join(binDir, "go")
-				os.WriteFile(goPath, []byte("#!/bin/bash\necho 'go version  linux/amd64'"), 0755)
+				goPath := filepath.Join(binDir, goExeName())
+				os.WriteFile(goPath, []byte("#!/bin/sh\necho 'go version  test/test'\n"), 0755)
 				os.Chmod(goPath, 0755)
 				originalPath := os.Getenv("PATH")
 				os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
@@ -1841,12 +1906,16 @@ func TestManagerLocalActivationRollsBackOnShellFailure(t *testing.T) {
 	if err != nil || string(data) != "1.24.1\n" {
 		t.Fatalf("local file was not restored: data=%q err=%v", data, err)
 	}
-	info, err := os.Stat(config.AutoSwitch.ProjectFile)
-	if err != nil {
-		t.Fatalf("failed to stat restored local file: %v", err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("local file mode was not preserved: mode=%v", info.Mode().Perm())
+	// Windows only reports 0444 or 0666 from os.Stat (FILE_ATTRIBUTE_READONLY),
+	// so 0600 is unreachable there.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(config.AutoSwitch.ProjectFile)
+		if err != nil {
+			t.Fatalf("failed to stat restored local file: %v", err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("local file mode was not preserved: mode=%v", info.Mode().Perm())
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -198,20 +199,24 @@ func TestFileExists(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Create the fixtures inside a temp dir instead of the package
+			// source directory (the working directory during `go test`), so the
+			// suite never writes into the checkout and works read-only.
+			path := filepath.Join(t.TempDir(), tc.filename)
+
 			var err error
-			if tc.expected || (tc.isDir && tc.filename == "test_dir") {
+			if tc.expected || tc.isDir {
 				if tc.isDir {
-					err = os.Mkdir(tc.filename, 0755)
+					err = os.Mkdir(path, 0755)
 				} else {
-					err = os.WriteFile(tc.filename, []byte("test"), 0644)
+					err = os.WriteFile(path, []byte("test"), 0644)
 				}
 				if err != nil {
 					t.Fatalf("Failed to create test file/dir: %v", err)
 				}
-				defer os.Remove(tc.filename)
 			}
 
-			result := fileExists(tc.filename)
+			result := fileExists(path)
 			if result != tc.expected {
 				t.Errorf("Expected %v, got %v", tc.expected, result)
 			}
@@ -249,12 +254,14 @@ func TestBashShell(t *testing.T) {
 	// Test ConfigFile
 	originalUserHomeDir := userHomeDir
 	defer func() { userHomeDir = originalUserHomeDir }()
+	testHome := filepath.FromSlash("/test/home")
 	userHomeDir = func() (string, error) {
-		return "/test/home", nil
+		return testHome, nil
 	}
 
-	// Test with ~/.bashrc existing
-	bashrcPath := "/test/home/.bashrc"
+	// Test with ~/.bashrc existing. ConfigFile builds this with filepath.Join, so
+	// the expectation has to use the platform separator rather than a literal "/".
+	bashrcPath := filepath.Join(testHome, ".bashrc")
 	if shell.ConfigFile() != bashrcPath {
 		t.Errorf("Expected %s, got %s", bashrcPath, shell.ConfigFile())
 	}
@@ -693,11 +700,17 @@ func TestInitializeShell(t *testing.T) {
 				shell = &BashShell{} // For invalid shell test, provide a valid shell to avoid nil pointer
 			}
 
-			// Use a temporary directory for config files to avoid conflicts
+			// Use a temporary directory for config files to avoid conflicts.
+			// Overriding HOME alone is not enough: userHomeDir is os.UserHomeDir,
+			// which reads %USERPROFILE% on Windows, so every subtest would share
+			// the runner's real profile and the second PowerShell subtest would
+			// fail with "govman is already configured".
 			tempDir := t.TempDir()
-			originalHome := os.Getenv("HOME")
-			defer func() { os.Setenv("HOME", originalHome) }()
-			os.Setenv("HOME", tempDir)
+			originalUserHomeDir := userHomeDir
+			t.Cleanup(func() { userHomeDir = originalUserHomeDir })
+			userHomeDir = func() (string, error) { return tempDir, nil }
+			t.Setenv("HOME", tempDir)
+			t.Setenv("USERPROFILE", tempDir)
 
 			err := InitializeShell(shell, tempDir, false)
 
@@ -1040,6 +1053,10 @@ func TestDetectWithEmptyShell(t *testing.T) {
 }
 
 func TestInitializeUnixShellReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode 0000 only sets FILE_ATTRIBUTE_READONLY on Windows; reads still succeed so os.ReadFile cannot return permission denied")
+	}
+
 	shell := &BashShell{}
 	tempDir := t.TempDir()
 
@@ -1059,7 +1076,7 @@ func TestInitializeUnixShellReadError(t *testing.T) {
 	// Try to initialize - should fail due to permission error
 	err := initializeUnixShell(shell, tempDir, false)
 	if err == nil {
-		t.Error("Expected error due to permission denied reading config file")
+		t.Fatal("Expected error due to permission denied reading config file")
 	}
 
 	if !strings.Contains(err.Error(), "permission denied") {
@@ -1068,6 +1085,10 @@ func TestInitializeUnixShellReadError(t *testing.T) {
 }
 
 func TestInitializePowerShellReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode 0000 only sets FILE_ATTRIBUTE_READONLY on Windows; the profile stays readable so os.ReadFile cannot fail")
+	}
+
 	shell := &PowerShell{}
 	tempDir := t.TempDir()
 
@@ -1101,7 +1122,7 @@ func TestInitializePowerShellReadError(t *testing.T) {
 	// Try to initialize - should fail due to permission error
 	err := initializePowerShell(shell, tempDir, false)
 	if err == nil {
-		t.Error("Expected error due to permission denied reading profile")
+		t.Fatal("Expected error due to permission denied reading profile")
 	}
 
 	if !strings.Contains(err.Error(), "permission denied") {
@@ -2032,12 +2053,16 @@ func TestShellConfigMarkerSafetyAndAtomicProperties(t *testing.T) {
 		if strings.Contains(strings.ReplaceAll(string(data), "\r\n", ""), "\n") {
 			t.Fatalf("mixed newline style in PowerShell profile")
 		}
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Fatalf("profile mode = %v", info.Mode().Perm())
+		// Windows synthesizes the mode from FILE_ATTRIBUTE_READONLY and can only
+		// report 0444 or 0666 (os/types_windows.go), so 0600 is unreachable there.
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0600 {
+				t.Fatalf("profile mode = %v", info.Mode().Perm())
+			}
 		}
 		backups, err := filepath.Glob(filepath.Join(directory, ".govman-backup-*"))
 		if err != nil || len(backups) != 0 {

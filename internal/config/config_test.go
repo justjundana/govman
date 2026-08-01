@@ -9,32 +9,75 @@ import (
 	"time"
 )
 
-// setTestHome sets HOME (or USERPROFILE on Windows) to tempHome and returns a cleanup function.
-func setTestHome(t *testing.T, tempHome string) {
-	t.Helper()
-	oldHome := os.Getenv("HOME")
-	if runtime.GOOS == "windows" {
-		os.Setenv("USERPROFILE", tempHome)
-		t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-	} else {
-		os.Setenv("HOME", tempHome)
-		t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+func setTestEnv(key, value string) func() {
+	oldValue, existed := os.LookupEnv(key)
+	_ = os.Setenv(key, value)
+	return func() {
+		if existed {
+			_ = os.Setenv(key, oldValue)
+			return
+		}
+		_ = os.Unsetenv(key)
 	}
 }
 
-// makeGovmanDirReadOnly creates a read-only .govman directory under tempHome.
-func makeGovmanDirReadOnly(t *testing.T, tempHome string) {
+func unsetTestHome() func() {
+	restoreHome := setTestEnv("HOME", "")
+	restoreUserProfile := setTestEnv("USERPROFILE", "")
+	_ = os.Unsetenv("HOME")
+	_ = os.Unsetenv("USERPROFILE")
+	return func() {
+		restoreUserProfile()
+		restoreHome()
+	}
+}
+
+// setTestHomeEnv points both home-directory environment variables at tempHome and
+// returns an exact restore func. getHomeDir reads USERPROFILE on Windows and HOME
+// everywhere else, so setting only one of them would leave the real user profile
+// in play on the other platform.
+func setTestHomeEnv(tempHome string) func() {
+	restoreHome := setTestEnv("HOME", tempHome)
+	restoreUserProfile := setTestEnv("USERPROFILE", tempHome)
+	return func() {
+		restoreUserProfile()
+		restoreHome()
+	}
+}
+
+// setTestHome redirects the home directory to tempHome for the duration of the test.
+func setTestHome(t *testing.T, tempHome string) {
 	t.Helper()
-	govmanDir := filepath.Join(tempHome, ".govman")
-	if err := os.MkdirAll(govmanDir, 0755); err != nil {
-		t.Fatalf("Failed to create govman dir: %v", err)
+	t.Cleanup(setTestHomeEnv(tempHome))
+}
+
+// blockGovmanConfigDir plants a regular file where <tempHome>/.govman has to be a
+// directory, so Load cannot produce a config file. This replaces a chmod 0444 on
+// that directory: on Windows os.Chmod only toggles FILE_ATTRIBUTE_READONLY, which
+// is ignored for directories, so a read-only .govman would still accept MkdirAll
+// and CreateTemp and Load would succeed.
+//
+// On linux/darwin os.Lstat(<tempHome>/.govman/config.yaml) fails with ENOTDIR,
+// which is not os.IsNotExist, so Load reports "failed to inspect config file".
+// On Windows the same Lstat reports ERROR_PATH_NOT_FOUND, which maps to
+// fs.ErrNotExist, so Load falls through to Save() where os.MkdirAll stats the
+// regular file, sees !IsDir and returns ENOTDIR, and Load reports "failed to
+// create config file with default values". Both are errors, on every platform.
+func blockGovmanConfigDir(t *testing.T, tempHome string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(tempHome, ".govman"), []byte("not a directory\n"), 0600); err != nil {
+		t.Fatalf("Failed to plant blocking file: %v", err)
 	}
-	if err := os.Chmod(govmanDir, 0444); err != nil {
-		t.Fatalf("Failed to make govman dir read-only: %v", err)
+}
+
+// occupyGovmanConfigPath creates a directory at the exact path Load expects the
+// config file to be. os.Lstat then succeeds while reporting a non-regular file,
+// which Load rejects identically on linux, darwin and windows.
+func occupyGovmanConfigPath(t *testing.T, tempHome string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(tempHome, ".govman", "config.yaml"), 0755); err != nil {
+		t.Fatalf("Failed to create directory at config path: %v", err)
 	}
-	t.Cleanup(func() {
-		os.Chmod(govmanDir, 0755)
-	})
 }
 
 func TestLoad(t *testing.T) {
@@ -88,26 +131,17 @@ default_version: "1.21.0"`
 		{
 			name: "Home directory not accessible",
 			setup: func(t *testing.T) string {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				t.Cleanup(func() {
-					os.Setenv("HOME", oldHome)
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				})
+				t.Cleanup(unsetTestHome())
 				return ""
 			},
 			expectError: true,
 		},
 		{
-			name: "Config save fails during initial creation",
+			name: "Config directory path occupied by a regular file",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
 				setTestHome(t, tempHome)
-				makeGovmanDirReadOnly(t, tempHome)
+				blockGovmanConfigDir(t, tempHome)
 				return ""
 			},
 			expectError: true,
@@ -121,11 +155,11 @@ default_version: "1.21.0"`
 			expectError: false,
 		},
 		{
-			name: "Home directory accessible but config creation fails",
+			name: "Config path occupied by a directory",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
 				setTestHome(t, tempHome)
-				makeGovmanDirReadOnly(t, tempHome)
+				occupyGovmanConfigPath(t, tempHome)
 				return ""
 			},
 			expectError: true,
@@ -174,14 +208,7 @@ default_version: "1.21.0"`
 func TestSetDefaults(t *testing.T) {
 	// Set up fake home directory
 	tempHome := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if runtime.GOOS == "windows" {
-		os.Setenv("USERPROFILE", tempHome)
-		defer os.Setenv("USERPROFILE", oldHome)
-	} else {
-		os.Setenv("HOME", tempHome)
-		defer os.Setenv("HOME", oldHome)
-	}
+	defer setTestHomeEnv(tempHome)()
 
 	cfg := &Config{}
 	cfg.setDefaults()
@@ -272,18 +299,7 @@ func TestExpandPaths(t *testing.T) {
 			cacheDir:    "~/test/cache",
 			expectError: true,
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 		},
 	}
@@ -326,10 +342,12 @@ func TestExpandPaths(t *testing.T) {
 
 func TestCreateDirectories(t *testing.T) {
 	testCases := []struct {
-		name        string
-		installDir  string
-		cacheDir    string
-		expectError bool
+		name         string
+		installDir   string
+		cacheDir     string
+		blockInstall bool
+		blockCache   bool
+		expectError  bool
 	}{
 		{
 			name:        "Valid directories",
@@ -338,15 +356,17 @@ func TestCreateDirectories(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Install directory creation fails",
-			installDir:  "/invalid/path/that/does/not/exist/install",
-			cacheDir:    "cache",
-			expectError: true,
+			name:         "Install directory creation fails",
+			installDir:   "install",
+			cacheDir:     "cache",
+			blockInstall: true,
+			expectError:  true,
 		},
 		{
 			name:        "Cache directory creation fails",
 			installDir:  "install",
-			cacheDir:    "/invalid/path/that/does/not/exist/cache",
+			cacheDir:    "cache",
+			blockCache:  true,
 			expectError: true,
 		},
 	}
@@ -360,12 +380,22 @@ func TestCreateDirectories(t *testing.T) {
 				CacheDir:   filepath.Join(tempDir, tc.cacheDir),
 			}
 
-			// For error cases, use absolute paths that will fail
-			if tc.expectError && strings.Contains(tc.installDir, "invalid") {
-				cfg.InstallDir = tc.installDir
-			}
-			if tc.expectError && strings.Contains(tc.cacheDir, "invalid") {
-				cfg.CacheDir = tc.cacheDir
+			// For error cases, route the directory through a regular file so that
+			// os.MkdirAll fails with ENOTDIR on linux, darwin and windows alike.
+			// A hardcoded POSIX path such as "/invalid/path/..." is not portable:
+			// on Windows it resolves against the current drive, where MkdirAll can
+			// legitimately succeed.
+			if tc.blockInstall || tc.blockCache {
+				blocker := filepath.Join(tempDir, "blocker")
+				if err := os.WriteFile(blocker, []byte("not a directory\n"), 0600); err != nil {
+					t.Fatalf("Failed to create blocker file: %v", err)
+				}
+				if tc.blockInstall {
+					cfg.InstallDir = filepath.Join(blocker, tc.installDir)
+				}
+				if tc.blockCache {
+					cfg.CacheDir = filepath.Join(blocker, tc.cacheDir)
+				}
 			}
 
 			err := cfg.createDirectories()
@@ -658,46 +688,21 @@ func TestGetBinPath(t *testing.T) {
 		{
 			name: "Valid HOME on Unix",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS != "windows" {
-					os.Setenv("HOME", tempHome)
-					return func() { os.Setenv("HOME", oldHome) }
-				}
-				os.Setenv("USERPROFILE", tempHome)
-				return func() { os.Setenv("USERPROFILE", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 			expectError: false,
 		},
 		{
 			name: "Valid USERPROFILE on Windows",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("USERPROFILE")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					return func() { os.Setenv("USERPROFILE", oldHome) }
-				}
-				os.Setenv("HOME", tempHome)
-				return func() { os.Setenv("HOME", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 			expectError: false,
 		},
 		{
 			name: "Fallback when home directory not found",
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 			expectError: false, // GetBinPath doesn't return error, it falls back to "."
 		},
@@ -739,44 +744,19 @@ func TestGetCurrentSymlink(t *testing.T) {
 		{
 			name: "Valid HOME on Unix",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS != "windows" {
-					os.Setenv("HOME", tempHome)
-					return func() { os.Setenv("HOME", oldHome) }
-				}
-				os.Setenv("USERPROFILE", tempHome)
-				return func() { os.Setenv("USERPROFILE", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 		},
 		{
 			name: "Valid USERPROFILE on Windows",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("USERPROFILE")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					return func() { os.Setenv("USERPROFILE", oldHome) }
-				}
-				os.Setenv("HOME", tempHome)
-				return func() { os.Setenv("HOME", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 		},
 		{
 			name: "Fallback when home directory not found",
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 		},
 	}
