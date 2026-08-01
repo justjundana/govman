@@ -405,15 +405,14 @@ View workflows in `.github/workflows/`.
 
 ## Release Process
 
-1. Update version in `internal/version/version.go`
-2. Update `CHANGELOG.md`
-3. Create and push tag:
+1. Update `CHANGELOG.md` and release notes.
+2. Run the complete release gates from a clean worktree.
+3. Create and push an annotated SemVer tag:
    ```bash
    git tag -a v1.0.0 -m "Release v1.0.0"
    git push origin v1.0.0
    ```
-4. GitHub Actions builds and uploads binaries
-5. Create GitHub Release with notes
+4. GitHub Actions validates and publishes the exact raw binaries plus `checksums.txt` only if every required job succeeds.
 
 ## Getting Help
 

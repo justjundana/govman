@@ -15,7 +15,7 @@ You have Go installed system-wide (e.g., via apt, brew, or manual installation).
 go version
 
 # 2. Install govman
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # 3. Initialize shell integration
 govman init
@@ -83,7 +83,7 @@ gvm list
 gvm listdefault
 
 # 3. Install govman
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # 4. Initialize
 govman init --force  # --force to override gvm's shell config
@@ -141,7 +141,7 @@ goenv versions
 goenv global
 
 # 3. Install govman
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # 4. Initialize (will update shell config)
 govman init --force
@@ -199,7 +199,7 @@ asdf list golang
 asdf current golang
 
 # 3. Install govman
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # 4. Initialize
 govman init --force
@@ -238,7 +238,7 @@ Using Docker containers with different Go versions.
 
 ```bash
 # 1. Install govman
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # 2. Initialize
 govman init
@@ -268,11 +268,11 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y curl tar gzip
 
 # Install govman
-RUN curl -sSL https://install.script | bash
+RUN curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # Install Go version
 RUN ~/.govman/bin/govman install 1.25.1
-RUN ~/.govman/bin/govman use 1.25.1
+RUN ~/.govman/bin/govman use 1.25.1 --default
 
 ENV PATH="/root/.govman/bin:$PATH"
 ```
@@ -384,7 +384,7 @@ If migration doesn't work:
 
 ```bash
 # 1. Remove govman
-curl -sSL https://uninstall.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/uninstall.sh | bash
 
 # 2. Reinstall old version manager
 # (Follow their installation instructions)

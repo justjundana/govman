@@ -1,127 +1,62 @@
 # Security
 
-Security policies and best practices for govman.
+## Reporting a vulnerability
 
-## Reporting Security Issues
+Do not open a public issue for an undisclosed vulnerability. Use the repository's [private security advisory form](https://github.com/justjundana/govman/security/advisories/new).
 
-> [!IMPORTANT]
-> **DO NOT** open public GitHub issues for security vulnerabilities.
+Include the affected version, platform, reproduction steps, impact, and any proposed mitigation. Response and remediation time depend on severity and maintainer availability; this project does not promise a fixed response SLA.
 
-Instead, report security issues privately to:
-- **Email**: -
-- **GitHub Security Advisories**: Use the "Security" tab on the official [GitHub repository](https://github.com/justjundana/govman/security/advisories).
+## Integrity controls
 
-Expected response time:
-- Initial response: within 48 hours
-- Status update: within 7 days
-- Fix timeline: depends on severity
+### Go toolchains
 
----
+govman obtains archive filename, size, platform, and SHA-256 metadata from the configured Go releases API. The archive is streamed into a unique cache partial, its final size is checked, and its SHA-256 must match before extraction.
 
-## Security Features
+### govman installers and self-update
 
-### Download Verification
+Release automation produces seven raw platform binaries and `checksums.txt`. Standalone installers and `govman selfupdate` select an exact asset name and require a unique matching SHA-256 entry. A downloaded binary is size-bounded and must report the requested version before replacement.
 
-All Go downloads are verified using SHA-256 checksums fetched from official sources.
+On Unix-like systems, replacement keeps a backup until post-install validation succeeds and rolls back on failure. Windows schedules a detached helper that waits for the running process to exit, replaces the locked executable, validates it, and restores the previous binary on failure.
 
-1. Fetches official checksums from `go.dev/dl/` via HTTPS.
-2. Computes the SHA-256 hash of the downloaded archive.
-3. Compares the hash with the official checksum.
-4. **Hard Fail**: If a mismatch is detected, govman wipes the file and rejects the installation.
+Configured endpoints are trusted inputs. HTTPS is required for normal self-update assets; loopback HTTP is accepted only to support local testing. govman does not implement certificate pinning, signatures, or SLSA provenance verification.
 
-### Path Validation
+## Filesystem controls
 
-govman validates all user-provided configuration paths to prevent common attacks:
+- Concrete version strings are parsed before a managed path is formed.
+- Joined version paths are checked to remain under `install_dir`.
+- Archive paths reject absolute, traversal, backslash traversal, volume/UNC, NUL, symlink, and hard-link entries.
+- Extraction uses `os.Root`, bounded entry/file/total limits, sanitized modes, and a staging directory.
+- Existing regular files are not replaced by symlink activation.
+- Config and shell integration refuse symlink/non-regular destinations.
+- Config, local-version, shell integration, install, and activation mutations use same-directory temp files and rollback where needed.
 
-- **Directory Traversal**: Strictly rejects any paths containing `..` or illegal characters.
-- **Absolute Path Resolution**: Resolves all paths relative to `$HOME` or `%USERPROFILE%`.
-- **Permission Enforcement**: Verifies write access before attempting to create directories or move binaries.
+## Shell and PATH controls
 
-### Binary Verification (Self-Update)
+Generated wrappers accept only one validated PATH command from a successful `use` or `refresh` invocation. Shell blocks use exact markers and transactional replacement. Unix uninstallation refuses malformed or duplicate marker blocks. Windows installers and uninstallers normalize PATH entries and avoid substring deletion or delayed-expansion corruption.
 
-For `govman selfupdate`:
-- **HTTPS Only**: All update metadata and binary downloads use TLS 1.2+.
-- **Official Sources**: Downloads are restricted to official GitHub Release assets.
-- **Rollback Mechanism**: govman creates a `.bak` of the current binary before replacement. If the new binary fails to run (e.g., checksum error or execution failure), it automatically restores the previous version.
+Shell integration sets `GOTOOLCHAIN=local` so an activated Go command does not automatically fetch another toolchain through Go's toolchain selection mechanism.
 
-### Zero Sudo Policy
+## Privilege and storage scope
 
-govman is designed to run entirely in userspace. 
-- **Linux/macOS**: No `sudo` required.
-- **Windows**: No Administrator rights required.
-- 100% of data is stored in `~/.govman` or a user-defined directory.
+The default install is user-scoped under `~/.govman` or `%USERPROFILE%\.govman`. Custom `install_dir`, `cache_dir`, `--config`, and shell profile locations may place data elsewhere; govman uses the invoking user's permissions and does not sandbox those explicit choices.
 
----
+No administrator privilege is required for the default layout. Some Windows symlink operations or custom protected paths may be restricted by operating-system policy.
 
-## Technical Security Details
+## Network and privacy
 
-### GOTOOLCHAIN Strategy
+There is no telemetry. Network access occurs when release metadata or archives are needed, and during explicit self-update checks. Standard proxy environment variables are honored by Go's HTTP transport.
 
-> [!TIP]
-> To prevent unexpected toolchain updates that could introduce unverified binaries, govman sets `export GOTOOLCHAIN=local` in organized shell integration. 
+govman does not provide a supported offline or air-gapped install mode. A cache hit can avoid transferring an existing archive, but metadata resolution may still require the configured API and cache files must exactly match expected release metadata.
 
-This ensures that the Go compiler only uses the specific version you activated through govman, rather than attempting to download a new toolchain automatically via the built-in Go 1.21+ toolchain management.
+## Reserved configuration
 
-### Supply Chain Security
+`mirror.*`, `download.parallel`, `download.max_connections`, `shell.auto_detect`, and `shell.completion` remain in the schema only for compatibility in v1.3.4. They do not provide mirror routing, parallel transfer, detection policy, or completion generation. Use explicitly controlled `go_releases.*` endpoints when organizational policy requires an internal source.
 
-We prioritize the integrity of the govman release process:
-- **SLSA Compliance**: We follow SLSA Level 1 guidelines for build provenance.
-- **Dependency Pinning**: All dependencies are locked to specific versions in `go.mod` and audited regularly.
-- **Minimal Surface**: govman minimizes third-party dependency usage to reduce the risk of transitive vulnerability exploits.
+## Recommended practice
 
----
-
-## Threat Model
-
-| Threat | govman Protection |
-| :--- | :--- |
-| **Malicious Archive** | Mandatory SHA-256 verification against official go.dev records. |
-| **MITM Attack** | Certificate pinning and TLS mandatory for all API/Download requests. |
-| **Path Traversal** | Sanitization of all file paths and expansion logic. |
-| **Shell Injection** | Shell-specific escaping in `govman init` to prevent command execution. |
-| **Configuration Hijack** | Path validation prevents overriding system files (e.g., `/etc/shadow`). |
-
----
-
-## Usage in Production & CI/CD
-
-### For Enterprise Teams
-
-1. **Local Mirror**: In restricted networks, use the `mirror` configuration key to point to an internal Artifactory or Go proxy.
-2. **Review Init Code**: Always review the output of `govman init` before applying it to production boxes.
-3. **Dedicated User**: For servers, run govman under a service-specific user with limited filesystem scope.
-
-### For Air-Gapped Environments
-
-govman supports air-gapped workflows through its cache layer:
-1. Download required Go versions to `~/.govman/cache` on a machine with internet access.
-2. Transfer the entire `.govman/cache` folder to the target machine.
-3. Run `govman install <version>`. govman will prioritize the local cache and proceed with uninstallation/activation without network requests.
-
----
-
-## Permissions Checklist
-
-| Path | Purpose | Recommended Mode |
-| :--- | :--- | :--- |
-| `~/.govman/bin` | Execute binaries | `755` (rwxr-xr-x) |
-| `~/.govman/config.yaml` | Application settings | `600` (rw-------) |
-| `~/.govman/versions` | Go SDKs | `755` (rwxr-xr-x) |
-| `~/.govman/cache` | Temporaries | `700` (rwx------) |
-
----
-
-## Privacy Policy
-
-- **No Telemetry**: govman does not phone home with telemetry, usage stats, or error reports.
-- **No Tracking**: We do not collect OS information or user IDs.
-- **Minimal Networking**: Network calls only occur during `list --remote`, `install`, and `selfupdate`.
-
----
-
-## Compliance & Auditing
-
-govman is suitable for use in industries requiring strict auditing (FinTech, Healthcare, Gov):
-- **Predictable Environment**: Documentation of all file modification sites.
-- **Audit Logs**: Redirect `govman --verbose` to a log file for a complete record of SDK management actions.
-- **Open Source**: The entire logic is open for security auditing by your internal teams.
+- Keep govman and the operating system trust store updated.
+- Review custom endpoint and proxy ownership before use.
+- Protect `~/.govman/config.yaml` as user-only data.
+- Keep project `.govman-goversion` files under source control.
+- Run CI with exact full Go versions when reproducibility matters.
+- Report checksum, path-containment, archive, or rollback failures rather than bypassing them.

@@ -26,7 +26,7 @@ govman --version  # Show version
 govman --help     # Show help
 ```
 
-###govman init
+### govman init
 
 Initialize shell integration for automatic version switching.
 
@@ -78,7 +78,7 @@ govman install '1.14.*'            # All 1.14.x versions (quote the pattern!)
 - `--yes, -y`: Skip confirmation prompt for batch operations
 
 **Features:**
-- Lightning-fast parallel downloads with resume capability
+- Sequential downloads with validated resume capability
 - Automatic integrity verification and checksum validation
 - Smart caching to avoid re-downloading
 - Batch installation with progress tracking
@@ -167,10 +167,10 @@ govman current
 ```
 
 **Output includes:**
-- Version number and release status
+- Managed version number
 - Installation path and size
 - Platform architecture details
-- Installation date and source
+- Installation date
 - Activation method
 
 **Example output:**

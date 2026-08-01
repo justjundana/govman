@@ -4,7 +4,7 @@
   <img src="./../govman.png" alt="Govman Logo" width="500">
 </p>
 
-**The simplest, fastest, and most reliable Go version manager.**
+**A user-space, cross-platform Go version manager.**
 
 This documentation site provides everything you need to know about `govman`, from getting started to advanced development.
 

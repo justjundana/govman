@@ -66,11 +66,15 @@ go test -race ./...
 
 ### Optional: Development Tools
 
+Install the analysis tools at the versions CI pins:
+
 ```bash
-# Install useful Go tools for development
+make dev-setup
+```
+
+```bash
+# Optional editor helper, not pinned or used by CI
 go install golang.org/x/tools/cmd/goimports@latest
-go install honnef.co/go/tools/cmd/staticcheck@latest
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 ```
 
 ## Contributing Process
@@ -217,8 +221,6 @@ go test ./internal/manager
 # Run tests with verbose output
 go test -v ./...
 
-# Run benchmarks
-go test -bench=. ./...
 ```
 
 ### Writing Tests
@@ -398,10 +400,10 @@ We follow [Semantic Versioning](https://semver.org/):
 
 ### Release Checklist
 
-1. Update version in `internal/version/version.go`
-2. Update `CHANGELOG.md`
-3. Create release tag: `git tag -a v1.2.3 -m "Release v1.2.3"`
-4. Push tag: `git push origin v1.2.3`
-5. GitHub Actions will create the release automatically
+1. Update `CHANGELOG.md` and `docs/release-notes.md`.
+2. Run validation, race, coverage, and snapshot gates from a clean worktree.
+3. Create an annotated SemVer tag: `git tag -a v1.2.3 -m "Release v1.2.3"`.
+4. Push the tag: `git push origin v1.2.3`.
+5. GitHub Actions publishes only after every required job and artifact succeeds.
 
 Thank you for contributing to GOVMAN! Your help makes this project better for everyone.

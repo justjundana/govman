@@ -18,10 +18,10 @@ govman does NOT require sudo. It installs to your home directory:
 
 ```bash
 # Correct installation (no sudo):
-curl -sSL https://install.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # NOT this:
-# sudo curl -sSL https://install.script | bash
+# sudo curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
 If you get permission errors in `~/.govman`:
@@ -200,12 +200,12 @@ govman install latest
 govman use latest --default
 ```
 
-### "Go version X is not installed"
+### "go version X is not installed"
 
 **Symptoms:**
 ```bash
 govman use 1.25.1
-# Error: Go version 1.25.1 is not installed
+# Error: go version 1.25.1 is not installed
 ```
 
 **Solution:**
@@ -264,15 +264,15 @@ Error: download failed with status 503
    ```yaml
    # ~/.govman/config.yaml
    download:
-     Timeout: 600s  # 10 minutes
+     timeout: 600s  # 10 minutes
      retry_count: 5
    ```
 
-4. Use a mirror if in restricted region:
+4. If your organization provides a compatible controlled endpoint, configure it explicitly:
    ```yaml
-   mirror:
-     enabled: true
-     url: https://golang.google.cn/dl/
+   go_releases:
+     api_url: https://go-releases.example/api?include=all
+     download_url: https://go-releases.example/dl/%s
    ```
 
 ### Checksum Verification Failed
@@ -297,22 +297,11 @@ govman install 1.25.1
 
 **Solution:**
 
-1. Enable parallel downloads:
-   ```yaml
-   download:
-     parallel: true
-     max_connections: 4
-   ```
+1. Increase `download.timeout` for a slow connection.
+2. Confirm that proxies and the configured Go release endpoint are healthy.
+3. Retry later if the upstream returns transient status codes.
 
-2. Use a geographically closer mirror:
-   ```yaml
-   mirror:
-     enabled: true
-     url: https://golang.google.cn/dl/  # For users in China
-   ```
-
-3. Check network congestion
-4. Try at a different time
+Parallel and mirror compatibility fields do not change download behavior in v1.3.4.
 
 ## PATH and Environment Issues
 
@@ -465,7 +454,7 @@ govman automatically handles this. If issues persist:
 
 ```bash
 # Reinstall govman
-curl -sSL https://install.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # Verify architecture
 file ~/.govman/bin/govman
@@ -481,10 +470,10 @@ file ~/.govman/bin/govman
 **Solution:**
 
 ```yaml
-#GitHub Actions example
+# GitHub Actions example
 - name: Install govman
   run: |
-    curl -sSL https://install.script | bash
+    curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
     echo "$HOME/.govman/bin" >> $GITHUB_PATH
 
 - name: Verify
@@ -503,7 +492,7 @@ RUN useradd -m govman
 USER govman
 
 # Install to user directory
-RUN curl -sSL https://install.script | bash
+RUN curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
 ## Network and Proxy Issues
@@ -631,10 +620,10 @@ If all else fails:
 
 ```bash
 # Uninstall (keeps Go versions)
-curl -sSL https://uninstall.script | bash  # Choose minimal removal
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/uninstall.sh | bash  # Choose minimal removal
 
 # Reinstall
-curl -sSL https://install.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # Reinitialize
 govman init

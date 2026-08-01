@@ -1,536 +1,134 @@
 # Examples
 
-Common workflows and usage patterns for govman.
-
-## Basic Workflows
-
-### First-Time Setup
+## First setup
 
 ```bash
-# 1. Install govman (already done)
-
-# 2. Initialize shell integration
 govman init
-
-# 3. Reload shell
-source ~/.bashrc  # or ~/.zshrc
-
-# 4. Install latest Go
 govman install latest
-
-# 5. Activate it as default
 govman use latest --default
-
-# 6. Verify
 go version
+gofmt -h
 ```
 
-### Installing Specific Versions
+Reload the shell profile printed by `govman init` before expecting wrapper-managed session changes.
+
+## Exact and partial versions
 
 ```bash
-# Install latest stable
-govman install latest
+govman install 1.25       # newest available 1.25 patch
+govman install 1.25.4     # exact release
+govman install 1.26rc1    # exact prerelease
 
-# Install specific version
-govman install 1.25.1
-
-# Install latest patch of a minor version
-govman install 1.24
-
-# Install pre-release
-govman install 1.26rc1
+govman use 1.25           # highest installed 1.25 patch
+govman use 1.25.4         # exact installed release
 ```
 
-### Switching Between Versions
+## Project pinning
 
 ```bash
-# Temporary (current session only)
-govman use 1.25.1
-
-# Set as system default
-govman use 1.25.1 --default
-
-# Set for current project
-govman use 1.25.1 --local
-
-# Switch back to default
-govman use default
-```
-
-## Project-Based Workflows
-
-### Setting Up a New Project
-
-```bash
-# Create project directory
-mkdir my-go-project
-cd my-go-project
-
-# Set Go version for this project
-govman use 1.25.1 --local
-
-# Verify .govman-goversion was created
-cat .govman-goversion
-# Output: 1.25.1
-
-# Add to git
-git init
+cd my-project
+govman install 1.25.4
+govman use 1.25.4 --local
 git add .govman-goversion
-git commit -m "Set Go version to 1.25.1"
-
-#Initialize Go module
-go mod init github.com/username/my-go-project
+git commit -m "build: pin Go 1.25.4"
 ```
 
-### Cloning a Project with .govman-goversion
+The generated shell hook reads `.govman-goversion` from the current directory. Run `govman refresh` after creating or editing it if a directory-change hook has not fired.
+
+## Batch operations
+
+Quote wildcard patterns so the shell does not expand them:
 
 ```bash
-# Clone repository
-git clone https://github.com/username/project.git
-cd project
-
-# Check required version
-cat .govman-goversion
-# Output: 1.24.0
-
-# Install if not already installed
-govman install 1.24.0
-
-# Version automatically switches with shell integration
-# Or manually switch:
-govman use 1.24.0
-
-# Verify
-go version
+govman install '1.24.*' --yes
+govman install '1.26*' --unstable --yes
+govman uninstall '1.23.*' --yes
 ```
 
-### Team Development
+## Testing multiple installed versions
+
+In an initialized interactive shell:
 
 ```bash
-# Team lead sets version
-govman use 1.25.1 --local
-git add .govman-goversion
-git commit -m "Set Go 1.25.1 for project"
-git push
-
-# Team members clone and install
-git pull
-govman install $(cat .govman-goversion)
-# Auto-switches when entering directory
-```
-
-## Multi-Version Development
-
-### Testing Across Multiple Go Versions
-
-```bash
-# Install multiple versions
-govman install 1.25.1 1.24.0 1.23.5
-
-# Test with each version
-for version in 1.25.1 1.24.0 1.23.5; do
-  echo "Testing with Go $version"
-  govman use $version
+for version in 1.25.4 1.24.10; do
+  govman use "$version"
   go test ./...
 done
-
-# Back to default
 govman use default
 ```
 
-### Version-Specific Build
+In a non-interactive POSIX shell, evaluate the validated PATH command explicitly:
 
 ```bash
-# Build with specific Go version
-govman use 1.25.1
-go build -o myapp-go1.25 ./cmd/myapp
-
-govman use 1.24.0
-go build -o myapp-go1.24 ./cmd/myapp
-
-# Compare binaries
-ls -lh myapp-*
+for version in 1.25.4 1.24.10; do
+  eval "$(govman use "$version")"
+  go test ./...
+done
 ```
 
-## CI/CD Integration
-
-### GitHub Actions
+## GitHub Actions consumer example
 
 ```yaml
-name: Build
+name: test
 on: [push, pull_request]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
-      # Install govman
-      - name: Install govman
+      - uses: actions/checkout@v6
+      - name: Install govman and selected Go
+        shell: bash
         run: |
-          curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-          echo "$HOME/.govman/bin" >> $GITHUB_PATH
-      
-      # Install Go version from .govman-goversion
-      - name: Install Go
-        run: |
-          govman install $(cat .govman-goversion)
-          govman use $(cat .govman-goversion)
-      
-      # Build
-      - name: Build
-        run: go build ./...
-      
-      # Test
-      - name: Test
-        run: go test ./...
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+          export PATH="$HOME/.govman/bin:$PATH"
+          version=$(tr -d '[:space:]' < .govman-goversion)
+          govman install "$version"
+          eval "$(govman use "$version")"
+          go version
+          go test ./...
 ```
 
-### GitLab CI
+Environment changes do not persist automatically between GitHub Actions steps; keep activation and dependent commands in one shell block or write the selected toolchain path to `GITHUB_PATH`.
+
+## Corporate proxy
+
+```bash
+export HTTPS_PROXY=http://proxy.corp.example:8080
+export HTTP_PROXY=http://proxy.corp.example:8080
+export NO_PROXY=localhost,127.0.0.1
+govman install latest
+```
+
+## Controlled release endpoint
+
+The reserved `mirror.*` fields do not route traffic. A compatible internal service must provide Go release metadata and archives:
 
 ```yaml
-build:
-  image: ubuntu:latest
-  before_script:
-    # Install dependencies
-    - apt-get update && apt-get install -y curl tar gzip git
-    
-    # Install govman
-    - curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-    - export PATH="$HOME/.govman/bin:$PATH"
-    
-    # Install and use Go version
-    - govman install $(cat .govman-goversion)
-    - govman use $(cat .govman-goversion)
-  
-  script:
-    - go version
-    - go build ./...
-    - go test ./...
+go_releases:
+  api_url: https://go-releases.corp.example/api?include=all
+  download_url: https://go-releases.corp.example/dl/%s
+  cache_expiry: 10m
 ```
 
-### Docker
-
-```dockerfile
-FROM ubuntu:22.04
-
-# Install dependencies
-RUN apt-get update && apt-get install -y curl tar gzip
-
-# Install govman
-RUN curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
-
-# Add govman to PATH
-ENV PATH="/root/.govman/bin:$PATH"
-
-# Set working directory
-WORKDIR /app
-
-# Copy project files
-COPY . .
-
-# Install Go version from .govman-goversion
-RUN govman install $(cat .govman-goversion) && \
-    govman use $(cat .govman-goversion)
-
-# Build application
-RUN go build -o myapp ./cmd/myapp
-
-CMD ["./myapp"]
-```
-
-## Version Management
-
-### Listing and Exploring Versions
-
-```bash
-# List installed versions
-govman list
-
-# List available remote versions
-govman list --remote
-
-# Filter by pattern
-govman list --remote --pattern "1.25*"
-
-# Include beta/RC versions
-govman list --remote --beta
-
-# Get detailed info about a version
-govman info 1.25.1
-```
-
-### Upgrading Go
-
-```bash
-# Check for new versions
-govman list --remote
-
-# Install newer version
-govman install 1.26.0
-
-# Test with new version
-govman use 1.26.0
-go test ./...
-
-# If all good, set as default
-govman use 1.26.0 --default
-
-# Remove old version
-govman uninstall 1.25.1
-```
-
-### Downgrading Go
-
-```bash
-# List installed versions
-govman list
-
-# Switch to older version
-govman use 1.24.0 --default
-
-# Or install older version if not present
-govman install 1.24.0
-govman use 1.24.0 --default
-```
+Metadata must include the exact archive filename, OS, architecture, size, kind, and SHA-256 expected by govman.
 
 ## Maintenance
 
-### Cleaning Up Disk Space
-
 ```bash
-# Check disk usage
-govman list  # Shows size of each version
-
-# Remove all unused versions at once
-govman prune
-
-# Or remove specific old versions
-govman uninstall 1.23.0 1.22.0 1.21.1
-
-# Clean download cache
+govman list
+govman prune --yes
 govman clean
-
-# View freed space
-govman list
 ```
 
-### Backing Up Configuration
+`prune` keeps active, default, and current project-local versions. `clean` removes downloaded archives but not installed toolchains.
+
+## Self-update
 
 ```bash
-# Backup config and version list
-cp ~/.govman/config.yaml ~/.govman/config.yaml.backup
-
-# Save list of installed versions
-govman list > ~/govman-versions-backup.txt
-
-# Restore later: install versions from list
-cat ~/govman-versions-backup.txt | grep "Installed" | awk '{print $2}' | while read version; do
-  govman install $version
-done
+govman selfupdate --check
+govman selfupdate
 ```
 
-## Advanced Workflows
-
-### Pre-Release Testing
-
-```bash
-# Install release candidate
-govman install 1.26rc1
-
-# Test in isolated environment
-cd /tmp/test-project
-go mod init test
-govman use 1 .26rc1
-
-# Run tests
-go test std
-
-# Report issues if found
-```
-
-### Custom Installation Directory
-
-```bash
-# Edit config
-nano ~/.govman/config.yaml
-
-# Change install directory
-install_dir: /opt/go/versions
-
-# Install new version (goes to new directory)
-govman install 1.25.1
-```
-
-### Using Mirrors
-
-```bash
-# For users in restricted regions
-nano ~/.govman/config.yaml
-
-# Enable mirror
-mirror:
-  enabled: true
-  url: https://golang.google.cn/dl/
-
-# Install will now use mirror
-govman install latest
-```
-
-### Corporate Proxy Setup
-
-```bash
-# Set proxy environment variables
-export HTTP_PROXY=http://proxy.corp.com:8080
-export HTTPS_PROXY=http://proxy.corp.com:8080
-export NO_PROXY=localhost,127.0.0.1,.corp.com
-
-# Now use govman normally
-govman install latest
-```
-
-## Shell-Specific Workflows
-
-### Bash/Zsh
-
-```bash
-# Add to ~/.bashrc or ~/.zshrc for quick aliases
-alias goi='govman install'
-alias gou='govman use'
-alias gol='govman list'
-alias goc='govman current'
-
-# Use aliases
-goi latest
-gou latest --default
-gol
-goc
-```
-
-### Fish
-
-```fish
-# Add to ~/.config/fish/config.fish
-abbr -a goi govman install
-abbr -a gou govman use
-abbr -a gol govman list
-abbr -a goc govman current
-
-# Use abbreviations
-goi latest
-gou latest --default
-```
-
-### PowerShell
-
-```powershell
-# Add to $PROFILE
-function goi { govman install $args }
-function gou { govman use $args }
-function gol { govman list $args }
-function goc { govman current }
-
-# Use functions
-goi latest
-gou latest --default
-```
-
-## Troubleshooting Workflows
-
-### Version Not Switching
-
-```bash
-# Check if shell integration is loaded
-type govman_auto_switch
-
-# Re-initialize if needed
-govman init --force
-source ~/.bashrc
-
-# Manually trigger auto-switch
-govman_auto_switch
-
-# Or use refresh command
-govman refresh
-```
-
-### Download Failures
-
-```bash
-# Clean cache and retry
-govman clean
-govman install 1.25.1
-
-# Check with verbose mode
-govman --verbose install 1.25.1
-
-# Try with increased timeout
-nano ~/.govman/config.yaml
-# Set: download.timeout: 600s
-govman install 1.25.1
-```
-
-### Checking Current Setup
-
-```bash
-# Comprehensive setup check
-echo "=== govman Version ===" govman --version
-
-echo "=== Currently Active ==="
-govman current
-
-echo "=== Installed Versions ==="
-govman list
-
-echo "=== Go Version ==="
-go version
-
-echo "=== Go Environment ==="
-go env
-
-echo "=== PATH ==="
-echo $PATH | tr ':' '\n' | grep -E "(govman|go)"
-```
-
-## Migration Workflows
-
-### From System Go to govman
-
-```bash
-# Check current Go version
-go version  # e.g., go1.24.0
-
-# Install same version with govman
-govman install 1.24.0
-govman use 1.24.0 --default
-
-# Remove system Go (if desired)
-# sudo rm -rf /usr/local/go  # or appropriate path
-
-# Verify
-which go  # Should show govman path
-go version
-```
-
-### From Other Version Managers
-
-```bash
-# Example: migrating from gvm
-
-# List current gvm versions
-gvm list
-
-# Install same versions with govman
-govman install 1.25.1 1.24.0 1.23.5
-
-# Set default
-govman use 1.25.1 --default
-
-# Uninstall gvm
-# (Follow gvm-specific uninstall instructions)
-
-# Verify
-govman list
-go version
-```
+The release must contain the exact platform binary and `checksums.txt`. Development builds must be updated from source or reinstalled.

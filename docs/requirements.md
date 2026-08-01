@@ -1,192 +1,66 @@
 # Requirements
 
-govman is designed to work with minimal dependencies on all supported platforms.
+## Supported release artifacts
 
-## System Requirements
+| Operating system | Architectures |
+|---|---|
+| Linux | amd64, arm64 |
+| macOS | amd64, arm64 |
+| Windows | amd64, arm64, 386 |
 
-### Operating System
+The build and release pipeline compiles these seven targets. Support is validated by CI runners for current Linux, macOS, and Windows images; no minimum kernel or historical operating-system version is promised.
 
-govman supports:
-- **Linux** (kernel  2.6+ recommended)
-- **macOS** 10.12 (Sierra) or later
-- **Windows** 10 or later (Windows 7/8 may work with limitations)
+## Runtime
 
-### Architecture
+The govman binary is self-contained and uses Go's standard libraries to download and extract Go archives. It does not invoke external `tar`, `gzip`, `git`, or `curl` for normal `govman install` operations.
 
-- **amd64** (x86_64)
-- **arm64** (ARM 64-bit, including Apple Silicon)
+The standalone installer needs:
 
-### Disk Space
+- Linux/macOS: `curl` or `wget`, a POSIX environment, and a supported interactive shell for integration.
+- Windows PowerShell installer: PowerShell 5.1 or newer.
+- Windows Batch installer: Command Prompt and `curl.exe`.
 
-- **govman binary**: ~10-20 MB
-- **Per Go version**: ~100-500 MB (varies by version and platform)
-- **Download cache**: Varies (can be cleaned with `govman clean`)
+PowerShell is also required to complete a Windows self-update after the running executable exits.
 
-Recommended minimum: **1 GB free** for comfortable usage with multiple Go versions.
+## Filesystem and permissions
 
-## Software Dependencies
+The default layout needs write access to:
 
-### Linux
+- `~/.govman` or `%USERPROFILE%\.govman`;
+- the selected shell profile;
+- the current project directory when using `--local`.
 
-**Required**:
-- One of: `curl` or `wget` (for downloading)
-- `tar` and `gzip` (for extracting archives)
-- A supported shell: `bash`, `zsh`, or `fish`
+Administrator/root privileges are not required for the default layout. Custom paths may require additional permissions. Windows policy may restrict symbolic links, although the Command Prompt wrapper does not depend on directory-change auto-switching.
 
-**Optional**:
-- `git` (for development workflows)
+Allow enough free space for a cached archive, an extraction staging directory, and the final Go toolchain during installation. Exact size depends on the selected Go release and platform.
 
-Installation on Debian/Ubuntu:
-```bash
-sudo apt-get install curl tar gzip
-```
+## Network
 
-Installation on RHEL/CentOS/Fedora:
-```bash
-sudo yum install curl tar gzip
-```
+Default endpoints require HTTPS access to:
 
-### macOS
+- `go.dev` for Go release metadata and archives;
+- `api.github.com` and GitHub release assets for explicit self-update;
+- `raw.githubusercontent.com` when running a standalone installer directly from the repository.
 
-**Required**:
-- `curl` (pre-installed on macOS)
-- `tar` (pre-installed on macOS)
-- A supported shell: `bash`, `zsh`, or `fish` (zsh is default on macOS 10.15+)
+Standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables are supported. There is no supported offline mode in v1.3.4.
 
-**Optional**:
-- Homebrew (for alternative installation methods)
-- `git` (typically installed via Xcode Command Line Tools)
+## Shell support
 
-### Windows
+| Shell | Manual `use` wrapper | Directory-change auto-switch |
+|---|---:|---:|
+| Bash | Yes | Yes |
+| Zsh | Yes | Yes |
+| Fish | Yes | Yes |
+| PowerShell | Yes | Yes |
+| Command Prompt | Yes | No |
 
-**Required**:
-- PowerShell 5.1+ or PowerShell Core 7+ (recommended)
-- OR Command Prompt (with limited features)
+The project file is read from the current directory. Shell integration must be initialized and loaded for a child govman process to update its parent shell environment.
 
-**Optional**:
-- `curl.exe` (included in Windows 10 1803+)
-- PowerShell 7+ for better experience
-- Windows Terminal (recommended for better UI)
-- Git Bash or WSL (for bash shell integration)
+## Building from source
 
-## Network Requirements
+- Go 1.25 or newer;
+- Git for source checkout and release metadata;
+- Make for documented project targets;
+- pinned analysis/release tools installed by `make dev-setup` when running the complete local gate.
 
-govman requires internet access for:
-- Downloading govman binary during installation
-- Fetching available Go release information
-- Downloading Go versions
-- Updating govman itself
-
-**Firewall Configuration**:
-Ensure access to:
-- `https://go.dev` (Go official releases and API)
-- `https://golang.org` (Go downloads)
-- `https://github.com` (govman releases and updates)
-- `https://api.github.com` (self-update feature)
-
-**Proxy Support**:
-govman respects standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables.
-
-## Shell Compatibility
-
-govman provides shell integration for automatic version switching:
-
-### Fully Supported Shells
-
-| Shell      | Platform        | Auto-Switch | Wrapper Function | Notes                |
-|------------|-----------------|-------------|------------------|----------------------|
-| Bash       | Linux/macOS     | ✅           | ✅                | Uses PROMPT_COMMAND  |
-| Zsh        | Linux/macOS     | ✅           | ✅                | Uses chpwd hook      |
-| Fish       | Linux/macOS     | ✅           | ✅                | Native fish support  |
-| PowerShell | Windows         | ✅           | ✅                | PowerShell 5.1+      |
-
-### Limited Support
-
-| Shell | Platform | Auto-Switch | Notes                                      |
-|-------|----------|-------------|--------------------------------------------|
-| Cmd   | Windows  | ❌           | Basic wrapper only, no auto-switch         |
-| Sh    |Linux/macOS| Partial    | Basic PATH management, limited integration |
-
-## Permissions
-
-### Linux/macOS
-
-- **No root/sudo required** for installation and usage
-- Write access to `~/.govman/` directory
-- Write access to shell configuration files (`.bashrc`, `.zshrc`, etc.)
-
-### Windows
-
-- **No administrator privileges required**
-- Write access to `%USERPROFILE%\.govman\`
-- Ability to modify user PATH environment variable
-- PowerShell execution policy must allow running scripts
-
-To configure PowerShell execution policy:
-```powershell
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-## Optional Dependencies
-
-### For Development
-
-If you plan to build govman from source:
-- Go 1.25 or later
-- Git
-- Make (on Linux/macOS)
-
-### For Enhanced Features
-
-- **Git**: For project-based workflows and version control integration
-- **jq**: For parsing JSON configuration (though not required by govman)
-- **direnv**: Can work alongside govman for environment management
-
-## Compatibility Notes
-
-### Darwin/ARM64 (Apple Silicon)
-
-- govman fully supports Apple Silicon (M1, M2, M3)
-- For Go versions before 1.16, govman automatically falls back to amd64 binaries (which run via Rosetta 2)
-
-### WSL (Windows Subsystem for Linux)
-
-- govman works fully in WSL
-- Use the Linux installation method within WSL
-- Shell integration works as on native Linux
-
-### Docker/Containers
-
-govman can be used in containers, but note:
-- Shell auto-switching requires shell integration setup
-- Consider using explicit `govman use` commands in Dockerfiles
-- May need to install download dependencies (`curl`, `tar`) in base images
-
-## Known Limitations
-
-1. **Command Prompt (Windows)**: No support for automatic version switching (.govman-goversion files)
-2. **Network Isolation**: govman requires internet connectivity for most operations
-3. **Concurrent Installations**: Multiple simultaneous `govman install` commands may conflict
-4. **Symlink Support**: Some restricted Windows environments may have symlink limitations
-
-## Verification
-
-To verify your system meets the requirements:
-
-```bash
-# Check shell
-echo $SHELL  # Linux/macOS
-echo $0      # Current shell
-
-# Check curl/wget
-curl --version
-wget --version
-
-# Check tar/gzip
-tar --version
-gzip --version
-
-# Check available disk space
-df -h ~/.govman  # Linux/macOS
-dir %USERPROFILE%\.govman  # Windows
-```
+Docker is optional and only required for container validation.
