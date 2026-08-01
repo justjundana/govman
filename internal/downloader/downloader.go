@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -31,6 +32,7 @@ const (
 	maxExtractFileSize  = 2 << 30  // 2 GB
 	maxExtractTotalSize = 10 << 30 // 10 GB
 	maxArchiveEntries   = 100000
+	legacyTarTypeReg    = byte(0)
 )
 
 type Downloader struct {
@@ -188,6 +190,7 @@ func (d *Downloader) downloadWithRetry(req *http.Request) (*http.Response, error
 		attempts = 1
 	}
 	for attempt := 0; attempt < attempts; attempt++ {
+		// #nosec G704 -- request URLs are parsed and restricted to HTTP(S) before this helper; custom release endpoints are an intentional configuration contract.
 		resp, err = d.client.Do(req)
 		if err == nil {
 			retryable := resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
@@ -195,7 +198,7 @@ func (d *Downloader) downloadWithRetry(req *http.Request) (*http.Response, error
 				return resp, nil
 			}
 			retryAfter := retryDelay(resp.Header.Get("Retry-After"), time.Now())
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if retryAfter > 0 {
 				if err := waitForRetry(req.Context(), retryAfter); err != nil {
 					return nil, err
@@ -364,7 +367,7 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 			return "", requestErr
 		}
 		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && currentSize > 0 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err := resetPartialFile(file); err != nil {
 				return "", err
 			}
@@ -372,13 +375,13 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 			continue
 		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
 		}
 
 		validatedSize, resumeErr := d.handleResumeResponse(file, resp, currentSize, fileInfo.Size)
 		if resumeErr != nil && currentSize > 0 && requestAttempt == 0 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			d.logger.Warning("Server returned an invalid resume response; restarting download")
 			if err := resetPartialFile(file); err != nil {
 				return "", err
@@ -387,7 +390,7 @@ func (d *Downloader) downloadFileContext(ctx context.Context, url string, fileIn
 			continue
 		}
 		if resumeErr != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return "", resumeErr
 		}
 		currentSize = validatedSize
@@ -488,7 +491,7 @@ func acquireCacheLock(ctx context.Context, lockPath string, maxWait time.Duratio
 		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
 			if closeErr := file.Close(); closeErr != nil {
-				os.Remove(lockPath)
+				_ = os.Remove(lockPath)
 				return nil, fmt.Errorf("failed to close cache lock: %w", closeErr)
 			}
 			return func() error {
@@ -521,7 +524,7 @@ func (d *Downloader) verifyChecksum(filePath, expectedSHA256 string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
@@ -645,20 +648,20 @@ func (d *Downloader) extractTarGz(archivePath, installDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open archive: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzReader.Close()
+	defer func() { _ = gzReader.Close() }()
 
 	tarReader := tar.NewReader(gzReader)
 	root, err := os.OpenRoot(installDir)
 	if err != nil {
 		return fmt.Errorf("failed to open extraction root: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	entryCount := 0
 	var totalSize int64
 
@@ -682,7 +685,7 @@ func (d *Downloader) extractTarGz(archivePath, installDir string) error {
 		if header.Size < 0 || header.Size > d.maxFileSize {
 			return fmt.Errorf("archive entry %s exceeds size limit", header.Name)
 		}
-		if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+		if header.Typeflag == tar.TypeReg || header.Typeflag == legacyTarTypeReg {
 			totalSize += header.Size
 			if totalSize > d.maxTotalSize {
 				return fmt.Errorf("archive extracted size exceeds limit")
@@ -716,15 +719,15 @@ func (d *Downloader) extractTarEntry(header *tar.Header, tarReader *tar.Reader, 
 	}
 	switch header.Typeflag {
 	case tar.TypeDir:
-		mode := os.FileMode(header.Mode) & 0755
+		mode := os.FileMode(header.Mode & 0755)
 		if mode == 0 {
 			mode = 0755
 		}
 		if err := root.MkdirAll(targetPath, mode); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", targetPath, err)
 		}
-	case tar.TypeReg, tar.TypeRegA:
-		mode := os.FileMode(header.Mode) & 0755
+	case tar.TypeReg, legacyTarTypeReg:
+		mode := os.FileMode(header.Mode & 0755)
 		if mode == 0 {
 			mode = 0644
 		}
@@ -761,27 +764,31 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open zip archive: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	root, err := os.OpenRoot(installDir)
 	if err != nil {
 		return fmt.Errorf("failed to open extraction root: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	entryCount := 0
-	var totalSize uint64
+	var totalSize int64
 
 	for _, file := range reader.File {
 		entryCount++
 		if entryCount > d.maxArchiveEntries {
 			return fmt.Errorf("archive contains too many entries: limit is %d", d.maxArchiveEntries)
 		}
-		if file.UncompressedSize64 > uint64(d.maxFileSize) {
+		if file.UncompressedSize64 > math.MaxInt64 {
+			return fmt.Errorf("archive entry %s exceeds supported size", file.Name)
+		}
+		fileSize := int64(file.UncompressedSize64)
+		if d.maxFileSize < 0 || fileSize > d.maxFileSize {
 			return fmt.Errorf("archive entry %s exceeds size limit", file.Name)
 		}
-		totalSize += file.UncompressedSize64
-		if totalSize > uint64(d.maxTotalSize) {
+		if d.maxTotalSize < 0 || totalSize > d.maxTotalSize || fileSize > d.maxTotalSize-totalSize {
 			return fmt.Errorf("archive extracted size exceeds limit")
 		}
+		totalSize += fileSize
 		if file.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("archive links are not allowed: %s", file.Name)
 		}
@@ -814,7 +821,7 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 		if relErr != nil {
 			return fmt.Errorf("failed to resolve file path: %w", relErr)
 		}
-		if err := d.extractZipFile(file, root, relPath); err != nil {
+		if err := d.extractZipFile(file, root, relPath, fileSize); err != nil {
 			return err
 		}
 	}
@@ -823,7 +830,7 @@ func (d *Downloader) extractZip(archivePath, installDir string) error {
 }
 
 // extractZipFile extracts a single file from a zip archive.
-func (d *Downloader) extractZipFile(file *zip.File, root *os.Root, targetPath string) error {
+func (d *Downloader) extractZipFile(file *zip.File, root *os.Root, targetPath string, expectedSize int64) error {
 	parentDir := filepath.Dir(targetPath)
 	if parentDir != "." {
 		if err := root.MkdirAll(parentDir, 0755); err != nil {
@@ -835,7 +842,7 @@ func (d *Downloader) extractZipFile(file *zip.File, root *os.Root, targetPath st
 	if err != nil {
 		return fmt.Errorf("failed to open file in archive: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	mode := file.Mode().Perm() & 0755
 	if mode == 0 {
@@ -846,7 +853,7 @@ func (d *Downloader) extractZipFile(file *zip.File, root *os.Root, targetPath st
 		return fmt.Errorf("failed to create file %s: %w", targetPath, err)
 	}
 
-	written, copyErr := io.Copy(dstFile, io.LimitReader(srcFile, int64(file.UncompressedSize64)+1))
+	written, copyErr := io.Copy(dstFile, io.LimitReader(srcFile, expectedSize+1))
 	closeErr := dstFile.Close()
 	if copyErr != nil {
 		return fmt.Errorf("failed to write file %s: %w", targetPath, copyErr)
@@ -854,8 +861,8 @@ func (d *Downloader) extractZipFile(file *zip.File, root *os.Root, targetPath st
 	if closeErr != nil {
 		return fmt.Errorf("failed to close file %s: %w", targetPath, closeErr)
 	}
-	if uint64(written) != file.UncompressedSize64 {
-		return fmt.Errorf("archive entry %s size mismatch: wrote %d, expected %d", file.Name, written, file.UncompressedSize64)
+	if written != expectedSize {
+		return fmt.Errorf("archive entry %s size mismatch: wrote %d, expected %d", file.Name, written, expectedSize)
 	}
 
 	return nil
