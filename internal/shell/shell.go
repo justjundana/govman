@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -458,8 +459,8 @@ func (s *BashShell) ExecutePathCommand(path string) error {
 	fmt.Println(pathCmd)
 
 	// Instructions to stderr so they don't interfere with eval
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
 
 	return nil
 }
@@ -636,8 +637,8 @@ func (s *ZshShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
 
 	return nil
 }
@@ -814,8 +815,8 @@ func (s *FishShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval (govman use <version>)\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval (govman use <version>)\n")
 
 	return nil
 }
@@ -1028,8 +1029,8 @@ func (s *PowerShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# govman use <version> | Invoke-Expression\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# govman use <version> | Invoke-Expression\n")
 
 	return nil
 }
@@ -1102,7 +1103,7 @@ func (s *CmdShell) ExecutePathCommand(path string) error {
 	fmt.Println(pathCmd)
 
 	fmt.Fprintln(os.Stderr, "REM To apply to current session, copy and run:")
-	fmt.Fprintf(os.Stderr, "REM %s\n", pathCmd)
+	_, _ = fmt.Fprintf(os.Stderr, "REM %s\n", pathCmd)
 
 	return nil
 }
@@ -1424,6 +1425,18 @@ func writeShellIntegration(configPath string, setupCommands []string, force bool
 	return atomicWriteShellFile(configPath, []byte(finalContent), mode)
 }
 
+func removeShellTemp(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func discardShellTemp(file *os.File, path string) error {
+	return errors.Join(file.Close(), removeShellTemp(path))
+}
+
 func atomicWriteShellFile(path string, content []byte, mode os.FileMode) (resultErr error) {
 	directory := filepath.Dir(path)
 	backupPath := ""
@@ -1434,30 +1447,23 @@ func atomicWriteShellFile(path string, content []byte, mode os.FileMode) (result
 		}
 		backupPath = backupFile.Name()
 		if chmodErr := backupFile.Chmod(mode); chmodErr != nil {
-			backupFile.Close()
-			os.Remove(backupPath)
-			return chmodErr
+			return errors.Join(chmodErr, discardShellTemp(backupFile, backupPath))
 		}
 		if _, writeErr := backupFile.Write(existing); writeErr != nil {
-			backupFile.Close()
-			os.Remove(backupPath)
-			return writeErr
+			return errors.Join(writeErr, discardShellTemp(backupFile, backupPath))
 		}
 		if syncErr := backupFile.Sync(); syncErr != nil {
-			backupFile.Close()
-			os.Remove(backupPath)
-			return syncErr
+			return errors.Join(syncErr, discardShellTemp(backupFile, backupPath))
 		}
 		if closeErr := backupFile.Close(); closeErr != nil {
-			os.Remove(backupPath)
-			return closeErr
+			return errors.Join(closeErr, removeShellTemp(backupPath))
 		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	defer func() {
 		if backupPath != "" {
-			os.Remove(backupPath)
+			resultErr = errors.Join(resultErr, removeShellTemp(backupPath))
 		}
 	}()
 	tempFile, err := os.CreateTemp(directory, ".govman-config-*")
@@ -1473,7 +1479,7 @@ func atomicWriteShellFile(path string, content []byte, mode os.FileMode) (result
 			}
 		}
 		if resultErr != nil {
-			os.Remove(tempPath)
+			resultErr = errors.Join(resultErr, removeShellTemp(tempPath))
 		}
 	}()
 	if err := tempFile.Chmod(mode); err != nil {
@@ -1499,13 +1505,13 @@ func atomicWriteShellFile(path string, content []byte, mode os.FileMode) (result
 func GetShellInstructions(shell Shell, binPath string) string {
 	var instructions strings.Builder
 
-	instructions.WriteString(fmt.Sprintf("Manual setup for %s:\n\n", shell.DisplayName()))
-	instructions.WriteString(fmt.Sprintf("1. Edit: %s\n\n", shell.ConfigFile()))
+	_, _ = fmt.Fprintf(&instructions, "Manual setup for %s:\n\n", shell.DisplayName())
+	_, _ = fmt.Fprintf(&instructions, "1. Edit: %s\n\n", shell.ConfigFile())
 	instructions.WriteString("2. Add these lines:\n\n")
 
 	commands := shell.SetupCommands(binPath)
 	for _, cmd := range commands {
-		instructions.WriteString(fmt.Sprintf("   %s\n", cmd))
+		_, _ = fmt.Fprintf(&instructions, "   %s\n", cmd)
 	}
 
 	instructions.WriteString("\n3. Reload your shell:\n")
@@ -1518,7 +1524,7 @@ func GetShellInstructions(shell Shell, binPath string) string {
 	case "cmd":
 		instructions.WriteString("   (Restart Command Prompt)\n")
 	default:
-		instructions.WriteString(fmt.Sprintf("   source %s\n", shell.ConfigFile()))
+		_, _ = fmt.Fprintf(&instructions, "   source %s\n", shell.ConfigFile())
 	}
 
 	return instructions.String()
