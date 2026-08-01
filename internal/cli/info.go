@@ -27,7 +27,6 @@ Information includes:
   • Platform architecture and OS compatibility
   • Installation date, size, and disk usage
   • Binary locations and environment details
-  • Release notes and changelog links (when available)
 
 Perfect for debugging installation issues and verifying setups.`,
 		Args: usageArgs(cobra.ExactArgs(1)),

@@ -602,7 +602,7 @@ func (m *Manager) desiredToolchainLinks(version string) (map[string]string, erro
 		goName += ".exe"
 	}
 	if _, ok := links[filepath.Join(m.config.GetBinPath(), goName)]; !ok {
-		return nil, fmt.Errorf("Go %s toolchain does not contain %s", version, goName)
+		return nil, fmt.Errorf("go %s toolchain does not contain %s", version, goName)
 	}
 	return links, nil
 }

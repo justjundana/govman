@@ -109,7 +109,7 @@ func GetAvailableVersionsWithConfig(includeUnstable bool, apiURL string, cacheDu
 
 		version := strings.TrimPrefix(release.Version, "go")
 		if _, err := parseVersion(normalizeVersion(version)); err != nil {
-			return nil, fmt.Errorf("Go releases API returned invalid version %q: %w", release.Version, err)
+			return nil, fmt.Errorf("go releases API returned invalid version %q: %w", release.Version, err)
 		}
 		versions = append(versions, version)
 	}
@@ -562,7 +562,7 @@ func fetchReleases(apiURL string) ([]Release, error) {
 
 func fetchReleasesContext(ctx context.Context, client *http.Client, apiURL string) ([]Release, error) {
 	if client == nil {
-		return nil, fmt.Errorf("Go releases HTTP client is nil")
+		return nil, fmt.Errorf("go releases HTTP client is nil")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -576,7 +576,7 @@ func fetchReleasesContext(ctx context.Context, client *http.Client, apiURL strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("failed to fetch releases: HTTP %d (%s)", resp.StatusCode, resp.Status)
 	}
 
@@ -589,7 +589,7 @@ func fetchReleasesContext(ctx context.Context, client *http.Client, apiURL strin
 		return nil, fmt.Errorf("failed to close releases response: %w", closeErr)
 	}
 	if len(body) > maxReleasesResponseSize {
-		return nil, fmt.Errorf("Go releases response exceeds %d bytes", maxReleasesResponseSize)
+		return nil, fmt.Errorf("go releases response exceeds %d bytes", maxReleasesResponseSize)
 	}
 
 	var releases []Release

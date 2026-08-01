@@ -20,7 +20,7 @@ func installVersions(mgr *_manager.Manager, versions []string) (successful []str
 	for i, version := range versions {
 		_logger.Info("[%d/%d] Installing Go %s...", i+1, len(versions), version)
 		if err := mgr.Install(version); err != nil {
-			failures = append(failures, fmt.Errorf("Go %s: %w", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			_logger.Warning("Failed to install Go %s: %v", version, err)
 			continue
 		}
@@ -37,21 +37,21 @@ func uninstallVersions(mgr *_manager.Manager, versions []string, current string)
 
 		if current == version {
 			_logger.Warning("Cannot uninstall currently active Go version %s", version)
-			failures = append(failures, fmt.Errorf("Go %s: cannot uninstall active version", version))
+			failures = append(failures, fmt.Errorf("go %s: cannot uninstall active version", version))
 			continue
 		}
 
 		info, err := mgr.Info(version)
 		if err != nil {
 			_logger.Warning("Go version %s is not installed or information is unavailable", version)
-			failures = append(failures, fmt.Errorf("Go %s: %w", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
 		_logger.Progress("Removing installation directory and associated files")
 		if err = mgr.Uninstall(version); err != nil {
 			_logger.Warning("Failed to uninstall Go %s: %v", version, err)
-			failures = append(failures, fmt.Errorf("Go %s: %w", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
@@ -74,12 +74,11 @@ func newInstallCmd() *cobra.Command {
 		Long: `Download and install one or more Go versions from official releases.
 
 Features:
-  • Lightning-fast parallel downloads with resume capability
+  • Resumable downloads with bounded retry handling
   • Automatic integrity verification and checksum validation
   • Smart caching to avoid re-downloading existing archives
   • Support for latest, stable, and pre-release versions
   • Batch installation with detailed progress tracking
-  • Automatic cleanup of temporary files on completion
   • Wildcard pattern support for batch installation (e.g., 1.14.*)
 
 Examples:

@@ -42,8 +42,8 @@ func createLongDescription() string {
 		"🎯 Zero configuration - works out of the box, no setup required",
 		"📁 Project-specific versions with .govman-goversion file support",
 		"🚫 No admin/sudo required - fully userspace installation",
-		"💾 Intelligent caching with offline mode support",
-		"📦 Parallel downloads with automatic resume on failure",
+		"💾 Verified download caching to avoid duplicate transfers",
+		"📦 Resumable downloads with integrity verification",
 		"🌍 Cross-platform support (Windows, macOS, Linux, ARM)",
 		"🧹 Built-in cleanup tools to manage disk space efficiently",
 	}
@@ -51,7 +51,7 @@ func createLongDescription() string {
 	var sb strings.Builder
 	sb.WriteString("\nKey Features:\n")
 	for _, feature := range features {
-		sb.WriteString(fmt.Sprintf("  %s\n", feature))
+		_, _ = fmt.Fprintf(&sb, "  %s\n", feature)
 	}
 	return sb.String()
 }
@@ -69,7 +69,7 @@ func Execute() error {
 	return err
 }
 
-// showBanner prints a colored ASCII banner to stdout.
+// showBanner prints the ASCII banner to stdout and only uses color on a TTY.
 // It has no parameters and no return value.
 func showBanner() {
 	colorEnabled := false

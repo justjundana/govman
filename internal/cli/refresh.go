@@ -77,7 +77,7 @@ Behavior:
 
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s'", version)
-					return withHelp(fmt.Errorf("Go version %s is not installed", version), helpMsg)
+					return withHelp(fmt.Errorf("go version %s is not installed", version), helpMsg)
 				}
 
 				return mgr.Use(version, false, false)

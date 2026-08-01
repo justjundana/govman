@@ -42,7 +42,7 @@ func FormatDuration(d time.Duration) string {
 	if negative {
 		// -(MinInt64) overflows time.Duration. Moving one step toward zero
 		// before negating keeps the full magnitude representable as uint64.
-		magnitude = uint64(-(d + 1)) + 1
+		magnitude = uint64(-(d + 1)) + 1 // #nosec G115 -- the negative branch makes -(d+1) non-negative and bounded by MaxInt64.
 	} else {
 		magnitude = uint64(d)
 	}

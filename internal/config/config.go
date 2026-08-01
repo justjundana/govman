@@ -451,7 +451,7 @@ func expandPath(path, baseDir string) (string, error) {
 			return "", fmt.Errorf("invalid path format: paths starting with ~ must be followed by / or \\")
 		}
 
-		remainder := strings.TrimLeft(path[1:], `/\\`)
+		remainder := strings.TrimLeft(path[1:], `/\`)
 		expandedPath := filepath.Join(homeDir, remainder)
 
 		rel, err := filepath.Rel(homeDir, expandedPath)

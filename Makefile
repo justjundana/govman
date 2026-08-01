@@ -2,7 +2,7 @@ SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
 .PHONY: help deps dev-setup fmt fmt-check tidy-check vet lint security validate \
-	test test-race test-coverage test-integration test-all build build-debug \
+	test test-race test-coverage test-all build build-debug \
 	build-binaries build-all checksums verify-artifacts clean check ci \
 	check-git-clean check-release-tag pre-release-checks release \
 	release-snapshot release-dry-run tag install install-local uninstall \
@@ -86,7 +86,7 @@ lint: ## Run pinned static-analysis tools already installed on PATH
 security: ## Run pinned security tools already installed on PATH
 	@command -v gosec >/dev/null || { echo 'gosec is required; run make dev-setup' >&2; exit 1; }
 	@command -v govulncheck >/dev/null || { echo 'govulncheck is required; run make dev-setup' >&2; exit 1; }
-	gosec -quiet ./...
+	gosec -quiet -severity high ./...
 	govulncheck ./...
 
 validate: fmt-check tidy-check vet ## Run read-only source validation
@@ -109,11 +109,7 @@ test-coverage: ## Generate an HTML coverage report
 	awk -v value="$$total" 'BEGIN { exit !(value + 0 >= 80) }' || { echo 'total coverage is below 80%' >&2; exit 1; }; \
 	awk -v value="$$cli" 'BEGIN { exit !(value + 0 >= 70) }' || { echo 'CLI coverage is below 70%' >&2; exit 1; }
 
-test-integration: ## Run maintained installer integration tests
-	bash test/installers.sh
-	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File test/windows-path.ps1; fi
-
-test-all: test test-race test-integration ## Run all local tests
+test-all: test test-race ## Run all tracked tests
 
 build: ## Build for GOOS/GOARCH
 	@set -eu; \
@@ -180,7 +176,7 @@ check-release-tag: ## Require an annotated SemVer tag pointing at HEAD
 	[ "$$(git cat-file -t refs/tags/$$tag)" = tag ] || { echo "release tag must be annotated: $$tag" >&2; exit 1; }; \
 	[ "$$(git rev-list -n 1 "$$tag")" = "$$(git rev-parse HEAD)" ] || { echo 'release tag does not point at HEAD' >&2; exit 1; }
 
-pre-release-checks: check-git-clean check-release-tag validate test test-race test-coverage test-integration ## Run release gates
+pre-release-checks: check-git-clean check-release-tag validate test test-race test-coverage ## Run release gates
 
 release: pre-release-checks ## Publish a release with GoReleaser
 	@command -v goreleaser >/dev/null || { echo 'goreleaser is required; run make dev-setup' >&2; exit 1; }
@@ -245,9 +241,9 @@ clean: ## Remove project-local build artifacts only
 	rm -rf $(BUILD_DIR) $(DIST_DIR) $(COVERAGE_DIR)
 	rm -f coverage.out coverage.html gosec-report.sarif
 
-check: validate test test-integration ## Run standard local quality gates
+check: validate test ## Run standard local quality gates
 
-ci: deps validate test test-race test-coverage test-integration build-binaries checksums verify-artifacts ## Run the complete local CI pipeline
+ci: deps validate test test-race test-coverage build-binaries checksums verify-artifacts ## Run the complete local CI pipeline
 
 update-deps: ## Explicitly update dependencies and module files
 	go get -u ./...

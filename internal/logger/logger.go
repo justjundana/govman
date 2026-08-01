@@ -85,7 +85,7 @@ func (l *Logger) Error(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= QuietLevel {
-		fmt.Fprintf(l.normalWriter, "Error: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Error: "+format+"\n", args...)
 	}
 }
 
@@ -94,9 +94,9 @@ func (l *Logger) ErrorWithHelp(errorMsg, helpMsg string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= QuietLevel {
-		fmt.Fprintf(l.normalWriter, "Error: "+errorMsg+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Error: "+errorMsg+"\n", args...)
 		if helpMsg != "" {
-			fmt.Fprintf(l.normalWriter, "Help: %s\n", helpMsg)
+			_, _ = fmt.Fprintf(l.normalWriter, "Help: %s\n", helpMsg)
 		}
 	}
 }
@@ -106,7 +106,7 @@ func (l *Logger) StartTimer(name string) *Timer {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= VerboseLevel {
-		fmt.Fprintf(l.verboseWriter, "[VERBOSE] Starting %s...\n", name)
+		_, _ = fmt.Fprintf(l.verboseWriter, "[VERBOSE] Starting %s...\n", name)
 	}
 	return &Timer{
 		start: time.Now(),
@@ -120,7 +120,7 @@ func (l *Logger) StopTimer(t *Timer) {
 	defer l.mutex.Unlock()
 	if l.level >= VerboseLevel && t != nil {
 		duration := time.Since(t.start)
-		fmt.Fprintf(l.verboseWriter, "[VERBOSE] Completed %s in %v\n", t.name, duration)
+		_, _ = fmt.Fprintf(l.verboseWriter, "[VERBOSE] Completed %s in %v\n", t.name, duration)
 	}
 }
 
@@ -129,7 +129,7 @@ func (l *Logger) Info(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, format+"\n", args...)
 	}
 }
 
@@ -138,7 +138,7 @@ func (l *Logger) Success(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Success: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Success: "+format+"\n", args...)
 	}
 }
 
@@ -147,7 +147,7 @@ func (l *Logger) Warning(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Warning: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Warning: "+format+"\n", args...)
 	}
 }
 
@@ -156,7 +156,7 @@ func (l *Logger) Verbose(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= VerboseLevel {
-		fmt.Fprintf(l.verboseWriter, "[VERBOSE] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.verboseWriter, "[VERBOSE] "+format+"\n", args...)
 	}
 }
 
@@ -165,7 +165,7 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= VerboseLevel {
-		fmt.Fprintf(l.verboseWriter, "[DEBUG] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.verboseWriter, "[DEBUG] "+format+"\n", args...)
 	}
 }
 
@@ -174,7 +174,7 @@ func (l *Logger) Progress(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Progress: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Progress: "+format+"\n", args...)
 	}
 }
 
@@ -183,7 +183,7 @@ func (l *Logger) Download(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Download: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Download: "+format+"\n", args...)
 	}
 }
 
@@ -192,7 +192,7 @@ func (l *Logger) Extract(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Extract: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Extract: "+format+"\n", args...)
 	}
 }
 
@@ -201,7 +201,7 @@ func (l *Logger) Verify(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= NormalLevel {
-		fmt.Fprintf(l.normalWriter, "Verify: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.normalWriter, "Verify: "+format+"\n", args...)
 	}
 }
 
@@ -210,7 +210,7 @@ func (l *Logger) InternalProgress(format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	if l.level >= VerboseLevel {
-		fmt.Fprintf(l.verboseWriter, "[INTERNAL] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(l.verboseWriter, "[INTERNAL] "+format+"\n", args...)
 	}
 }
 

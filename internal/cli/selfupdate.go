@@ -204,11 +204,11 @@ func downloadBinary(ctx context.Context, asset *GitHubAsset, binaryDir, expected
 		return "", fmt.Errorf("failed to download binary: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return "", fmt.Errorf("failed to download binary: HTTP %d (%s)", response.StatusCode, response.Status)
 	}
 	if response.ContentLength > maxSelfUpdateBinarySize {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return "", fmt.Errorf("release binary exceeds the allowed size")
 	}
 
@@ -218,7 +218,7 @@ func downloadBinary(ctx context.Context, asset *GitHubAsset, binaryDir, expected
 	}
 	tempFile, err := os.CreateTemp(binaryDir, pattern)
 	if err != nil {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return "", fmt.Errorf("failed to create temporary file: %w", err)
 	}
 	tempPath := tempFile.Name()
@@ -429,7 +429,7 @@ func fetchLimited(ctx context.Context, rawURL string, limit int64, accept string
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return nil, fmt.Errorf("HTTP %d (%s)", response.StatusCode, response.Status)
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, limit+1))

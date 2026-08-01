@@ -55,13 +55,13 @@ func executePrune(mgr *_manager.Manager, toRemove []string) (successful []string
 		info, err := mgr.Info(version)
 		if err != nil {
 			_logger.Warning("Failed to get info for Go %s: %v", version, err)
-			failures = append(failures, fmt.Errorf("Go %s: %w", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
 		if err := mgr.Uninstall(version); err != nil {
 			_logger.Warning("Failed to remove Go %s: %v", version, err)
-			failures = append(failures, fmt.Errorf("Go %s: %w", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
