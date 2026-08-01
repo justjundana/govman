@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	cobra "github.com/spf13/cobra"
@@ -12,11 +14,13 @@ import (
 )
 
 // getProtectedVersions determines which installed versions should be kept during pruning.
-func getProtectedVersions(mgr *_manager.Manager, installed []string) map[string]string {
+func getProtectedVersions(mgr *_manager.Manager, installed []string) (map[string]string, error) {
 	protected := make(map[string]string) // version -> reason
 
 	if current, err := mgr.Current(); err == nil && current != "" {
 		protected[current] = "currently active"
+	} else if err != nil && !errors.Is(err, _manager.ErrNoActiveVersion) && !errors.Is(err, _manager.ErrUnmanagedGo) {
+		return nil, fmt.Errorf("failed to determine active Go version: %w", err)
 	}
 
 	if defaultVersion := mgr.DefaultVersion(); defaultVersion != "" {
@@ -27,7 +31,10 @@ func getProtectedVersions(mgr *_manager.Manager, installed []string) map[string]
 
 	cfg := getConfig()
 	if cfg != nil && cfg.AutoSwitch.ProjectFile != "" {
-		localVersion := mgr.GetLocalVersionRaw()
+		localVersion, err := mgr.ReadLocalVersionRaw()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read project-local version: %w", err)
+		}
 		if localVersion != "" {
 			if matchedVersion, err := _util.FindBestMatchingVersion(localVersion, installed); err == nil {
 				if _, exists := protected[matchedVersion]; !exists {
@@ -37,24 +44,24 @@ func getProtectedVersions(mgr *_manager.Manager, installed []string) map[string]
 		}
 	}
 
-	return protected
+	return protected, nil
 }
 
 // executePrune removes the specified versions and returns results.
-func executePrune(mgr *_manager.Manager, toRemove []string) (successful []string, totalFreedSpace int64, errors []string) {
+func executePrune(mgr *_manager.Manager, toRemove []string) (successful []string, totalFreedSpace int64, failures []error) {
 	for i, version := range toRemove {
 		_logger.Info("[%d/%d] Removing Go %s...", i+1, len(toRemove), version)
 
 		info, err := mgr.Info(version)
 		if err != nil {
 			_logger.Warning("Failed to get info for Go %s: %v", version, err)
-			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
 		if err := mgr.Uninstall(version); err != nil {
 			_logger.Warning("Failed to remove Go %s: %v", version, err)
-			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
@@ -70,7 +77,7 @@ func executePrune(mgr *_manager.Manager, toRemove []string) (successful []string
 // Returns a *cobra.Command that prunes unused versions and reports freed disk space.
 
 // reportPruneResults prints the summary of the prune operation and returns an error if any removals failed.
-func reportPruneResults(successful []string, totalFreedSpace int64, errors []string, protected map[string]string) error {
+func reportPruneResults(successful []string, totalFreedSpace int64, failures []error, protected map[string]string) error {
 	_logger.Info(strings.Repeat("─", 50))
 
 	if len(successful) > 0 {
@@ -81,21 +88,27 @@ func reportPruneResults(successful []string, totalFreedSpace int64, errors []str
 		_logger.Info("Total disk space freed: %s", _util.FormatBytes(totalFreedSpace))
 	}
 
-	if len(errors) > 0 {
-		_logger.ErrorWithHelp("Failed to remove %d version(s):", "Review the errors below and address any issues.", len(errors))
-		for _, err := range errors {
-			_logger.Info("  %s", err)
-		}
-		return fmt.Errorf("failed to prune %d version(s)", len(errors))
+	if len(failures) > 0 {
+		return withHelp(fmt.Errorf("failed to prune %d version(s): %w", len(failures), errors.Join(failures...)), "Review active versions and filesystem permissions, then retry.")
 	}
 
 	_logger.Success("Pruning completed successfully!")
 	_logger.Info("Remaining installed versions:")
-	for version, reason := range protected {
+	for _, version := range sortedVersionKeys(protected) {
+		reason := protected[version]
 		_logger.Info("  • Go %s (%s)", version, reason)
 	}
 
 	return nil
+}
+
+func sortedVersionKeys(versions map[string]string) []string {
+	keys := make([]string, 0, len(versions))
+	for version := range versions {
+		keys = append(keys, version)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func newPruneCmd() *cobra.Command {
@@ -104,6 +117,7 @@ func newPruneCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Remove all unused Go versions to reclaim disk space",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Uninstall all Go versions except those currently in use.
 
 Protected versions (will NOT be removed):
@@ -122,8 +136,7 @@ Examples:
 
 			installed, err := mgr.ListInstalled()
 			if err != nil {
-				_logger.ErrorWithHelp("Unable to list installed versions", "Verify that ~/.govman/versions exists and you have sufficient permissions.")
-				return fmt.Errorf("failed to list installed versions: %w", err)
+				return withHelp(fmt.Errorf("failed to list installed versions: %w", err), "Verify that the configured install directory is accessible.")
 			}
 
 			if len(installed) == 0 {
@@ -131,7 +144,10 @@ Examples:
 				return nil
 			}
 
-			protected := getProtectedVersions(mgr, installed)
+			protected, err := getProtectedVersions(mgr, installed)
+			if err != nil {
+				return err
+			}
 
 			var toRemove []string
 			for _, version := range installed {
@@ -143,14 +159,16 @@ Examples:
 			if len(toRemove) == 0 {
 				_logger.Success("No unused versions to prune")
 				_logger.Info("All %d installed version(s) are currently in use:", len(installed))
-				for version, reason := range protected {
+				for _, version := range sortedVersionKeys(protected) {
+					reason := protected[version]
 					_logger.Info("  • Go %s (%s)", version, reason)
 				}
 				return nil
 			}
 
 			_logger.Info("Protected versions (will be kept):")
-			for version, reason := range protected {
+			for _, version := range sortedVersionKeys(protected) {
+				reason := protected[version]
 				_logger.Info("  ✓ Go %s (%s)", version, reason)
 			}
 			_logger.Info("")
@@ -161,6 +179,9 @@ Examples:
 			_logger.Info("")
 
 			if !skipConfirm {
+				if getConfig().Quiet {
+					return withUsageHelp(cmd, fmt.Errorf("quiet pruning requires --yes"), "Pass --yes to confirm without an interactive prompt.")
+				}
 				if !confirmAction("Proceed with pruning?") {
 					_logger.Info("Pruning cancelled.")
 					return nil
@@ -170,9 +191,9 @@ Examples:
 			_logger.Info("Pruning %d unused Go version(s)...", len(toRemove))
 			_logger.Progress("Removing unused installations")
 
-			successful, totalFreedSpace, errors := executePrune(mgr, toRemove)
+			successful, totalFreedSpace, failures := executePrune(mgr, toRemove)
 
-			return reportPruneResults(successful, totalFreedSpace, errors, protected)
+			return reportPruneResults(successful, totalFreedSpace, failures, protected)
 		},
 	}
 

@@ -135,10 +135,10 @@ A symbolic link pointing from `~/.govman/bin/go` to the active version's Go bina
 YAML file at `~/.govman/config.yaml` storing govman settings.
 
 ### Mirror
-Alternative download source for Go releases. Useful in regions with restricted access to golang.org.
+Reserved compatibility configuration in v1.3.4; it does not route downloads. Controlled sources use `go_releases.api_url` and `go_releases.download_url`.
 
 ### Download Config
-Settings controlling download behavior (parallel, timeout, retries).
+Settings controlling timeout and retries. Parallel-related fields are reserved/no-op in v1.3.4.
 
 ### Auto-switch Config
 Settings controlling automatic version switching behavior.
@@ -149,7 +149,7 @@ Settings controlling automatic version switching behavior.
 Official Go releases API providing version metadata and download links.
 
 ### Parallel Download
-Downloading a file using multiple simultaneous connections for faster speed.
+A compatibility term from older documentation. govman v1.3.4 downloads each archive sequentially.
 
 ### Download Resume
 Continuing an incomplete download from where it left off.

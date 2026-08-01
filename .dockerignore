@@ -1,0 +1,9 @@
+.git
+.github
+.DS_Store
+build
+coverage
+dist
+docs/v1.3.4-codebase-audit.md
+coverage.out
+gosec-report.sarif

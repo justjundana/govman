@@ -17,6 +17,7 @@ func newCurrentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "current",
 		Short: "Display comprehensive current Go version information",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Show detailed information about the currently active Go version.
 
 Information displayed:
@@ -33,16 +34,12 @@ Use this to verify your environment and troubleshoot version issues.`,
 			_logger.Verbose("Detecting currently active Go version")
 			current, err := mgr.Current()
 			if err != nil {
-				_logger.ErrorWithHelp("No Go version is currently active in your environment", "Install a Go version with 'govman install latest', then activate it with 'govman use <version>'.")
-				_logger.Info("Quick setup: govman install latest && govman use latest --default")
-				return fmt.Errorf("no Go version is currently active")
+				return withHelp(fmt.Errorf("unable to determine the active Go version: %w", err), "Install a Go version with 'govman install latest', then activate it with 'govman use <version>'.")
 			}
 
 			info, err := mgr.Info(current)
 			if err != nil {
-				_logger.Warning("Version %s is active but installation details are unavailable", current)
-				_logger.Info("Current Go version: %s", current)
-				return nil
+				return fmt.Errorf("active Go %s has unreadable installation details: %w", current, err)
 			}
 
 			_logger.Info("Current Go Environment:")

@@ -5,8 +5,42 @@ All notable changes to GOVMAN (Go Version Manager) will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-08-01
 
-## [1.3.3] - 2026-05-01
+### Security
+
+- Contained all version-derived filesystem operations under the configured installation root and rejected malformed, absolute, traversal, UNC, and volume-qualified version input.
+- Made archive extraction transactional; unsafe paths, links, excessive entries, oversized files, and excessive total output are rejected before an installation is committed.
+- Required SHA-256 verification for standalone installers and self-update release assets.
+- Hardened Unix shell config removal and Windows PATH updates against malformed state and unrelated data loss.
+
+### Fixed
+
+- Treated only complete toolchains with a valid `bin/go` executable as installed.
+- Activated the complete Go `bin` toolchain so `go`, `gofmt`, and sibling tools remain on the same version.
+- Made default and project-local activation transactional with rollback.
+- Preserved exact full-version pins while partial `major.minor` requests select the highest installed patch.
+- Corrected resumable download protocol validation, retry handling, cache isolation, and release-cache keying.
+- Corrected shell auto-switch restoration, generated version comparisons, command wrappers, and atomic integration updates.
+- Deferred Windows self-update replacement until the running executable exits and migrated legacy `govman.exe` layouts safely.
+- Corrected Docker health checks, target architecture handling, and deterministic base images.
+- Removed misleading CLI and documentation claims for reserved configuration fields.
+
+### Reliability
+
+- Isolated Viper state per configuration, enabled strict decoding, validated effective values, and used unique transactional temp files.
+- Added install metadata so installation timestamps no longer depend on archive-preserved binary mtimes.
+- Added OS-specific atomic symlink replacement and injectable service loggers.
+- Made build, release, artifact naming, and checksum generation deterministic and fail-fast.
+
+### Tests and CI
+
+- Added adversarial filesystem, archive, checksum, rollback, resume, and shell regressions.
+- Added Go 1.25/1.26 and OS test matrices, race tests, pinned static/security analysis, script validation, Docker multi-architecture validation, and GoReleaser snapshots.
+- Raised measured statement coverage to at least 80% overall and 70% for `internal/cli`; both thresholds are enforced by `make test-coverage`.
+
+
+## [1.3.3] - 2026-06-01
 
 ### 🔧 Patch Release - Code Quality & Stability Improvements
 
@@ -264,10 +298,10 @@ This release adds support for version aliases in the `use` command, multi-versio
 - Cross-platform compatibility (Windows, macOS, Linux, ARM)
 - Command-line interface with Cobra framework
 - Configuration management with Viper
-- Comprehensive test coverage for all core components
+- Unit tests for core components
 - Multi-shell support (Bash, Zsh, Fish, PowerShell, Command Prompt)
 - Automatic Go version switching with `.govman-version` files
-- Parallel downloads with resume capability
+- Resumable downloads
 - Cross-platform symlink management
 - Intelligent caching system with configurable expiry
 - Progress bars for download operations

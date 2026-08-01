@@ -22,6 +22,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize smart shell integration for seamless Go version switching",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Set up intelligent shell integration for automatic Go version management.
 
 Integration Features:
@@ -37,6 +38,7 @@ Supported Shells:
   • Zsh (.zshrc)
   • Fish (config.fish)
   • PowerShell (profile)
+  • Command Prompt (govman.cmd wrapper)
 
 After initialization, govman will automatically activate the correct
 Go version when you navigate to different projects.`,
@@ -46,8 +48,7 @@ Go version when you navigate to different projects.`,
 			if shellName != "" {
 				sh = getShellByName(shellName)
 				if sh == nil {
-					_logger.ErrorWithHelp("Unsupported shell: %s", "Supported shells: bash, zsh, fish, powershell. Use --shell flag to specify.", shellName)
-					return fmt.Errorf("unsupported shell: %s", shellName)
+					return withUsageHelp(cmd, fmt.Errorf("unsupported shell: %s", shellName), "Supported shells: bash, zsh, fish, powershell, cmd.")
 				}
 				_logger.Info("Using manually specified shell: %s", sh.Name())
 			} else {
@@ -57,14 +58,21 @@ Go version when you navigate to different projects.`,
 
 			cfg := getConfig()
 			binPath := cfg.GetBinPath()
+			sh = _shell.Configure(sh, _shell.IntegrationOptions{
+				BinPath:        binPath,
+				ConfigPath:     cfg.ConfigPath(),
+				ProjectFile:    cfg.AutoSwitch.ProjectFile,
+				InstallDir:     cfg.InstallDir,
+				DefaultVersion: cfg.DefaultVersion,
+				AutoSwitch:     cfg.AutoSwitch.Enabled,
+			})
 
 			_logger.Info("Initializing shell integration for %s...", sh.Name())
 			_logger.Progress("Configuring PATH and environment variables")
 
 			_logger.Verbose("Setting up shell integration with binary path: %s", binPath)
 			if err := _shell.InitializeShell(sh, binPath, force); err != nil {
-				_logger.ErrorWithHelp("Failed to configure shell integration", "Ensure you have write permissions to your shell configuration file and try again.")
-				return err
+				return withHelp(fmt.Errorf("failed to configure shell integration: %w", err), "Ensure you have write permissions to your shell configuration file and try again.")
 			}
 
 			_logger.Success("Shell integration configured successfully!")
@@ -83,13 +91,13 @@ Go version when you navigate to different projects.`,
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force re-initialization (overwrite existing configuration)")
-	cmd.Flags().StringVar(&shellName, "shell", "", "Target specific shell (bash, zsh, fish, powershell)")
+	cmd.Flags().StringVar(&shellName, "shell", "", "Target specific shell (bash, zsh, fish, powershell, cmd)")
 
 	return cmd
 }
 
 // getShellByName maps a shell name to its Shell implementation.
-// Supported values: bash, zsh, fish, powershell/pwsh. Returns nil if unsupported.
+// Supported values: bash, zsh, fish, powershell/pwsh, and cmd. Returns nil if unsupported.
 func getShellByName(name string) _shell.Shell {
 	switch name {
 	case "bash":

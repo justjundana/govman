@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  quality:
+    name: Source validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - run: go mod verify
+      - run: go mod tidy -diff
+      - name: Check formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l $(find . -type f -name '*.go' -not -path './vendor/*'))
+          test -z "$files" || { printf 'Go files need formatting:\n%s\n' "$files" >&2; exit 1; }
+      - run: go vet ./...
+
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: [1.25.x, 1.26.x]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - run: go test -timeout=10m ./...
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - run: go test -race -timeout=10m ./...
+
+  coverage:
+    name: Coverage thresholds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - run: make test-coverage
+
+  static-analysis:
+    name: Static and security analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - name: Install pinned tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+          go install honnef.co/go/tools/cmd/staticcheck@2026.1
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.24.7
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - run: golangci-lint run --timeout=5m
+      - run: staticcheck ./...
+      - run: gosec -quiet -severity high ./...
+      - run: govulncheck ./...
+
+  unix-scripts:
+    name: Unix scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check shell syntax
+        run: bash -n scripts/install.sh scripts/uninstall.sh
+      - name: Run shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh scripts/uninstall.sh
+
+  windows-integration:
+    name: Windows script validation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+      - name: Analyze PowerShell scripts
+        shell: pwsh
+        run: Get-ChildItem scripts -Filter '*.ps1' | Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit
+
+  docker:
+    name: Docker multi-architecture image
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4.2.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4.2.0
+      - name: Build amd64 and arm64 images
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            DATE=1970-01-01T00:00:00Z
+      - name: Verify native healthcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION=ci --build-arg COMMIT="${GITHUB_SHA}" --build-arg DATE=1970-01-01T00:00:00Z -t govman:ci .
+          container=$(docker run -d --entrypoint /bin/sh govman:ci -c 'while :; do sleep 60; done')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for _ in {1..15}; do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+            [[ $status == healthy ]] && exit 0
+            [[ $status == unhealthy ]] && exit 1
+            sleep 1
+          done
+          docker inspect "$container"
+          exit 1
+
+  snapshot:
+    name: Release snapshot
+    runs-on: ubuntu-latest
+    needs: [quality, test, race, coverage, unix-scripts, windows-integration, docker]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - uses: goreleaser/goreleaser-action@v7.2.1
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          args: release --snapshot --clean

@@ -22,11 +22,11 @@ func ExtractMajorMinor(version string) string {
 }
 
 // FindBestMatchingVersion finds the best matching installed version for a requested version.
-// It matches based on major.minor version (e.g., "1.25" matches "1.25.1", "1.25.4", etc.).
-// If multiple versions match, it returns the highest (latest patch) version.
+// A major.minor request matches the highest installed patch. Full stable and
+// prerelease versions are exact pins.
 //
 // Parameters:
-//   - requestedVersion: The version requested (can be partial like "1.25" or full like "1.25.4")
+//   - requestedVersion: The requested partial or exact version
 //   - installedVersions: List of installed versions to search from
 //
 // Returns:
@@ -34,11 +34,28 @@ func ExtractMajorMinor(version string) string {
 //
 // Examples:
 //   - requestedVersion="1.25", installedVersions=["1.25.1", "1.25.4", "1.26.0"] -> "1.25.4"
-//   - requestedVersion="1.25.4", installedVersions=["1.25.1", "1.24.3"] -> "1.25.1"
+//   - requestedVersion="1.25.4", installedVersions=["1.25.1", "1.24.3"] -> error
 //   - requestedVersion="1.25", installedVersions=["1.24.5", "1.26.0"] -> error
 func FindBestMatchingVersion(requestedVersion string, installedVersions []string) (string, error) {
 	if len(installedVersions) == 0 {
 		return "", fmt.Errorf("no versions installed")
+	}
+	if _, err := _golang.CompareVersions(requestedVersion, requestedVersion); err != nil {
+		return "", err
+	}
+	for _, installed := range installedVersions {
+		if _, err := _golang.CompareVersions(installed, installed); err != nil {
+			return "", fmt.Errorf("invalid installed version %q: %w", installed, err)
+		}
+		if installed == requestedVersion {
+			return installed, nil
+		}
+	}
+
+	// Only major.minor requests are flexible. Full stable and prerelease
+	// versions are reproducibility pins and must match exactly.
+	if strings.Count(requestedVersion, ".") != 1 || strings.ContainsAny(requestedVersion, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-") {
+		return "", fmt.Errorf("exact version %s is not installed", requestedVersion)
 	}
 
 	requestedMajorMinor := ExtractMajorMinor(requestedVersion)
@@ -64,7 +81,11 @@ func FindBestMatchingVersion(requestedVersion string, installedVersions []string
 	// If multiple matches, return the highest version
 	bestVersion := matchingVersions[0]
 	for _, v := range matchingVersions[1:] {
-		if _golang.CompareVersions(v, bestVersion) > 0 {
+		comparison, err := _golang.CompareVersions(v, bestVersion)
+		if err != nil {
+			return "", err
+		}
+		if comparison > 0 {
 			bestVersion = v
 		}
 	}
@@ -89,13 +110,15 @@ func IsWildcardPattern(version string) bool {
 //
 // Returns:
 //   - Slice of versions that match the pattern, sorted in descending order
-func MatchVersionPattern(pattern string, versions []string) []string {
+func MatchVersionPattern(pattern string, versions []string) ([]string, error) {
 	if pattern == "*" {
 		// Match all versions
 		result := make([]string, len(versions))
 		copy(result, versions)
-		sortVersionsDescending(result)
-		return result
+		if err := sortVersionsDescending(result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 
 	// Remove the wildcard suffix to get the prefix
@@ -110,8 +133,10 @@ func MatchVersionPattern(pattern string, versions []string) []string {
 		}
 	}
 
-	sortVersionsDescending(matched)
-	return matched
+	if err := sortVersionsDescending(matched); err != nil {
+		return nil, err
+	}
+	return matched, nil
 }
 
 // matchesPrefix checks if a version matches a given prefix pattern.
@@ -177,8 +202,15 @@ func isDigit(c byte) bool {
 }
 
 // sortVersionsDescending sorts versions in descending order (newest first).
-func sortVersionsDescending(versions []string) {
+func sortVersionsDescending(versions []string) error {
+	for _, version := range versions {
+		if _, err := _golang.CompareVersions(version, version); err != nil {
+			return fmt.Errorf("cannot sort invalid version %q: %w", version, err)
+		}
+	}
 	sort.Slice(versions, func(i, j int) bool {
-		return _golang.CompareVersions(versions[i], versions[j]) > 0
+		comparison, _ := _golang.CompareVersions(versions[i], versions[j])
+		return comparison > 0
 	})
+	return nil
 }

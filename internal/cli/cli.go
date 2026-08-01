@@ -2,31 +2,35 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	cobra "github.com/spf13/cobra"
 
 	_config "github.com/justjundana/govman/internal/config"
+	_logger "github.com/justjundana/govman/internal/logger"
 	_version "github.com/justjundana/govman/internal/version"
 )
 
 var (
-	cfgFile string
-	cfg     *_config.Config
-	cfgOnce sync.Once
+	cfgFile     string
+	quietFlag   bool
+	verboseFlag bool
+	cfg         *_config.Config
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "govman",
-	Short:   "Go Version Manager - Install and manage multiple Go versions",
-	Long:    createLongDescription(),
-	Version: _version.BuildVersion(),
+	Use:           "govman",
+	Short:         "Go Version Manager - Install and manage multiple Go versions",
+	Long:          createLongDescription(),
+	Version:       _version.BuildVersion(),
+	SilenceErrors: true,
+	SilenceUsage:  true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cleanupOldBackups()
-		return initConfig()
+		return initConfig(cmd.Flags().Changed("quiet"), cmd.Flags().Changed("verbose"))
 	},
 }
 
@@ -38,8 +42,8 @@ func createLongDescription() string {
 		"🎯 Zero configuration - works out of the box, no setup required",
 		"📁 Project-specific versions with .govman-goversion file support",
 		"🚫 No admin/sudo required - fully userspace installation",
-		"💾 Intelligent caching with offline mode support",
-		"📦 Parallel downloads with automatic resume on failure",
+		"💾 Verified download caching to avoid duplicate transfers",
+		"📦 Resumable downloads with integrity verification",
 		"🌍 Cross-platform support (Windows, macOS, Linux, ARM)",
 		"🧹 Built-in cleanup tools to manage disk space efficiently",
 	}
@@ -47,7 +51,7 @@ func createLongDescription() string {
 	var sb strings.Builder
 	sb.WriteString("\nKey Features:\n")
 	for _, feature := range features {
-		sb.WriteString(fmt.Sprintf("  %s\n", feature))
+		_, _ = fmt.Fprintf(&sb, "  %s\n", feature)
 	}
 	return sb.String()
 }
@@ -55,17 +59,30 @@ func createLongDescription() string {
 // Execute runs the root Cobra command.
 // It shows an ASCII banner when no CLI arguments are provided and returns any execution error.
 func Execute() error {
-
 	if len(os.Args) <= 1 {
 		showBanner()
 	}
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	if err != nil {
+		renderCommandError(rootCmd.ErrOrStderr(), rootCmd, err)
+	}
+	return err
 }
 
-// showBanner prints a colored ASCII banner to stdout.
+// showBanner prints the ASCII banner to stdout and only uses color on a TTY.
 // It has no parameters and no return value.
 func showBanner() {
-	fmt.Println()
+	colorEnabled := false
+	if os.Getenv("NO_COLOR") == "" {
+		if info, err := os.Stdout.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			colorEnabled = true
+		}
+	}
+	renderBanner(os.Stdout, colorEnabled)
+}
+
+func renderBanner(writer io.Writer, colorEnabled bool) {
+	_, _ = fmt.Fprintln(writer)
 	banner := `
 	 ██████╗  ██████╗ ██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗
 	██╔════╝ ██╔═══██╗██║   ██║████╗ ████║██╔══██╗████╗  ██║
@@ -76,37 +93,79 @@ func showBanner() {
 
 	lines := strings.Split(banner, "\n")
 
-	const (
+	color, bold, reset := "", "", ""
+	if colorEnabled {
 		color = "\033[38;5;75m"
-		bold  = "\033[1m"
+		bold = "\033[1m"
 		reset = "\033[0m"
-	)
+	}
 
 	for _, line := range lines {
 		if strings.TrimSpace(line) != "" {
-			fmt.Printf("%s%s%s%s\n", color, bold, line, reset)
+			_, _ = fmt.Fprintf(writer, "%s%s%s%s\n", color, bold, line, reset)
 		}
 	}
-	fmt.Println()
+	_, _ = fmt.Fprintln(writer)
 }
 
-// initConfig lazily loads the application configuration once using sync.Once.
-// Returns an error if configuration loading fails; otherwise nil.
-func initConfig() error {
-	var initErr error
-	cfgOnce.Do(func() {
-		var err error
-		cfg, err = _config.Load(cfgFile)
-		if err != nil {
-			initErr = fmt.Errorf("failed to load config: %w", err)
+// initConfig loads a fresh isolated configuration and then applies explicit
+// output flags. Failed loads are never cached.
+func initConfig(quietChanged, verboseChanged bool) error {
+	loaded, err := _config.Load(cfgFile)
+	if err != nil {
+		cfg = nil
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	if err := applyOutputFlags(
+		loaded,
+		quietFlag,
+		quietChanged,
+		verboseFlag,
+		verboseChanged,
+	); err != nil {
+		cfg = nil
+		return err
+	}
+	if err := loaded.Validate(); err != nil {
+		cfg = nil
+		return fmt.Errorf("invalid effective config: %w", err)
+	}
+
+	level := _logger.NormalLevel
+	if loaded.Quiet {
+		level = _logger.QuietLevel
+	} else if loaded.Verbose {
+		level = _logger.VerboseLevel
+	}
+	_logger.Get().SetLevel(level)
+	cfg = loaded
+	return nil
+}
+
+func applyOutputFlags(config *_config.Config, quiet bool, quietChanged bool, verbose bool, verboseChanged bool) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if quietChanged && verboseChanged && quiet && verbose {
+		return fmt.Errorf("--quiet and --verbose cannot be enabled together")
+	}
+	if verboseChanged {
+		config.Verbose = verbose
+		if verbose {
+			config.Quiet = false
 		}
-	})
-	return initErr
+	}
+	if quietChanged {
+		config.Quiet = quiet
+		if quiet {
+			config.Verbose = false
+		}
+	}
+	return nil
 }
 
 // getConfig returns the loaded configuration instance.
 // No parameters; returns a pointer to Config.
-// Thread-safe after initConfig completes via sync.Once.
 func getConfig() *_config.Config {
 	return cfg
 }
@@ -129,9 +188,34 @@ func cleanupOldBackups() {
 	}
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), baseName+".bak.") {
-			oldBackup := filepath.Join(dir, entry.Name())
-			os.Remove(oldBackup) // Best-effort, ignore errors
+		prefix := baseName + ".bak."
+		if !strings.HasPrefix(entry.Name(), prefix) || !isDecimal(strings.TrimPrefix(entry.Name(), prefix)) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			_logger.Verbose("Failed to inspect old backup %s: %v", entry.Name(), err)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			_logger.Verbose("Skipping non-regular backup candidate: %s", entry.Name())
+			continue
+		}
+		oldBackup := filepath.Join(dir, entry.Name())
+		if err := os.Remove(oldBackup); err != nil {
+			_logger.Verbose("Failed to remove old backup %s: %v", entry.Name(), err)
 		}
 	}
+}
+
+func isDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }

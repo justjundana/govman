@@ -409,12 +409,10 @@ go tool cover -html=coverage.out
 
 (For maintainers)
 
-1. Update version in `internal/version/version.go`
-2. Update `CHANGELOG.md`
-3. Create tag: `git tag -a v1.0.0 -m "Release v1.0.0"`
-4. Push tag: `git push origin v1.0.0`
-5. GitHub Actions builds and publishes
-6. Create GitHub Release with notes
+1. Update `CHANGELOG.md` and release notes.
+2. Run validation, race, coverage, and release snapshot gates from a clean worktree.
+3. Create an annotated SemVer tag that points at the release commit.
+4. Push the tag; GitHub Actions publishes only after all required jobs succeed.
 
 ## Questions?
 
@@ -425,7 +423,7 @@ go tool cover -html=coverage.out
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the Apache 2.0 License.
+By contributing, you agree that your contributions will be licensed under the MIT License.
 
 ## Recognition
 

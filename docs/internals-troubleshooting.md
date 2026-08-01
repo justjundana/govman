@@ -1,514 +1,84 @@
-# Internals
+# Internal troubleshooting
 
-Deep dive into govman's internal implementation details.
+This guide is for maintainers diagnosing implementation and CI failures.
 
-## Core Packages
+## Start with the release gates
 
-### internal/manager
-
-The heart of govman, coordinating all version management operations.
-
-#### Manager Structure
-
-```go
-type Manager struct {
-	config     *_config.Config
-	downloader *_downloader.Downloader
-	shell      _shell.Shell
-}
+```bash
+make validate
+make test-race
+make test-coverage
+make release-snapshot
 ```
 
-#### Key Responsibilities
-
-- **Version Installation**: Coordinates download, verification, and extraction
-- **Version Switching**: Updates symlinks and configuration
-- **Version Resolution**: Translates "latest", "1.25" to exact versions
-- **State Management**: Tracks installed versions and active version
-
-#### Critical Methods
-
-**ResolveVersion**: Handles version string normalization
-- `"latest"` → queries API for newest stable release
-- `"1.25"` → finds latest 1.25.x patch version
-- `"1.25.1"` → validates exact version exists
-
-**Install**: Multi-step installation process
-1. Resolve version string
-2. Check if already installed
-3. Get download metadata from API
-4. Download via Downloader
-5. Verify installation success
-
-**Use**: Version activation with three modes
-- Session-only: No persistence, PATH update only
-- Default: Updates config.yaml, creates global symlink
-- Local: Writes .govman-goversion file in current directory
-
-### internal/downloader
-
-Handles all download and extraction logic.
-
-#### Download Strategy
-
-**Intelligent Caching**:
-```go
-cachePath := filepath.Join(cacheDir, filename)
-if fileExists(cachePath) && sizeMatches(cachePath, expectedSize) {
-    return useCachedFile(cachePath)
-}
-```
-
-**Resume Support**:
-- Uses HTTP Range header for partial downloads
-- Continues from last byte received when server responds with `206 Partial Content`
-- If server does not support resume (responds with `200 OK`), truncates the partial file and restarts the download to avoid data corruption
-
-**Parallel Downloads** (configurable):
-- Multiple HTTP connections
-- Chunks downloaded concurrently
-- Progress aggregated across connections
-
-#### Checksum Verification
-
-```go
-calculated := sha256.Sum256(fileBytes)
-calculatedHex := hex.EncodeToString(calculated[:])
-if calculatedHex != expectedChecksum {
-    return ErrChecksumMismatch
-}
-```
-
-#### Archive Extraction
-
-**Tar.gz (Linux/macOS)**:
-```go
-gzipReader, _ := gzip.NewReader(file)
-tarReader := tar.NewReader(gzipReader)
-
-for {
-    header, err := tarReader.Next()
-    // Extract each file, preserving permissions
-}
-```
-
-**Zip (Windows)**:
-```go
-zipReader, _ := zip.OpenReader(archivePath)
-for _, file := range zipReader.File {
-    // Extract each file
-}
-```
-
-### internal/golang
-
-Interfaces with Go's official releases API.
-
-#### API Integration
-
-**Endpoint**: `https://go.dev/dl/?mode=json&include=all`
-
-**Response Caching**:
-```go
-type cachedReleases struct {
-    releases []Release
-    fetchedAt time.Time
-    expiry    time.Duration
-}
-
-func (c *cachedReleases) isValid() bool {
-    return time.Since(c.fetchedAt) < c.expiry
-}
-```
-
-**Cache Expiry**: 10 minutes (configurable in config)
-
-#### Version Comparison Algorithm
-
-```go
-func CompareVersions(v1, v2 string) int {
-    // 1. Normalize versions (remove "go" prefix)
-    // 2. Parse into major.minor.patch
-    // 3. Compare numbers
-    // 4. Compare prerelease tags if numbers equal
-    // Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
-}
-```
-
-**Prerelease Ranking**:
-1. Stable (no suffix) - highest
-2. RC (release candidate)
-3. Beta
-4. α Alpha - lowest
-
-### internal/config
-
-Configuration management with validation.
-
-#### Configuration Loading
-
-```go
-func Load() (*Config, error) {
-    viper.SetConfigName("config")
-    viper.SetConfigType("yaml")
-    viper.AddConfigPath("~/.govman")
-    
-    if err := viper.ReadInConfig(); err != nil {
-        // Create default config
-        return newDefaultConfig(), nil
-    }
-    
-    var cfg Config
-    viper.Unmarshal(&cfg)
-    cfg.setDefaults()
-    cfg.expandPaths()
-    cfg.validate()
-    cfg.createDirectories()
-    
-    return &cfg, nil
-}
-```
-
-#### Path Expansion
-
-```go
-func expandPaths(cfg *Config) error {
-    // Expand ~ to home directory
-    home, _ := os.UserHomeDir()
-    cfg.InstallDir = strings.Replace(cfg.InstallDir, "~", home, 1)
-    cfg.CacheDir = strings.Replace(cfg.CacheDir, "~", home, 1)
-}
-```
-
-#### Path Validation
-
-```go
-func validatePath(path string) error {
-    // Prevent directory traversal
-    if strings.Contains(path, "..") {
-        return ErrInvalidPath
-    }
-    
-    // Ensure absolute path
-    if !filepath.IsAbs(path) {
-        return ErrNotAbsolutePath
-    }
-    
-    return nil
-}
-```
-
-### internal/shell
-
-Cross-platform shell integration.
-
-#### Shell Detection
-
-**Unix/Linux/macOS**:
-```go
-func Detect() Shell {
-    shellEnv := os.Getenv("SHELL")
-    
-    if strings.Contains(shellEnv, "bash") {
-		return &_shell.BashShell{}
-	} else if strings.Contains(shellEnv, "zsh") {
-		return &_shell.ZshShell{}
-	} else if strings.Contains(shellEnv, "fish") {
-		return &_shell.FishShell{}
-	}
-
-	return &_shell.BashShell{} // Default
-}
-```
-
-**Windows**:
-```go
-func Detect() Shell {
-    // Check if running in PowerShell
-    if len(os.Getenv("PSModulePath")) > 0 {
-        return &PowerShell{}
-    }
-    
-    return &CmdShell{} // Default to cmd
-}
-```
-
-#### Integration Code Generation
-
-**Template-based**:
-```go
-const bashTemplate = `
-# GOVMAN - Go Version Manager
-export PATH="{{.BinPath}}:$PATH"
-export GOTOOLCHAIN=local
-
-govman() {
-    # Wrapper function implementation
-}
-# END GOVMAN
-`
-
-func generateSetupCode(binPath string) string {
-    tmpl := template.Must(template.New("bash").Parse(bashTemplate))
-    var buf bytes.Buffer
-    tmpl.Execute(&buf, map[string]string{"BinPath": binPath})
-    return buf.String()
-}
-```
-
-### internal/logger
-
-Structured logging with levels and colors.
-
-#### Log Levels
-
-```go
-type LogLevel int
-
-const (
-    LevelQuiet   LogLevel = 0  // Errors only
-    LevelNormal  LogLevel = 1  // Info, success, warnings, errors
-    LevelVerbose LogLevel = 2  // + Debug messages
-)
-```
-
-#### ANSI Color Support
-
-```go
-const (
-    ColorReset   = "\033[0m"
-    ColorRed     = "\033[31m"
-    ColorGreen   = "\033[32m"
-    ColorYellow  = "\033[33m"
-    ColorBlue    = "\033[34m"
-    ColorMagenta = "\033[35m"
-    ColorCyan    = "\033[36m"
-)
-
-func colorize(color, text string) string {
-    if !supportsColor() {
-        return text
-    }
-    return color + text + ColorReset
-}
-```
-
-**Color Detection**:
-- Check terminal type (`TERM` environment variable)
-- Check if stdout is a terminal (not piped)
-- Disable on Windows cmd.exe (unless Windows Terminal)
-
-### internal/progress
-
-Progress bar implementation.
-
-#### Progress Bar Structure
-
-```go
-type ProgressBar struct {
-    total       int64
-    current     int64
-    width       int
-    description string
-    startTime   time.Time
-    lastUpdate  time.Time
-}
-```
-
-#### Rendering
-
-```go
-func (p *ProgressBar) Render() string {
-    percentage := float64(p.current) / float64(p.total) * 100
-    filled := int(percentage / 100 * float64(p.width))
-    
-    bar := strings.Repeat("█", filled)
-    bar += strings.Repeat("░", p.width-filled)
-    
-    speed := p.calculateSpeed()
-    eta := p.calculateETA()
-    
-    return fmt.Sprintf("%s [%s] %.1f%% %s/s ETA: %s",
-        p.description, bar, percentage, formatBytes(speed), formatDuration(eta))
-}
-```
-
-**Update Throttling**:
-- Only redraw every 100ms to avoid flickering
-- Force update on completion
-
-**Value Clamping**:
-- `Set()` clamps values to `[0, total]` range
-- Negative values are clamped to `0`, values exceeding `total` are clamped to `total`
-
-### internal/symlink
-
-Symlink creation with cross-platform support.
-
-#### Symlink Creation
-
-```go
-func Create(target, link string) error {
-    // Create parent directory
-    os.MkdirAll(filepath.Dir(link), 0755)
-    
-    // Create temp symlink and atomically rename
-    tmpLink := link + ".tmp." + randomSuffix()
-    os.Symlink(target, tmpLink)
-    return os.Rename(tmpLink, link)
-}
-```
-
-**Windows Considerations**:
-- Requires Developer Mode or admin rights
-- Falls back to directory junction on older Windows
-- PowerShell handles PATH correctly with symlinks
-
-## Algorithms
-
-### Version Resolution
-
-```
-Input: "1.25"
-1. Fetch all available versions from API
-2. Filter to 1.25.x versions
-3. Sort by semantic version
-4. Return highest (e.g., "1.25.1")
-```
-
-### Semantic Version Sorting
-
-```go
-func sortVersions(versions []string) {
-    sort.Slice(versions, func(i, j int) bool {
-        return CompareVersions(versions[i], versions[j]) > 0
-    })
-}
-```
-
-## Concurrency and Safety
-
-### Atomic Operations
-
-**Configuration Updates**:
-```go
-func (c *Config) Save() error {
-    tempFile := filepath.Join(os.TempDir(), "govman-config-"+uuid.New()+".yaml")
-    
-    // Write to temp file
-    viper.WriteConfigAs(tempFile)
-    
-    // Atomic rename
-    os.Rename(tempFile, c.path)
-}
-```
-
-**Symlink Updates**:
-- Atomic replacement via temp-symlink + `os.Rename`
-- No window where symlink is missing
-
-### No Race Conditions
-
-- Single-threaded command execution
-- No shared mutable state
-- Each invocation isolated
-
-## Performance Optimizations
-
-### API Response Caching
-
-Avoids redundant API calls:
-```go
-var releaseCache struct {
-    sync.RWMutex
-    releases  []Release
-    fetchedAt time.Time
-}
-
-func GetAvailableVersions() ([]Release, error) {
-    releaseCache.RLock()
-    if time.Since(releaseCache.fetchedAt) < 10*time.Minute {
-        defer releaseCache.RUnlock()
-        return releaseCache.releases, nil
-    }
-    releaseCache.RUnlock()
-    
-    // Fetch and update cache
-}
-```
-
-### Download Cache
-
-Persistent file cache:
-- Downloads stored in `~/.govman/cache/`
-- Reused across installations
-- Verified by size before use
-
-### Parallel Downloads
-
-When enabled:
-```go
-const defaultMaxConnections = 4
-
-func parallelDownload(url string, dest string) error {
-    // Split file into chunks
-    // Download chunks concurrently
-    // Reassemble
-}
-```
-
-## Error Handling Patterns
-
-### Error Wrapping
-
-```go
-if err := download(url); err != nil {
-    return fmt.Errorf("failed to download %s: %w", url, err)
-}
-```
-
-### Retry Logic
-
-```go
-func withRetry(operation func() error, maxRetries int, delay time.Duration) error {
-    for i := 0; i < maxRetries; i++ {
-        if err := operation(); err == nil {
-            return nil
-        }
-        time.Sleep(delay)
-    }
-    return ErrMaxRetriesExceeded
-}
-```
-
-## Testing Strategies
-
-### Unit Tests
-
-Each package has comprehensive tests:
-- Happy path scenarios
-- Error conditions
-- Edge cases
-
-### Test Helpers
-
-```go
-func createTestConfig(t *testing.T) *Config {
-    tmpDir := t.TempDir()
-    return &Config{
-        InstallDir: filepath.Join(tmpDir, "versions"),
-        CacheDir:   filepath.Join(tmpDir, "cache"),
-    }
-}
-```
-
-### Mocking External Dependencies
-
-```go
-type mockDownloader struct {
-    downloadFunc func(url, dest string) error
-}
-
-func (m *mockDownloader) Download(url, dest string) error {
-    return m.downloadFunc(url, dest)
-}
-```
+Do not run `go mod tidy` or formatting as a repair step inside CI; `validate` is intentionally read-only.
+
+## Configuration failures
+
+- Unknown YAML key: strict decoding rejected a typo or obsolete field.
+- Permission error: config must be a regular non-symlink file and is restricted to `0600`.
+- Overlap error: `install_dir` and `cache_dir` cannot contain one another.
+- URL/template error: endpoints must be absolute HTTP(S) without credentials; the Go download template needs one `%s`.
+
+Reproduce with a temp HOME and explicit `--config`. Avoid resetting global Viper state; each config owns its decoder.
+
+## Version/path failures
+
+Version operations accept aliases only before filesystem boundaries. A managed path requires a strict concrete Go version and a successful containment check relative to `install_dir`.
+
+When investigating deletion or activation, log the requested version, resolved concrete version, install root, relative candidate, and canonical executable. Never weaken containment to accept an unexpected path.
+
+## Download failures
+
+Use a local HTTP test server to reproduce exact response status and headers. Check:
+
+- metadata filename equals the URL path basename;
+- expected size is positive;
+- `206 Content-Range` start/end/total and body length agree;
+- `200` after a range request resets the partial;
+- `408`, `429`, and `5xx` close bodies before retry;
+- final bytes equal metadata size;
+- checksum mismatch removes the committed corrupt cache and permits one fresh retry.
+
+Downloads are sequential. The parallel compatibility fields are intentionally inactive.
+
+## Extraction failures
+
+Adversarial fixtures should cover tar.gz and zip traversal, backslashes, absolute/volume/UNC paths, links, oversize entries, excessive totals/counts, corrupt streams, and missing `bin/go`.
+
+Extraction occurs through `os.Root` into a unique sibling staging directory. A failure must leave no final directory. Do not reintroduce link extraction without a documented corpus requirement and containment proof.
+
+## Activation failures
+
+Default activation spans toolchain links, config persistence, and PATH output. Local activation spans project-file persistence and PATH output. Tests must assert rollback state, not only an error string.
+
+Check that all regular executables in the selected Go `bin` directory are linked and stale govman-owned links are removed without replacing unrelated files.
+
+## Shell failures
+
+Generated wrappers must:
+
+- locate the command after global flags;
+- invoke the binary once;
+- accept exactly one validated PATH line;
+- keep logs off stdout;
+- restore the default after leaving a project;
+- honor effective config path, project filename, install root, and auto-switch setting.
+
+Profile updates require one complete marker block and same-directory transactional replacement. Preserve permissions/newline style and reject symlink destinations.
+
+## Self-update failures
+
+Check exact platform asset naming, unique checksum entry, bounded response size, downloaded binary `--version`, and retained backup. On Windows, inspect detached helper arguments and rollback; same-process replacement is not expected to work for a locked executable.
+
+## Platform scripts
+
+- Bash: run syntax checks on Linux and macOS, plus ShellCheck on Linux.
+- PowerShell: run PSScriptAnalyzer on Windows.
+- Batch: preserve PATH entry text and registry type; never enable delayed expansion while reading a PATH containing `!`.
+
+The entire `test/` directory contains local-only helpers. It is ignored and must not be referenced by tracked CI.
+
+## Coverage diagnosis
+
+`make test-coverage` writes ignored `coverage.out` and `coverage/coverage.html`, then enforces 80% total and 70% CLI statement coverage. Add tests through production boundaries with temp directories and local servers; do not copy production logic into tests.

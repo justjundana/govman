@@ -1,409 +1,110 @@
-# Architecture Overview
+# Architecture
 
-High-level architecture and design decisions for govman.
+govman is a single Go CLI. Commands orchestrate configuration, release metadata, downloads, managed installations, and shell integration; there is no daemon or background service.
 
-## Design Philosophy
+## Package responsibilities
 
-govman is built with these core principles:
+| Package | Responsibility |
+|---|---|
+| `cmd/govman` | Process entry point and final exit status |
+| `internal/cli` | Cobra commands, argument validation, output ownership, self-update |
+| `internal/config` | Isolated Viper decoding, defaults, validation, transactional persistence |
+| `internal/manager` | Version resolution, install/uninstall, activation, local/default state |
+| `internal/downloader` | HTTP retry/resume, cache commit, checksum, safe extraction |
+| `internal/golang` | Go release API, SemVer comparison, install metadata |
+| `internal/shell` | Shell detection, generated wrappers, transactional profile updates |
+| `internal/symlink` | Refuse non-link destinations and atomically replace managed links |
+| `internal/progress` | Writer-injected, quiet-aware transfer progress |
+| `internal/logger` | Thread-safe output abstraction; injected into manager/downloader services |
+| `internal/util` | Formatting and installed-version matching |
+| `internal/version` | Build metadata supplied by release linker flags |
 
-1. **Simplicity**: Easy to use, easy to understand
-2. **Safety**: No root required, safe defaults
-3. **Speed**: Fast downloads, instant switching
-4. **Reliability**: Checksum verification, atomic operations
-5. **Cross-platform**: Works on Linux, macOS, Windows
+## Install flow
 
-## Architecture Layers
-
-```
-┌─────────────────────────────────────┐
-│         User Interface              │  (CLI, Shell Integration)
-├─────────────────────────────────────┤
-│      Application Logic              │  (Commands, Workflows)
-├─────────────────────────────────────┤
-│       Core Services                 │  (Manager, Downloader, Config)
-├─────────────────────────────────────┤
-│        Utilities                    │  (Logger, Progress, Format)
-├─────────────────────────────────────┤
-│    External Dependencies            │  (Cobra, Viper, stdlib)
-└─────────────────────────────────────┘
-```
-
-### Layer Descriptions
-
-**User Interface**:
-- CLI commands (`internal/cli/`)
-- Shell integration code generation (`internal/shell/`)
-- User-facing messages and help text
-
-**Application Logic**:
-- Command orchestration
-- Input validation
-- Workflow coordination
-
-**Core Services**:
-- Version management (`internal/manager/`)
-- Download and extraction (`internal/downloader/`)
-- Configuration (`internal/config/`)
-- Go releases API (`internal/golang/`)
-
-**Utilities**:
-- Logging (`internal/logger/`)
-- Progress reporting (`internal/progress/`)
-- String formatting (`internal/util/`)
-
-**External Dependencies**:
-- Cobra (CLI framework)
-- Viper (configuration)
-- Go standard library
-
-## Component Diagram
-
-```
-┌────────────────────────────────────────────────────────┐
-│                       CLI Layer                        │
-│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐     │
-│  │Install│ │ Use   │ │ List  │ │ Info  │ │ Init  │ ... │
-│  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘     │
-└──────┼───-─────┼────-────┼-────────┼────-────┼─────────┘
-       │         │         │         │         │
-       └──────-─-┴────-────┴─────-───┴───-─────┘
-                           │
-                  ┌────────▼────────┐
-                  │                 │
-                  │    Manager      │
-                  │                 │
-                  └────┬───┬───┬────┘
-                       │   │   │
-           ┌───────────┘   │   └──────────┐
-           │               │              │
-      ┌────▼─────┐  ┌-─────▼─────┐  ┌───-─▼─-──┐
-      │Downloader│  │   Config   │  │  Golang  │
-      └────┬─────┘  └─-──────────┘  └────-┬────┘
-           │                              │
-      ┌────▼─────┐                   ┌───-▼-───┐
-      │ Progress │                   │ go.dev  │
-      └──────────┘                   │   API   │
-                                     └─────────┘
+```text
+CLI input
+  -> strict version/alias resolution
+  -> release metadata lookup
+  -> unique cache partial + cross-process lock
+  -> bounded retry/resume protocol
+  -> size and SHA-256 verification
+  -> unique sibling staging directory
+  -> bounded link-free extraction through os.Root
+  -> required executable validation
+  -> atomic rename to final version directory
+  -> atomic install metadata write
 ```
 
-## Key Design Patterns
-
-### 1. Facade Pattern
-
-`Manager` acts as a facade for core services:
-
-```go
-type Manager struct {
-	config     *_config.Config
-	downloader *_downloader.Downloader
-	shell      _shell.Shell
-}
-```
-
-CLI commands interact with `Manager`, which coordinates lower-level services.
-
-### 2. Strategy Pattern
-
-Different shell implementations via `Shell` interface:
-
-```go
-type Shell interface {
-	Name() string
-	DisplayName() string
-	ConfigFile() string
-	PathCommand(path string) string
-	SetupCommands(binPath string) []string
-	IsAvailable() bool
-	ExecutePathCommand(path string) error
-}
-```
-
-// Implementations:
-type BashShell struct{}
-type ZshShell struct{}
-type FishShell struct{}
-type PowerShell struct{}
-type CmdShell struct{}
-```
-
-### 3. Singleton Pattern
-
-Global logger instance:
-
-```go
-var globalLogger *Logger
-var once sync.Once
-
-func Get() *Logger {
-    once.Do(func() {
-        globalLogger = New()
-    })
-    return globalLogger
-}
-```
-
-### 4. Template Method
-
-Download workflow in Downloader:
-
-```go
-func (d *Downloader) Download(url, installDir, version string) error {
-    // Template method defines steps:
-    1. Get file info
-    2. Download file
-    3. Verify checksum
-    4. Extract archive
-}
-```
-
-## Data Flow Architecture
-
-```
-User Input
-    ↓
-CLI Parsing (Cobra)
-    ↓
-Command Validation
-    ↓
-Manager Orchestration
-    ↓
-Service Execution (Parallel where safe)
-    ↓
-Result Aggregation
-    ↓
-User Output (Formatted by Logger)
-```
+A failed download may retain one bounded partial for a future resume. A failed extraction removes staging. The final install directory appears only after validation.
 
-## State Management
+## Activation flow
 
-### Application State
+Session activation prints one shell-specific PATH command. The shell wrapper validates and evaluates that command exactly once.
 
-- **Method**: Configuration file (`~/.govman/config.yaml`)
-- **Format**: YAML
-- **Persistence**: Disk-based
-- **Updates**: Atomic write (temp file + rename)
+Project-local activation snapshots `.govman-goversion`, writes the new exact version atomically, and restores the old file if PATH command generation fails.
 
-### Runtime State
+Default activation snapshots managed toolchain links and the old config value, updates links for every regular executable in the selected Go `bin` directory, persists config, and rolls back both state sets if a later step fails.
 
-- **Current version**: Resolved from symlink or environment
-- **Session state**: In-memory (not persisted)
-- **Progress**: Ephemeral UI state
+## Managed state
 
-### No Global Mutable State
+- `config.yaml`: effective settings and default version, mode `0600`.
+- `versions/go<version>`: committed Go toolchains.
+- `versions/go<version>/.govman-install.json`: UTC install completion metadata.
+- `cache`: verified archives, resumable partials, and short-lived lock files.
+- `bin`: govman executable/wrapper and managed active toolchain links.
+- `.govman-goversion`: current-directory project version pin.
+- shell profile block: generated integration between exact govman markers.
 
-- Configuration passed explicitly
-- No global variables (except logger singleton)
-- Each command execution is isolated
+Each config load owns a separate Viper instance. Release metadata cache is the only shared service cache; it is keyed by endpoint/policy, deduplicates concurrent fetches, and returns clones.
 
-## Error Handling Strategy
+## Version semantics
 
-### Layered Error Handling
+- `latest` and `stable` resolve to the newest eligible stable release for install.
+- Installed alias resolution selects the newest installed version.
+- `major.minor` selects the highest matching installed patch where installed resolution is required.
+- Full stable and prerelease versions are exact pins.
+- Only strict concrete versions may reach managed path construction.
 
-```
-Low-level error (e.g., HTTP 404)
-    ↓ wrapped with context
-Mid-level error (e.g., "failed to download")
-    ↓ formatted for user
-High-level error (e.g., "Go 1.25.1 not available for your platform")
-    ↓ displayed with help
-User sees actionable message
-```
+## Network and concurrency
 
-### Error Types
+Archives are downloaded sequentially. `download.parallel` and `download.max_connections` are reserved compatibility fields in v1.3.4.
 
-1. **Validation errors**: User input issues
-2. **Network errors**: Download/API failures
-3. **Filesystem errors**: Permission/space issues
-4. **Logic errors**: Invalid state
+HTTP retries cover transport failures and transient `408`, `429`, and `5xx` responses. Resume requires an exact byte range. Cache writes use unique partials, a portable lock file, and atomic commit so concurrent processes cannot merge content.
 
-All errors include:
-- Clear message
-- Suggested action (via `ErrorWithHelp`)
-- Exit code
+## Platform boundaries
 
-## Security Architecture
+- Unix symlink replacement uses same-directory rename.
+- Windows uses `MoveFileEx` with replace-existing and write-through flags.
+- Unix self-update performs in-process backup, replacement, validation, and rollback.
+- Windows self-update starts a detached PowerShell helper because the running executable is locked.
+- Shell generation supports Bash, Zsh, Fish, PowerShell, and Command Prompt. Directory-change auto-switch is not generated for Command Prompt.
 
-### Principle of Least Privilege
+## Error and output ownership
 
-- **No root required**: All operations in user space
-- **Limited file access**: Only ~/.govman/ and shell configs
-- **No network server**: Client-only architecture
+Production functions wrap and return errors. Cobra is configured to suppress duplicate automatic rendering; the CLI entry point renders each error once and includes usage only for argument/flag errors. Normal logs use stderr so stdout remains available for PATH commands. Quiet mode disables informational logs and progress.
 
-### Defense in Depth
+## Security boundaries
 
-1. **Input validation**: All user inputs validated
-2. **Path validation**: Prevent directory traversal
-3. **Checksum verification**: SHA-256 for all downloads
-4. **HTTPS only**: Encrypted connections
-5. **Safe defaults**: Secure configuration out of the box
+- Version-derived paths must remain under `install_dir`.
+- Config and shell profile destinations must be regular files, not symlinks.
+- Archive paths, types, sizes, counts, and output modes are constrained.
+- Installer and self-update binaries require release checksums and version validation.
+- Custom API/download endpoints are explicit trusted configuration, not an implicit mirror feature.
 
-### Trust Model
+See [Security](security.md) for limitations and trust assumptions.
 
-**Trusted**:
-- go.dev (official Go releases)
-- github.com (govman releases)
-- User's local system
+## Testing and release
 
-**Not trusted**:
--User input (validated before use)
-- Custom mirror URLs (optional, user-configured)
+Unit tests sit beside implementation. Command-level tests use temp HOME/config/install roots and local HTTP servers. Helpers under `test/` are local-only, untracked, and are not run by CI.
 
-## Concurrency Model
+CI gates include:
 
-### Single-threaded Command Execution
+- Go 1.25 and 1.26 on Linux, macOS, and Windows;
+- race detection;
+- format, tidy, vet, pinned lint/security tools;
+- total statement coverage of at least 80% and CLI coverage of at least 70%;
+- Bash syntax checks on Linux and macOS, ShellCheck on Linux, and PSScriptAnalyzer on Windows;
+- Docker amd64/arm64 build and native health check;
+- GoReleaser snapshot with exact artifact names and checksums.
 
-- One command at a time per user
-- No locking needed (user-space isolation)
-- Simple, predictable behavior
-
-### Safe Parallel Downloading
-
-- HTTP connections can be parallel (configurable)
-- Uses standard library's goroutines
-- Progress reporting thread-safe
-
-### Atomic Operations
-
-- File writes: temp file + rename
-- Symlink updates: atomic at OS level
-- Configuration updates: single write operation
-
-## Extensibility Points
-
-### Adding New Commands
-
-1. Create file in `internal/cli/`
-2. Implement `cobra.Command`
-3. Register in `addCommands()`
-
-### Adding New Shells
-
-1. Implement `Shell` interface
-2. Add to `Detect()` logic
-3. Add to `getShellByName()`
-
-### Changing Configuration
-
-1. Update `Config` struct in `internal/config/`
-2. Set default in `setDefaults()`
-3. Configuration automatically persists
-
-## Performance Considerations
-
-### Optimization Strategies
-
-1. **Caching**: API responses cached for 10 minutes
-2. **Parallel downloads**: Multiple connections (configurable)
-3. **Resume support**: Incomplete downloads resume
-4. **Minimal I/O**: Only read/write when necessary
-
-### Trade-offs
-
-- **Simplicity over speed**: Single-threaded for safety
-- **Safety over size**: Self-contained binary with dependencies
-- **UX over efficiency**: Progress bars worth the overhead
-
-## Platform Abstractions
-
-### Cross-platform Code
-
-```go
-// Path handling
-filepath.Join()  // Works on all platforms
-
-// Symlinks
-os.Symlink()  // Supported on all modern OSes
-
-// Shell detection
-runtime.GOOS  // Conditional logic per platform
-```
-
-### Platform-specific Code
-
-```go
-// Shell integration
-if runtime.GOOS == "windows" {
-    // PowerShell or cmd.exe
-} else {
-    // Bash/Zsh/Fish
-}
-
-// Binary naming
-if runtime.GOOS == "windows" {
-    name += ".exe"
-}
-```
-
-## Testing Architecture
-
-### Test Organization
-
-- Unit tests: `*_test.go` alongside implementation
-- Test package: `package_test` for public API
-- Test helpers: Shared fixtures and mocks
-
-### Test Coverage Goals
-
-- Core logic: 80%+ coverage
-- Critical paths: 100% coverage (install, use, download)
-- Edge cases: Comprehensive error handling tests
-
-## Deployment Architecture
-
-### Distribution
-
-```
-GitHub Releases
-    ↓ provides
-Pre-built binaries for all platforms
-    ↓ installed via
-Installation scripts (install.sh, install.ps1, install.bat)
-    ↓ placed in
-~/.govman/bin/govman
-    ↓ added to
-User's PATH
-```
-
-### Update Mechanism
-
-```
-govman selfupdate
-    ↓ queries
-GitHub API (latest release)
-    ↓ downloads
-New binary
-    ↓ replaces
-Old binary (with backup)
-    ↓ verifies
-New version works
-    ↓ removes
-Backup
-```
-
-## Scalability
-
-### Personal Use (Design Goal)
-
-- Manages 5-10 Go versions efficiently
-- Handles daily version switching
-- Fast enough for interactive use
-
-### Not Designed For
-
-- Enterprise-wide deployment (no central management)
-- Hundreds of installations (filesystem limits)
-- Concurrent multi-user on same account
-
-## Future Architecture Considerations
-
-**Potential Enhancements**:
-- Plugin system for extensibility
-- Remote version cache sharing
-- Integration with IDEs
-- API mode for programmatic access
-
-**Constraints**:
-- Must remain simple
-- No breaking changes to core UX
-- Maintain cross-platform support
-- Keep binary size reasonable
+Release workflows build only from tags and do not treat marker branches as release inputs.

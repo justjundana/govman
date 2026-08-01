@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,16 @@ func TestCreate_OverwriteExisting(t *testing.T) {
 	if resolved != target2 {
 		t.Errorf("expected %q, got %q", target2, resolved)
 	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".govman-symlink-") {
+			t.Fatalf("temporary symlink was not cleaned up: %s", entry.Name())
+		}
+	}
 }
 
 func TestCreate_Error_ReadOnlyDir(t *testing.T) {
@@ -91,5 +102,24 @@ func TestCreate_ErrorOnRemove(t *testing.T) {
 	err := Create(target, blockDir)
 	if err == nil {
 		t.Error("expected error when os.Remove fails on non-empty directory, got nil")
+	}
+}
+
+func TestCreateRefusesRegularFile(t *testing.T) {
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "target")
+	destination := filepath.Join(tempDir, "existing")
+	if err := os.WriteFile(target, []byte("target"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("preserve"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Create(target, destination); err == nil {
+		t.Fatal("Create replaced a regular file")
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("regular file changed: data=%q err=%v", data, err)
 	}
 }

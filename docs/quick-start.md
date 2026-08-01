@@ -7,7 +7,7 @@ Get started with govman in under 5 minutes.
 ### Linux/macOS
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
 ### Windows (PowerShell)

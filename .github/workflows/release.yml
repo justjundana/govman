@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  release:
+    name: Verify and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify annotated SemVer tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF_NAME}
+          [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$ ]]
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
+          test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache: true
+      - run: go mod verify
+      - run: go mod tidy -diff
+      - run: go test -timeout=10m ./...
+      - run: go test -race -timeout=10m ./...
+      - run: bash -n scripts/install.sh scripts/uninstall.sh
+      - name: Build release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          notes="${RUNNER_TEMP}/release-notes.md"
+          # Written outside the worktree: goreleaser refuses to release from a
+          # dirty git state.
+          {
+            echo '## Changelog'
+            echo
+            awk -v ver="$version" '
+              index($0, "## [" ver "]") == 1 { found = 1; print; next }
+              found && index($0, "## [") == 1 { exit }
+              found { print }
+            ' CHANGELOG.md
+            echo
+            printf '**Full Changelog**: https://github.com/%s/blob/main/CHANGELOG.md\n' "$GITHUB_REPOSITORY"
+          } > "$notes"
+          # Four lines means the awk found nothing: title, blank, blank, footer.
+          test "$(wc -l < "$notes")" -gt 4 || {
+            echo "CHANGELOG.md has no '## [$version]' section" >&2
+            exit 1
+          }
+      - uses: goreleaser/goreleaser-action@v7.2.1
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

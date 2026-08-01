@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,24 +9,27 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"text/template"
 )
 
 var (
-	currentGOOS        = runtime.GOOS
-	execLookPath       = exec.LookPath
-	userHomeDir        = os.UserHomeDir
-	newlineRegex       = regexp.MustCompile(`\n{3,}`)
-	configRemovalRegex = regexp.MustCompile(`(?ms)^[#\s]*(REM\s+)?GOVMAN - Go Version Manager.*?^[#\s]*(REM\s+)?END GOVMAN.*?$\n?`)
+	currentGOOS  = runtime.GOOS
+	execLookPath = exec.LookPath
+	userHomeDir  = os.UserHomeDir
+	newlineRegex = regexp.MustCompile(`\n{3,}`)
 )
 
-// configMarkers are strings used to detect existing govman configuration.
-// These must be kept in sync with the output of SetupCommands functions.
-var configMarkers = []string{
-	"GOVMAN - Go Version Manager",
-	"govman_auto_switch",
-	"Invoke-GovmanAutoSwitch",
-	"__govman_cd_hook",
+const (
+	govmanMarkerStart = "# GOVMAN - Go Version Manager"
+	govmanMarkerEnd   = "# END GOVMAN"
+)
+
+type IntegrationOptions struct {
+	BinPath        string
+	ConfigPath     string
+	ProjectFile    string
+	InstallDir     string
+	DefaultVersion string
+	AutoSwitch     bool
 }
 
 type Shell interface {
@@ -38,11 +42,52 @@ type Shell interface {
 	ExecutePathCommand(path string) error
 }
 
-type BashShell struct{}
-type ZshShell struct{}
-type FishShell struct{}
-type PowerShell struct{}
+type BashShell struct{ options *IntegrationOptions }
+type ZshShell struct{ options *IntegrationOptions }
+type FishShell struct{ options *IntegrationOptions }
+type PowerShell struct{ options *IntegrationOptions }
 type CmdShell struct{}
+
+func Configure(shell Shell, options IntegrationOptions) Shell {
+	optionsCopy := options
+	switch configured := shell.(type) {
+	case *BashShell:
+		configured.options = &optionsCopy
+	case *ZshShell:
+		configured.options = &optionsCopy
+	case *FishShell:
+		configured.options = &optionsCopy
+	case *PowerShell:
+		configured.options = &optionsCopy
+	}
+	return shell
+}
+
+func effectiveOptions(binPath string, configured *IntegrationOptions) IntegrationOptions {
+	options := IntegrationOptions{
+		BinPath:     binPath,
+		ConfigPath:  filepath.Join(filepath.Dir(binPath), "config.yaml"),
+		ProjectFile: ".govman-goversion",
+		InstallDir:  filepath.Join(filepath.Dir(binPath), "versions"),
+		AutoSwitch:  true,
+	}
+	if configured != nil {
+		options = *configured
+		if options.BinPath == "" {
+			options.BinPath = binPath
+		}
+		if options.ProjectFile == "" {
+			options.ProjectFile = ".govman-goversion"
+		}
+		if options.InstallDir == "" {
+			options.InstallDir = filepath.Join(filepath.Dir(options.BinPath), "versions")
+		}
+		if options.ConfigPath == "" {
+			options.ConfigPath = filepath.Join(filepath.Dir(options.BinPath), "config.yaml")
+		}
+	}
+	return options
+}
 
 // validateBinPath ensures the binary path is safe and exists
 func validateBinPath(binPath string) error {
@@ -253,99 +298,131 @@ func (s *BashShell) PathCommand(path string) string {
 
 // SetupCommands returns the Bash shell configuration lines to integrate govman.
 func (s *BashShell) SetupCommands(binPath string) []string {
-	escapedPath := escapeBashPath(binPath)
+	options := effectiveOptions(binPath, s.options)
+	escapedPath := escapeBashPath(options.BinPath)
+	escapedProjectFile := escapeBashPath(options.ProjectFile)
+	escapedInstallDir := escapeBashPath(options.InstallDir)
+	escapedConfigPath := escapeBashPath(options.ConfigPath)
+	autoSwitchEnabled := "false"
+	if options.AutoSwitch {
+		autoSwitchEnabled = "true"
+	}
 
 	commands := []string{
 		"# GOVMAN - Go Version Manager",
 		fmt.Sprintf(`export PATH="%s:$PATH"`, escapedPath),
 		"# Ensure GOBIN and GOPATH/bin are available",
-		`if [ -n "$GOBIN" ]; then export PATH="$GOBIN:$PATH"; fi`,
-		`if command -v go >/dev/null 2>&1; then export PATH="$(go env GOPATH)/bin:$PATH"; fi`,
-		`export PATH="$HOME/go/bin:$PATH"`,
+		`if [ -n "$GOBIN" ]; then export PATH="$PATH:$GOBIN"; fi`,
+		`if command -v go >/dev/null 2>&1; then export PATH="$PATH:$(go env GOPATH)/bin"; fi`,
+		`export PATH="$PATH:$HOME/go/bin"`,
 		"export GOTOOLCHAIN=local",
 		"",
 		"# Wrapper function for automatic PATH execution",
 		"govman() {",
 		fmt.Sprintf(`    local govman_bin="%s/govman"`, escapedPath),
-		`    if [[ ("$1" == "use" && "$#" -ge 2 && "$2" != "--help" && "$2" != "-h") || "$1" == "refresh" ]]; then`,
+		`    local command_name="" arg_index=1 expect_config=false`,
+		`    for arg in "$@"; do`,
+		`        if $expect_config; then expect_config=false; arg_index=$((arg_index + 1)); continue; fi`,
+		`        case "$arg" in`,
+		`            --config) expect_config=true ;;`,
+		`            --config=*|--quiet|-q|--verbose|-V) ;;`,
+		`            --) ;;`,
+		`            -*) ;;`,
+		`            *) command_name="$arg"; break ;;`,
+		`        esac`,
+		`        arg_index=$((arg_index + 1))`,
+		`    done`,
+		`    if [[ "$command_name" == "use" || "$command_name" == "refresh" ]]; then`,
 		"        local output",
 		`        output="$("$govman_bin" "$@" 2>&1)"`,
 		"        local exit_code=$?",
-		"        if [[ $exit_code -eq 0 ]]; then",
-		`            local export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH=' | head -n 1)`,
-		`            if [[ -n "$export_cmd" && "$export_cmd" =~ ^export\ PATH=\"[^\"]*\"$ ]]; then`,
-		`                eval "$export_cmd"`,
-		`                echo "✓ Go version switched successfully"`,
-		"                return 0",
-		"            fi",
-		"        else",
+		"        if [[ $exit_code -ne 0 ]]; then",
 		`            echo "$output" >&2`,
 		"            return $exit_code",
 		"        fi",
+		`        local export_cmd export_count`,
+		`        export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH="[^"]*:\$PATH"$' || true)`,
+		`        export_count=$(printf '%s\n' "$export_cmd" | awk 'NF { count++ } END { print count+0 }')`,
+		`        if [[ "$export_count" -ne 1 ]]; then`,
+		`            echo "govman returned success without one valid PATH command" >&2`,
+		`            return 1`,
+		`        fi`,
+		`        eval "$export_cmd"`,
+		`        printf '%s\n' "$output" | grep -Ev '^export PATH=' || true`,
+		`        return 0`,
 		"    fi",
 		`    "$govman_bin" "$@"`,
 		"}",
 		"",
 		"# Auto-switch Go versions based on .govman-goversion file",
 		"govman_auto_switch() {",
-		"    # Check if auto-switch is enabled in config",
-		`    local config_file="$HOME/.govman/config.yaml"`,
-		`    local auto_switch_enabled="true"`,
-		`    if [[ -f "$config_file" ]]; then`,
-		`        auto_switch_enabled=$(awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
-		`        [[ -z "$auto_switch_enabled" ]] && auto_switch_enabled="true"`,
-		`    fi`,
+		fmt.Sprintf(`    local auto_switch_enabled="%s"`, autoSwitchEnabled),
+		fmt.Sprintf(`    local config_file="%s"`, escapedConfigPath),
 		`    if [[ "$auto_switch_enabled" != "true" ]]; then`,
 		"        return 0",
 		"    fi",
 		"",
 		"    # Check file exists and is non-empty (-s), handle permission errors",
-		"    if [[ -s .govman-goversion ]]; then",
+		fmt.Sprintf(`    local project_file="%s"`, escapedProjectFile),
+		`    if [[ -s "$project_file" ]]; then`,
 		`        local required_version`,
-		`        required_version=$(cat .govman-goversion 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')`,
+		`        required_version=$(cat "$project_file" 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')`,
 		`        if [[ $? -ne 0 ]] || [[ -z "$required_version" ]]; then`,
 		"            return 0",
 		"        fi",
 		"",
 		"        # Validate version format (e.g., 1.25, 1.25.1, 1.25rc1)",
-		`        if [[ ! "$required_version" =~ ^[0-9]+\.[0-9]+(\.?[0-9]*)(-?(rc|beta|alpha)[0-9]*)?$ ]]; then`,
-		`            echo "Warning: Invalid version format in .govman-goversion: $required_version" >&2`,
+		`        if [[ ! "$required_version" =~ ^(latest|stable|[0-9]+\.[0-9]+(\.[0-9]+)?(-?(rc|beta|alpha)[0-9]*)?)$ ]]; then`,
+		`            echo "Warning: Invalid version format in $project_file: $required_version" >&2`,
 		"            return 0",
 		"        fi",
 		"",
 		"        # Skip go version call if we already matched this version",
-		`        if [[ "$required_version" == "$__govman_last_version" ]]; then`,
+		`        local switch_key="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`        if [[ "$switch_key" == "$__govman_last_switch" ]]; then`,
 		"            return 0",
 		"        fi",
 		"",
 		"        if ! command -v go >/dev/null 2>&1; then",
 		`            echo "Go not found. Switching to Go $required_version..."`,
-		`            govman use "$required_version" >/dev/null 2>&1 || {`,
+		`            if govman --config "$config_file" use "$required_version" >/dev/null 2>&1; then`,
+		`                __govman_project_active=1`,
+		`                __govman_last_switch="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`            else`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
-		"            }",
+		`            fi`,
 		"            return",
 		"        fi",
 		"",
 		`        local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')`,
+		fmt.Sprintf(`        case "$(command -v go 2>/dev/null)" in "%s"/go*/bin/go|"%s"/go*/bin/go.exe) ;; *) current_version="" ;; esac`, escapedInstallDir, escapedInstallDir),
 		`        if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi`,
 		"        # If required_version is major.minor only, truncate current_version for comparison",
 		`        local compare_version="$current_version"`,
-		`        if [[ ! "$required_version" == *.*.* ]]; then compare_version="${current_version%%.*}.${current_version#*.}"; compare_version="${compare_version%%.*}"; fi`,
-		`        if [[ -n "$current_version" && "$compare_version" != "$required_version" ]]; then`,
+		`        if [[ "$required_version" =~ ^[0-9]+\.[0-9]+$ ]]; then compare_version="${current_version%.*}"; fi`,
+		`        if [[ -z "$current_version" || "$compare_version" != "$required_version" ]]; then`,
 		`            echo "Auto-switching to Go $required_version (required by .govman-goversion)"`,
-		`            govman use "$required_version" >/dev/null 2>&1 || {`,
+		`            if govman --config "$config_file" use "$required_version" >/dev/null 2>&1; then`,
+		`                __govman_project_active=1`,
+		`                __govman_last_switch="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`            else`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
-		"            }",
-		`            __govman_last_version="$required_version"`,
+		`            fi`,
 		`        elif [[ -n "$current_version" ]]; then`,
-		`            __govman_last_version="$required_version"`,
+		`            __govman_last_switch="$switch_key"`,
+		`            __govman_project_active=1`,
 		"        fi",
+		`    elif [[ "$__govman_project_active" == "1" ]]; then`,
+		`        govman --config "$config_file" use default >/dev/null 2>&1 || echo "Warning: Failed to restore the default Go version" >&2`,
+		`        __govman_project_active=0`,
+		`        __govman_last_switch=""`,
 		"    fi",
 		"}",
 		"",
 		"# Bash-specific: Hook into PROMPT_COMMAND for directory changes",
 		`__govman_prev_pwd="$PWD"`,
-		`__govman_last_version=""`,
+		`__govman_last_switch=""`,
+		`__govman_project_active=0`,
 		"__govman_check_dir_change() {",
 		`    if [[ "$PWD" != "$__govman_prev_pwd" ]]; then`,
 		`        __govman_prev_pwd="$PWD"`,
@@ -382,8 +459,8 @@ func (s *BashShell) ExecutePathCommand(path string) error {
 	fmt.Println(pathCmd)
 
 	// Instructions to stderr so they don't interfere with eval
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
 
 	return nil
 }
@@ -420,98 +497,124 @@ func (s *ZshShell) PathCommand(path string) string {
 
 // SetupCommands returns the Zsh configuration lines to integrate govman.
 func (s *ZshShell) SetupCommands(binPath string) []string {
-	escapedPath := escapeBashPath(binPath)
+	options := effectiveOptions(binPath, s.options)
+	escapedPath := escapeBashPath(options.BinPath)
+	escapedProjectFile := escapeBashPath(options.ProjectFile)
+	escapedInstallDir := escapeBashPath(options.InstallDir)
+	escapedConfigPath := escapeBashPath(options.ConfigPath)
+	autoSwitchEnabled := "false"
+	if options.AutoSwitch {
+		autoSwitchEnabled = "true"
+	}
 
 	commands := []string{
 		"# GOVMAN - Go Version Manager",
 		fmt.Sprintf(`export PATH="%s:$PATH"`, escapedPath),
 		"# Ensure GOBIN and GOPATH/bin are available",
-		`if [ -n "$GOBIN" ]; then export PATH="$GOBIN:$PATH"; fi`,
-		`if command -v go >/dev/null 2>&1; then export PATH="$(go env GOPATH)/bin:$PATH"; fi`,
-		`export PATH="$HOME/go/bin:$PATH"`,
+		`if [ -n "$GOBIN" ]; then export PATH="$PATH:$GOBIN"; fi`,
+		`if command -v go >/dev/null 2>&1; then export PATH="$PATH:$(go env GOPATH)/bin"; fi`,
+		`export PATH="$PATH:$HOME/go/bin"`,
 		"export GOTOOLCHAIN=local",
 		"",
 		"# Wrapper function for automatic PATH execution",
 		"govman() {",
 		fmt.Sprintf(`    local govman_bin="%s/govman"`, escapedPath),
-		`    if [[ ("$1" == "use" && "$#" -ge 2 && "$2" != "--help" && "$2" != "-h") || "$1" == "refresh" ]]; then`,
+		`    local command_name="" expect_config=false`,
+		`    for arg in "$@"; do`,
+		`        if $expect_config; then expect_config=false; continue; fi`,
+		`        case "$arg" in`,
+		`            --config) expect_config=true ;;`,
+		`            --config=*|--quiet|-q|--verbose|-V|--|-*) ;;`,
+		`            *) command_name="$arg"; break ;;`,
+		`        esac`,
+		`    done`,
+		`    if [[ "$command_name" == "use" || "$command_name" == "refresh" ]]; then`,
 		"        local output",
 		`        output="$("$govman_bin" "$@" 2>&1)"`,
 		"        local exit_code=$?",
-		"        if [[ $exit_code -eq 0 ]]; then",
-		`            local export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH=' | head -n 1)`,
-		`            if [[ -n "$export_cmd" && "$export_cmd" =~ ^export\ PATH=\"[^\"]*\"$ ]]; then`,
-		`                eval "$export_cmd"`,
-		`                echo "✓ Go version switched successfully"`,
-		"                return 0",
-		"            fi",
-		"        else",
+		"        if [[ $exit_code -ne 0 ]]; then",
 		`            echo "$output" >&2`,
 		"            return $exit_code",
 		"        fi",
+		`        local export_cmd export_count`,
+		`        export_cmd=$(printf '%s\n' "$output" | grep -E '^export PATH="[^"]*:\$PATH"$' || true)`,
+		`        export_count=$(printf '%s\n' "$export_cmd" | awk 'NF { count++ } END { print count+0 }')`,
+		`        if [[ "$export_count" -ne 1 ]]; then echo "govman returned success without one valid PATH command" >&2; return 1; fi`,
+		`        eval "$export_cmd"`,
+		`        printf '%s\n' "$output" | grep -Ev '^export PATH=' || true`,
+		`        return 0`,
 		"    fi",
 		`    "$govman_bin" "$@"`,
 		"}",
 		"",
 		"# Auto-switch Go versions based on .govman-goversion file",
 		"govman_auto_switch() {",
-		"    # Check if auto-switch is enabled in config",
-		`    local config_file="$HOME/.govman/config.yaml"`,
-		`    local auto_switch_enabled="true"`,
-		`    if [[ -f "$config_file" ]]; then`,
-		`        auto_switch_enabled=$(awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
-		`        [[ -z "$auto_switch_enabled" ]] && auto_switch_enabled="true"`,
-		`    fi`,
+		fmt.Sprintf(`    local auto_switch_enabled="%s"`, autoSwitchEnabled),
+		fmt.Sprintf(`    local config_file="%s"`, escapedConfigPath),
 		`    if [[ "$auto_switch_enabled" != "true" ]]; then`,
 		"        return 0",
 		"    fi",
 		"",
 		"    # Check file exists and is non-empty (-s), handle permission errors",
-		"    if [[ -s .govman-goversion ]]; then",
+		fmt.Sprintf(`    local project_file="%s"`, escapedProjectFile),
+		`    if [[ -s "$project_file" ]]; then`,
 		`        local required_version`,
-		`        required_version=$(cat .govman-goversion 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')`,
+		`        required_version=$(cat "$project_file" 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')`,
 		`        if [[ $? -ne 0 ]] || [[ -z "$required_version" ]]; then`,
 		"            return 0",
 		"        fi",
 		"",
 		"        # Validate version format (e.g., 1.25, 1.25.1, 1.25rc1)",
-		`        if [[ ! "$required_version" =~ ^[0-9]+\.[0-9]+(\.?[0-9]*)(-?(rc|beta|alpha)[0-9]*)?$ ]]; then`,
-		`            echo "Warning: Invalid version format in .govman-goversion: $required_version" >&2`,
+		`        if [[ ! "$required_version" =~ ^(latest|stable|[0-9]+\.[0-9]+(\.[0-9]+)?(-?(rc|beta|alpha)[0-9]*)?)$ ]]; then`,
+		`            echo "Warning: Invalid version format in $project_file: $required_version" >&2`,
 		"            return 0",
 		"        fi",
 		"",
 		"        # Skip go version call if we already matched this version",
-		`        if [[ "$required_version" == "$__govman_last_version" ]]; then`,
+		`        local switch_key="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`        if [[ "$switch_key" == "$__govman_last_switch" ]]; then`,
 		"            return 0",
 		"        fi",
 		"",
 		"        if ! command -v go >/dev/null 2>&1; then",
 		`            echo "Go not found. Switching to Go $required_version..."`,
-		`            govman use "$required_version" >/dev/null 2>&1 || {`,
+		`            if govman --config "$config_file" use "$required_version" >/dev/null 2>&1; then`,
+		`                __govman_project_active=1`,
+		`                __govman_last_switch="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`            else`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
-		"            }",
+		`            fi`,
 		"            return",
 		"        fi",
 		"",
 		`        local current_version=$(go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')`,
+		fmt.Sprintf(`        case "$(command -v go 2>/dev/null)" in "%s"/go*/bin/go|"%s"/go*/bin/go.exe) ;; *) current_version="" ;; esac`, escapedInstallDir, escapedInstallDir),
 		`        if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then current_version=""; fi`,
 		"        # If required_version is major.minor only, truncate current_version for comparison",
 		`        local compare_version="$current_version"`,
-		`        if [[ ! "$required_version" == *.*.* ]]; then compare_version="${current_version%%.*}.${current_version#*.}"; compare_version="${compare_version%%.*}"; fi`,
-		`        if [[ -n "$current_version" && "$compare_version" != "$required_version" ]]; then`,
+		`        if [[ "$required_version" =~ ^[0-9]+\.[0-9]+$ ]]; then compare_version="${current_version%.*}"; fi`,
+		`        if [[ -z "$current_version" || "$compare_version" != "$required_version" ]]; then`,
 		`            echo "Auto-switching to Go $required_version (required by .govman-goversion)"`,
-		`            govman use "$required_version" >/dev/null 2>&1 || {`,
+		`            if govman --config "$config_file" use "$required_version" >/dev/null 2>&1; then`,
+		`                __govman_last_switch="$PWD|$required_version|$(command -v go 2>/dev/null)"`,
+		`                __govman_project_active=1`,
+		`            else`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
-		"            }",
-		`            __govman_last_version="$required_version"`,
+		`            fi`,
 		`        elif [[ -n "$current_version" ]]; then`,
-		`            __govman_last_version="$required_version"`,
+		`            __govman_last_switch="$switch_key"`,
+		`            __govman_project_active=1`,
 		"        fi",
+		`    elif [[ "$__govman_project_active" == "1" ]]; then`,
+		`        govman --config "$config_file" use default >/dev/null 2>&1 || echo "Warning: Failed to restore the default Go version" >&2`,
+		`        __govman_project_active=0`,
+		`        __govman_last_switch=""`,
 		"    fi",
 		"}",
 		"",
 		"# Zsh-specific: Hook into chpwd for directory changes",
-		`__govman_last_version=""`,
+		`__govman_last_switch=""`,
+		`__govman_project_active=0`,
 		"autoload -U add-zsh-hook",
 		`if [[ ! "${chpwd_functions[(r)govman_auto_switch]}" ]]; then`,
 		"    add-zsh-hook chpwd govman_auto_switch",
@@ -534,8 +637,8 @@ func (s *ZshShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval \"$(govman use <version>)\"\n")
 
 	return nil
 }
@@ -572,7 +675,15 @@ func (s *FishShell) PathCommand(path string) string {
 
 // SetupCommands returns the Fish configuration lines to integrate govman.
 func (s *FishShell) SetupCommands(binPath string) []string {
-	escapedPath := escapeFishPath(binPath)
+	options := effectiveOptions(binPath, s.options)
+	escapedPath := escapeFishPath(options.BinPath)
+	escapedProjectFile := escapeFishPath(options.ProjectFile)
+	escapedInstallDir := escapeFishPath(options.InstallDir)
+	escapedConfigPath := escapeFishPath(options.ConfigPath)
+	autoSwitchEnabled := "false"
+	if options.AutoSwitch {
+		autoSwitchEnabled = "true"
+	}
 
 	commands := []string{
 		"# GOVMAN - Go Version Manager",
@@ -580,86 +691,104 @@ func (s *FishShell) SetupCommands(binPath string) []string {
 		"set -gx GOTOOLCHAIN local",
 		"",
 		"# Ensure GOBIN and GOPATH/bin are available",
-		`if test -n "$GOBIN"; and test -d "$GOBIN"; fish_add_path -p "$GOBIN"; end`,
-		`if type -q go; set -l gopath (go env GOPATH 2>/dev/null); if test -n "$gopath"; and test -d "$gopath/bin"; fish_add_path -p "$gopath/bin"; end; end`,
-		`set -l homegobin "$HOME/go/bin"; if test -d "$homegobin"; fish_add_path -p "$homegobin"; end`,
+		`if test -n "$GOBIN"; and test -d "$GOBIN"; fish_add_path -a "$GOBIN"; end`,
+		`if type -q go; set -l gopath (go env GOPATH 2>/dev/null); if test -n "$gopath"; and test -d "$gopath/bin"; fish_add_path -a "$gopath/bin"; end; end`,
+		`set -l homegobin "$HOME/go/bin"; if test -d "$homegobin"; fish_add_path -a "$homegobin"; end`,
 		"",
 		"# Wrapper function for automatic PATH execution",
 		"function govman",
 		fmt.Sprintf(`    set govman_bin "%s/govman"`, escapedPath),
-		`    if test "$argv[1]" = "refresh"; or begin; test "$argv[1]" = "use"; and test (count $argv) -ge 2; and test "$argv[2]" != "--help"; and test "$argv[2]" != "-h"; end`,
+		`    set -l command_name ""`,
+		`    set -l expect_config 0`,
+		`    for arg in $argv`,
+		`        if test $expect_config -eq 1; set expect_config 0; continue; end`,
+		`        switch $arg`,
+		`            case --config; set expect_config 1`,
+		`            case '--config=*' --quiet -q --verbose -V -- '-*'`,
+		`            case '*'; set command_name $arg; break`,
+		`        end`,
+		`    end`,
+		`    if test "$command_name" = "refresh"; or test "$command_name" = "use"`,
 		"        set output ($govman_bin $argv 2>&1)",
 		"        set exit_code $status",
-		"        if test $exit_code -eq 0",
-		"            for line in $output",
-		"                if string match -qr '^fish_add_path' -- $line",
-		"                    eval $line",
-		`                    echo "✓ Go version switched successfully"`,
-		"                    return 0",
-		"                end",
-		"            end",
-		"        else",
+		"        if test $exit_code -ne 0",
 		"            for line in $output",
 		"                echo $line >&2",
 		"            end",
 		"            return $exit_code",
 		"        end",
+		`        set -l path_lines (string match -r '^fish_add_path -p "[^"]+"$' -- $output)`,
+		`        if test (count $path_lines) -ne 1`,
+		`            echo "govman returned success without one valid PATH command" >&2`,
+		`            return 1`,
+		`        end`,
+		`        eval $path_lines[1]`,
+		`        for line in $output; if not string match -qr '^fish_add_path' -- $line; echo $line; end; end`,
+		`        return 0`,
 		"    end",
 		"    $govman_bin $argv",
 		"end",
 		"",
 		"# Auto-switch Go versions based on .govman-goversion file",
 		"function govman_auto_switch",
-		`    set config_file "$HOME/.govman/config.yaml"`,
-		`    set auto_switch_enabled "true"`,
-		`    if test -f "$config_file"`,
-		`        set auto_switch_enabled (awk '/^auto_switch:/,/^[^ ]/ {if (/^[[:space:]]*enabled:/) {print $2; exit}}' "$config_file" 2>/dev/null | tr -d '[:space:]')`,
-		`        test -z "$auto_switch_enabled"; and set auto_switch_enabled "true"`,
-		`    end`,
+		fmt.Sprintf(`    set auto_switch_enabled "%s"`, autoSwitchEnabled),
+		fmt.Sprintf(`    set config_file "%s"`, escapedConfigPath),
 		`    if test "$auto_switch_enabled" != "true"`,
 		"        return 0",
 		"    end",
 		"",
 		"    # Check file exists and is non-empty (-s), handle permission/empty errors",
-		"    if test -s .govman-goversion",
-		"        set required_version (string trim < .govman-goversion 2>/dev/null)",
+		fmt.Sprintf(`    set project_file "%s"`, escapedProjectFile),
+		`    if test -s "$project_file"`,
+		`        set required_version (string trim < "$project_file" 2>/dev/null)`,
 		`        if test -z "$required_version"`,
 		"            return 0",
 		"        end",
 		"",
 		"        # Validate version format (e.g., 1.25, 1.25.1, 1.25rc1)",
-		`        if not string match -qr '^[0-9]+\.[0-9]+(\.?[0-9]*)(-?(rc|beta|alpha)[0-9]*)?$' -- "$required_version"`,
-		`            echo "Warning: Invalid version format in .govman-goversion: $required_version" >&2`,
+		`        if not string match -qr '^(latest|stable|[0-9]+\.[0-9]+(\.[0-9]+)?(-?(rc|beta|alpha)[0-9]*)?)$' -- "$required_version"`,
+		`            echo "Warning: Invalid version format in $project_file: $required_version" >&2`,
 		"            return 0",
 		"        end",
 		"",
 		"        # Skip go version call if we already matched this version",
-		`        if set -q __govman_last_version; and test "$required_version" = "$__govman_last_version"`,
+		`        set switch_key "$PWD|$required_version|"(command -v go 2>/dev/null)`,
+		`        if set -q __govman_last_switch; and test "$switch_key" = "$__govman_last_switch"`,
 		"            return 0",
 		"        end",
 		"",
 		"        if not command -v go >/dev/null 2>&1",
 		`            echo "Go not found. Switching to Go $required_version..."`,
-		`            govman use "$required_version" >/dev/null 2>&1; or begin`,
+		`            if govman --config "$config_file" use "$required_version" >/dev/null 2>&1`,
+		`                set -g __govman_project_active 1`,
+		`                set -g __govman_last_switch "$PWD|$required_version|"(command -v go 2>/dev/null)`,
+		`            else`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
-		"            end",
+		`            end`,
 		"            return",
 		"        end",
 		"",
 		"        set current_version (go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/([0-9]+\\.[0-9]+(\\.[0-9]+)?).*/\\1/')",
+		fmt.Sprintf(`        if not string match -q "%s/go*/bin/go*" -- (command -v go 2>/dev/null); set current_version ""; end`, escapedInstallDir),
 		`        if not string match -qr '^[0-9]+\.[0-9]+(\.[0-9]+)?$' -- "$current_version"; set current_version ""; end`,
 		"        # If required_version is major.minor only, truncate current_version for comparison",
 		`        set compare_version $current_version`,
 		`        if not string match -q '*.*.*' -- "$required_version"; set compare_version (string replace -r '(\d+\.\d+).*' '$1' -- $current_version); end`,
-		`        if test -n "$current_version"; and test "$compare_version" != "$required_version"`,
+		`        if test -z "$current_version"; or test "$compare_version" != "$required_version"`,
 		"            echo \"Auto-switching to Go $required_version (required by .govman-goversion)\"",
-		`            govman use "$required_version" >/dev/null 2>&1; or begin`,
+		`            govman --config "$config_file" use "$required_version" >/dev/null 2>&1; or begin`,
 		`                echo "Warning: Failed to switch to Go $required_version. Install it with 'govman install $required_version'" >&2`,
 		"            end",
-		`            set -g __govman_last_version "$required_version"`,
+		`            set -g __govman_last_switch "$PWD|$required_version|"(command -v go 2>/dev/null)`,
+		`            set -g __govman_project_active 1`,
 		`        else if test -n "$current_version"`,
-		`            set -g __govman_last_version "$required_version"`,
+		`            set -g __govman_last_switch "$switch_key"`,
+		`            set -g __govman_project_active 1`,
 		"        end",
+		`    else if set -q __govman_project_active; and test "$__govman_project_active" = "1"`,
+		`        govman --config "$config_file" use default >/dev/null 2>&1; or echo "Warning: Failed to restore the default Go version" >&2`,
+		`        set -g __govman_project_active 0`,
+		`        set -e __govman_last_switch`,
 		"    end",
 		"end",
 		"",
@@ -686,8 +815,8 @@ func (s *FishShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# eval (govman use <version>)\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# eval (govman use <version>)\n")
 
 	return nil
 }
@@ -733,7 +862,15 @@ func (s *PowerShell) PathCommand(path string) string {
 
 // SetupCommands returns the PowerShell profile lines to integrate govman.
 func (s *PowerShell) SetupCommands(binPath string) []string {
-	escapedPath := escapePowerShellPath(binPath)
+	options := effectiveOptions(binPath, s.options)
+	escapedPath := escapePowerShellPath(options.BinPath)
+	escapedProjectFile := escapePowerShellPath(options.ProjectFile)
+	escapedInstallDir := escapePowerShellPath(options.InstallDir)
+	escapedConfigPath := escapePowerShellPath(options.ConfigPath)
+	autoSwitchEnabled := "$false"
+	if options.AutoSwitch {
+		autoSwitchEnabled = "$true"
+	}
 
 	commands := []string{
 		"# GOVMAN - Go Version Manager",
@@ -741,29 +878,39 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"$env:GOTOOLCHAIN = 'local'",
 		"",
 		"# Ensure GOPATH\\bin and GOBIN are available",
-		`if ($env:GOBIN) { $env:PATH = "$env:GOBIN;" + $env:PATH }`,
-		`$goCmd = Get-Command go -ErrorAction SilentlyContinue; if ($goCmd) { $gopath = (& go env GOPATH 2>$null); if ($gopath) { $env:PATH = "$gopath\bin;" + $env:PATH } }`,
-		`$homeGoBin = Join-Path $env:USERPROFILE "go\bin"; if (Test-Path $homeGoBin) { $env:PATH = "$homeGoBin;" + $env:PATH }`,
+		`if ($env:GOBIN) { $env:PATH = $env:PATH + ";$env:GOBIN" }`,
+		`$goCmd = Get-Command go -ErrorAction SilentlyContinue; if ($goCmd) { $gopath = (& go env GOPATH 2>$null); if ($gopath) { $env:PATH = $env:PATH + ";$gopath\bin" } }`,
+		`$homeGoBin = Join-Path $env:USERPROFILE "go\bin"; if (Test-Path $homeGoBin) { $env:PATH = $env:PATH + ";$homeGoBin" }`,
 		"",
 		"# Wrapper function for automatic PATH execution",
 		"function govman {",
-		fmt.Sprintf(`    $govman_bin = "%s\govman.exe"`, escapedPath),
-		"    if (($args[0] -eq 'refresh') -or ($args.Count -ge 2 -and $args[0] -eq 'use' -and $args[1] -ne '--help' -and $args[1] -ne '-h')) {",
+		fmt.Sprintf(`    $govman_bin = "%s\govman-real.exe"`, escapedPath),
+		"    $commandName = $null",
+		"    $expectConfig = $false",
+		"    foreach ($argument in $args) {",
+		"        if ($expectConfig) { $expectConfig = $false; continue }",
+		"        if ($argument -eq '--config') { $expectConfig = $true; continue }",
+		"        if ($argument -match '^(--config=|--quiet$|-q$|--verbose$|-V$|-)') { continue }",
+		"        $commandName = $argument; break",
+		"    }",
+		"    if ($commandName -eq 'refresh' -or $commandName -eq 'use') {",
 		"        try {",
 		"            $output = & $govman_bin @args 2>&1",
-		"            if ($LASTEXITCODE -eq 0) {",
-		"                $pathCmd = $output | Where-Object { $_ -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$' } | Select-Object -First 1",
-		"                if ($pathCmd -and $pathCmd -match '^\\$env:PATH\\s*=\\s*\"[^\"]+\"\\s*\\+\\s*\\$env:PATH$') {",
-		"                    Invoke-Expression $pathCmd",
-		"                    Write-Host '✓ Go version switched successfully' -ForegroundColor Green",
-		"                    return",
-		"                }",
-		"            } else {",
+		"            $exitCode = $LASTEXITCODE",
+		"            if ($exitCode -ne 0) {",
 		"                $output | ForEach-Object { Write-Error $_ }",
+		"                $global:LASTEXITCODE = $exitCode",
 		"                return",
 		"            }",
+		"            $pathCommands = @($output | Where-Object { $_ -match '^\\$env:PATH\\s*=\\s*\"[^\"]+;\"\\s*\\+\\s*\\$env:PATH$' })",
+		"            if ($pathCommands.Count -ne 1) { Write-Error 'govman returned success without one valid PATH command'; $global:LASTEXITCODE = 1; return }",
+		"            Invoke-Expression $pathCommands[0]",
+		"            $output | Where-Object { $_ -notmatch '^\\$env:PATH' } | ForEach-Object { Write-Output $_ }",
+		"            $global:LASTEXITCODE = 0",
+		"            return",
 		"        } catch {",
 		"            Write-Error $_.Exception.Message",
+		"            $global:LASTEXITCODE = 1",
 		"            return",
 		"        }",
 		"    }",
@@ -772,37 +919,25 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"",
 		"# Auto-switch Go versions based on .govman-goversion file",
 		"function Invoke-GovmanAutoSwitch {",
-		"    $configFile = \"$env:USERPROFILE\\.govman\\config.yaml\"",
-		"    if (Test-Path $configFile) {",
-		"        try {",
-		"            $autoSwitchEnabled = $true",
-		"            $content = Get-Content $configFile -Raw -ErrorAction Stop",
-		"            if ($content -match '(?ms)^\\s*auto_switch:\\s*$[\\r\\n]+\\s*enabled:\\s*(true|false)\\s*$') {",
-		"                $autoSwitchEnabled = ($matches[1] -eq 'true')",
-		"            } elseif ($content -match 'auto_switch:[^\\n]*enabled:\\s*(true|false)') {",
-		"                $autoSwitchEnabled = ($matches[1] -eq 'true')",
-		"            }",
-		"            if (-not $autoSwitchEnabled) {",
-		"                return",
-		"            }",
-		"        } catch {",
-		"            return",
-		"        }",
-		"    }",
+		fmt.Sprintf("    $autoSwitchEnabled = %s", autoSwitchEnabled),
+		fmt.Sprintf(`    $configFile = "%s"`, escapedConfigPath),
+		"    if (-not $autoSwitchEnabled) { return }",
 		"",
-		"    if (Test-Path .govman-goversion) {",
+		fmt.Sprintf(`    $projectFile = "%s"`, escapedProjectFile),
+		"    if (Test-Path -LiteralPath $projectFile) {",
 		"        # Check file is non-empty and readable",
 		"        try {",
-		"            $fileInfo = Get-Item .govman-goversion -ErrorAction Stop",
+		"            $fileInfo = Get-Item -LiteralPath $projectFile -ErrorAction Stop",
 		"            if ($fileInfo.Length -eq 0) { return }",
-		"            $requiredVersion = (Get-Content .govman-goversion -Raw -ErrorAction Stop).Trim()",
+		"            $requiredVersion = (Get-Content -LiteralPath $projectFile -Raw -ErrorAction Stop).Trim()",
 		"        } catch {",
 		"            return",
 		"        }",
 		"",
-		"        if ($requiredVersion -and $requiredVersion -match '^[0-9]+\\.[0-9]+(\\.?[0-9]*)(-?(rc|beta|alpha)[0-9]*)?$') {",
+		"        if ($requiredVersion -and $requiredVersion -match '^(latest|stable|[0-9]+\\.[0-9]+(\\.[0-9]+)?(-?(rc|beta|alpha)[0-9]*)?)$') {",
 		"            # Skip go version call if we already matched this version",
-		"            if ($Global:GovmanLastVersion -eq $requiredVersion) { return }",
+		"            $switchKey = \"$($PWD.Path)|$requiredVersion|$((Get-Command go -ErrorAction SilentlyContinue).Source)\"",
+		"            if ($Global:GovmanLastSwitch -eq $switchKey) { return }",
 		"",
 		"            $currentVersion = $null",
 		"            try {",
@@ -811,14 +946,18 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"                    if ($goVersionOutput -match 'go version go(\\d+\\.\\d+(?:\\.\\d+)?)') {",
 		"                        $currentVersion = $matches[1]",
 		"                    }",
+		fmt.Sprintf(`                    $activeGo = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $activeGo.StartsWith("%s", [StringComparison]::OrdinalIgnoreCase)) { $currentVersion = $null }`, escapedInstallDir),
 		"                }",
 		"            } catch {}",
 		"",
 		"            if (-not $currentVersion) {",
 		"                Write-Host \"Go not found. Switching to Go $requiredVersion...\" -ForegroundColor Yellow",
-		"                govman use $requiredVersion *>$null",
+		"                govman --config $configFile use $requiredVersion *>$null",
 		"                if ($LASTEXITCODE -ne 0) {",
 		"                    Write-Warning \"Failed to switch to Go $requiredVersion. Install it with 'govman install $requiredVersion'\"",
+		"                } else {",
+		"                    $Global:GovmanProjectActive = $true",
+		"                    $Global:GovmanLastSwitch = \"$($PWD.Path)|$requiredVersion|$((Get-Command go -ErrorAction SilentlyContinue).Source)\"",
 		"                }",
 		"                return",
 		"            }",
@@ -828,17 +967,24 @@ func (s *PowerShell) SetupCommands(binPath string) []string {
 		"            if ($requiredVersion -notmatch '^\\d+\\.\\d+\\.\\d+') { $compareVersion = ($currentVersion -replace '^(\\d+\\.\\d+).*', '$1') }",
 		"            if ($compareVersion -ne $requiredVersion) {",
 		"                Write-Host \"Auto-switching to Go $requiredVersion (required by .govman-goversion)\" -ForegroundColor Yellow",
-		"                govman use $requiredVersion *>$null",
+		"                govman --config $configFile use $requiredVersion *>$null",
 		"                if ($LASTEXITCODE -ne 0) {",
 		"                    Write-Warning \"Failed to switch to Go $requiredVersion. Install it with 'govman install $requiredVersion'\"",
 		"                }",
-		"                $Global:GovmanLastVersion = $requiredVersion",
+		"                $Global:GovmanLastSwitch = \"$($PWD.Path)|$requiredVersion|$((Get-Command go -ErrorAction SilentlyContinue).Source)\"",
+		"                $Global:GovmanProjectActive = $true",
 		"            } else {",
-		"                $Global:GovmanLastVersion = $requiredVersion",
+		"                $Global:GovmanLastSwitch = $switchKey",
+		"                $Global:GovmanProjectActive = $true",
 		"            }",
 		"        } elseif ($requiredVersion) {",
-		"            Write-Warning \"Invalid version format in .govman-goversion: $requiredVersion\"",
+		"            Write-Warning \"Invalid version format in $projectFile: $requiredVersion\"",
 		"        }",
+		"    } elseif ($Global:GovmanProjectActive) {",
+		"        govman --config $configFile use default *>$null",
+		"        if ($LASTEXITCODE -ne 0) { Write-Warning 'Failed to restore the default Go version' }",
+		"        $Global:GovmanProjectActive = $false",
+		"        $Global:GovmanLastSwitch = $null",
 		"    }",
 		"}",
 		"",
@@ -883,8 +1029,8 @@ func (s *PowerShell) ExecutePathCommand(path string) error {
 	pathCmd := s.PathCommand(path)
 	fmt.Println(pathCmd)
 
-	fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
-	fmt.Fprintf(os.Stderr, "# govman use <version> | Invoke-Expression\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# To apply to current session, run:\n")
+	_, _ = fmt.Fprintf(os.Stderr, "# govman use <version> | Invoke-Expression\n")
 
 	return nil
 }
@@ -925,18 +1071,18 @@ func (s *CmdShell) SetupCommands(binPath string) []string {
 		fmt.Sprintf(`set "PATH=%s;%%PATH%%"`, escapedPath),
 		"set GOTOOLCHAIN=local",
 		"",
-		"REM Ensure GOBIN and GOPATH\\bin are available",
-		`if defined GOBIN set "PATH=%GOBIN%;%PATH%"`,
+		"REM Ensure GOBIN and GOPATH\\bin are available after the managed toolchain",
+		`if defined GOBIN set "PATH=%PATH%;%GOBIN%"`,
 		"",
 		"REM Check for go command and add GOPATH\\bin",
 		`where go >nul 2>&1`,
 		`if %errorlevel% equ 0 (`,
 		`    for /f "delims=" %%i in ('go env GOPATH 2^>nul') do set "GOPATH_BIN=%%i\bin"`,
-		`    if defined GOPATH_BIN if exist "%GOPATH_BIN%" set "PATH=%GOPATH_BIN%;%PATH%"`,
+		`    if defined GOPATH_BIN if exist "%GOPATH_BIN%" set "PATH=%PATH%;%GOPATH_BIN%"`,
 		`)`,
 		"",
 		"REM Add Go's default bin directory",
-		`if exist "%USERPROFILE%\go\bin" set "PATH=%USERPROFILE%\go\bin;%PATH%"`,
+		`if exist "%USERPROFILE%\go\bin" set "PATH=%PATH%;%USERPROFILE%\go\bin"`,
 		"",
 		"REM Note: Auto-switching (.govman-goversion) is not available in Command Prompt",
 		"REM Use 'govman use <version>' to switch versions manually",
@@ -957,7 +1103,7 @@ func (s *CmdShell) ExecutePathCommand(path string) error {
 	fmt.Println(pathCmd)
 
 	fmt.Fprintln(os.Stderr, "REM To apply to current session, copy and run:")
-	fmt.Fprintf(os.Stderr, "REM %s\n", pathCmd)
+	_, _ = fmt.Fprintf(os.Stderr, "REM %s\n", pathCmd)
 
 	return nil
 }
@@ -989,38 +1135,8 @@ func initializeUnixShell(shell Shell, binPath string, force bool) error {
 		return fmt.Errorf("failed to create config directory %s: %w", configDir, err)
 	}
 
-	// Verify we can write to the directory
-	testFile := filepath.Join(configDir, ".govman_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		return fmt.Errorf("insufficient permissions to write to %s: %w", configDir, err)
-	}
-	os.Remove(testFile)
-
-	// Read existing content
-	var existingContent string
-	if content, err := os.ReadFile(configFile); err == nil {
-		existingContent = string(content)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	// Check if govman is already configured
-	if containsGovmanConfig(existingContent) {
-		if !force {
-			return fmt.Errorf("govman is already configured in %s (use --force to override)", configFile)
-		}
-		existingContent = removeExistingConfig(existingContent)
-	}
-
-	// Prepare new configuration
 	setupCommands := shell.SetupCommands(binPath)
-	newConfig := "\n" + strings.Join(setupCommands, "\n") + "\n"
-
-	// Combine content
-	finalContent := strings.TrimSpace(existingContent) + newConfig
-
-	// Write to file with proper permissions
-	if err := os.WriteFile(configFile, []byte(finalContent), 0644); err != nil {
+	if err := writeShellIntegration(configFile, setupCommands, force, "\n"); err != nil {
 		return fmt.Errorf("failed to write config to %s: %w", configFile, err)
 	}
 
@@ -1041,38 +1157,8 @@ func initializePowerShell(shell Shell, binPath string, force bool) error {
 		return fmt.Errorf("failed to create profile directory: %w", err)
 	}
 
-	// Verify write permissions
-	testFile := filepath.Join(profileDir, ".govman_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		return fmt.Errorf("insufficient permissions to write to %s: %w", profileDir, err)
-	}
-	os.Remove(testFile)
-
-	// Read existing content
-	var existingContent string
-	if content, err := os.ReadFile(profilePath); err == nil {
-		existingContent = string(content)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read profile: %w", err)
-	}
-
-	// Check if govman is already configured
-	if containsGovmanConfig(existingContent) {
-		if !force {
-			return fmt.Errorf("govman is already configured in PowerShell profile (use --force to override)")
-		}
-		existingContent = removeExistingConfig(existingContent)
-	}
-
-	// Prepare new configuration
 	setupCommands := shell.SetupCommands(binPath)
-	newConfig := "\r\n" + strings.Join(setupCommands, "\r\n") + "\r\n"
-
-	// Combine content
-	finalContent := strings.TrimSpace(existingContent) + newConfig
-
-	// Write to file
-	if err := os.WriteFile(profilePath, []byte(finalContent), 0644); err != nil {
+	if err := writeShellIntegration(profilePath, setupCommands, force, "\r\n"); err != nil {
 		return fmt.Errorf("failed to write PowerShell profile: %w", err)
 	}
 
@@ -1085,101 +1171,103 @@ func initializePowerShell(shell Shell, binPath string, force bool) error {
 
 // initializeCmdShell creates a batch wrapper for Command Prompt.
 func initializeCmdShell(binPath string, force bool) error {
-	wrapperPath := filepath.Join(binPath, "govman.bat")
+	wrapperPath := filepath.Join(binPath, "govman.cmd")
+	backendPath := filepath.Join(binPath, "govman-real.exe")
 
-	// Check if wrapper exists
 	if !force && fileExists(wrapperPath) {
 		return fmt.Errorf("wrapper already exists at %s (use --force to override)", wrapperPath)
 	}
-
-	// Verify write permissions
-	testFile := filepath.Join(binPath, ".govman_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		return fmt.Errorf("insufficient permissions to write to %s: %w", binPath, err)
+	if !fileExists(backendPath) {
+		return fmt.Errorf("cmd backend not found at %s; install the Windows binary as govman-real.exe before initializing cmd", backendPath)
 	}
-	os.Remove(testFile)
 
-	// Create wrapper content using template for better maintainability
+	escapedBackend := escapeCmdPath(backendPath)
 	tmpl := `@echo off
-setlocal enabledelayedexpansion
-
 REM GOVMAN Wrapper for Command Prompt
-set "GOVMAN_BIN={{.BinPath}}\govman.exe"
+set "GOVMAN_BIN={{GOVMAN_BACKEND}}"
 
-REM Check if govman.exe exists
+REM Delayed expansion and local environment scoping are intentionally disabled. PATH changes made by
+REM a successful use/refresh command must survive in the caller's cmd.exe session.
 if not exist "%GOVMAN_BIN%" (
-    echo Error: govman.exe not found at %GOVMAN_BIN% >&2
+    echo Error: govman backend not found at "%GOVMAN_BIN%" >&2
     exit /b 1
 )
 
-REM Handle 'use' command with special PATH updating logic
-if "%~1"=="use" (
-    if not "%~2"=="" (
-        if not "%~2"=="--help" (
-            if not "%~2"=="-h" (
-                REM Execute govman use and capture output
-                "%GOVMAN_BIN%" %* > "%TEMP%\govman_output.tmp" 2>&1
-                set GOVMAN_EXIT_CODE=!errorlevel!
-                
-                if !GOVMAN_EXIT_CODE! equ 0 (
-                    REM Look for PATH export command in output
-                    set "PATH_UPDATED="
-                    for /f "usebackq delims=" %%i in ("%TEMP%\govman_output.tmp") do (
-                        set "LINE=%%i"
-                        echo !LINE! | findstr /b /c:"set PATH=" >nul
-                        if !errorlevel! equ 0 (
-                            REM Execute the PATH update command
-                            %%i
-                            set "PATH_UPDATED=1"
-                        )
-                    )
-                    del "%TEMP%\govman_output.tmp" 2>nul
-                    if defined PATH_UPDATED (
-                        echo.
-                        echo ✓ Go version switched successfully
-                        echo.
-                        echo Note: This change only affects the current Command Prompt session.
-                        echo To verify, run: go version
-                    ) else (
-                        echo Warning: No PATH update found in govman output >&2
-                    )
-                    exit /b 0
-                ) else (
-                    REM Show error output
-                    type "%TEMP%\govman_output.tmp" >&2
-                    del "%TEMP%\govman_output.tmp" 2>nul
-                    exit /b !GOVMAN_EXIT_CODE!
-                )
-            )
-        )
-    )
+set "GOVMAN_COMMAND="
+set "GOVMAN_EXPECT_CONFIG="
+call :govman_find_command %*
+
+:govman_choose_temp
+set "GOVMAN_OUTPUT=%TEMP%\govman-output-%RANDOM%-%RANDOM%.tmp"
+if exist "%GOVMAN_OUTPUT%" goto govman_choose_temp
+
+REM The backend is invoked exactly once for every wrapper invocation.
+"%GOVMAN_BIN%" %* > "%GOVMAN_OUTPUT%" 2>&1
+set "GOVMAN_RESULT=%errorlevel%"
+if not "%GOVMAN_RESULT%"=="0" goto govman_error
+
+if /i "%GOVMAN_COMMAND%"=="use" goto govman_apply_path
+if /i "%GOVMAN_COMMAND%"=="refresh" goto govman_apply_path
+type "%GOVMAN_OUTPUT%"
+goto govman_cleanup
+
+:govman_apply_path
+for /f %%C in ('findstr /b /c:"set PATH=" "%GOVMAN_OUTPUT%" ^| find /c /v ""') do set "GOVMAN_PATH_COUNT=%%C"
+if not "%GOVMAN_PATH_COUNT%"=="1" (
+    echo Error: govman returned success without exactly one valid PATH command. >&2
+    set "GOVMAN_RESULT=1"
+    goto govman_cleanup
 )
+for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"set PATH=" "%GOVMAN_OUTPUT%"') do set "GOVMAN_PATH_EXPR=%%B"
+if not defined GOVMAN_PATH_EXPR (
+    echo Error: govman returned an empty PATH command. >&2
+    set "GOVMAN_RESULT=1"
+    goto govman_cleanup
+)
+call set "PATH=%%GOVMAN_PATH_EXPR%%"
+findstr /v /b /c:"set PATH=" "%GOVMAN_OUTPUT%"
+goto govman_cleanup
 
-REM For all other commands, just pass through
-"%GOVMAN_BIN%" %*
-exit /b %errorlevel%
+:govman_error
+type "%GOVMAN_OUTPUT%" >&2
+
+:govman_cleanup
+if exist "%GOVMAN_OUTPUT%" del /q "%GOVMAN_OUTPUT%" >nul 2>&1
+set "GOVMAN_EXIT_CODE=%GOVMAN_RESULT%"
+set "GOVMAN_BIN="
+set "GOVMAN_COMMAND="
+set "GOVMAN_EXPECT_CONFIG="
+set "GOVMAN_OUTPUT="
+set "GOVMAN_PATH_COUNT="
+set "GOVMAN_PATH_EXPR="
+set "GOVMAN_RESULT="
+exit /b %GOVMAN_EXIT_CODE%
+
+:govman_find_command
+if "%~1"=="" exit /b 0
+if defined GOVMAN_EXPECT_CONFIG (
+    set "GOVMAN_EXPECT_CONFIG="
+    shift
+    goto govman_find_command
+)
+if /i "%~1"=="--config" (
+    set "GOVMAN_EXPECT_CONFIG=1"
+    shift
+    goto govman_find_command
+)
+if /i "%~1"=="--quiet" shift & goto govman_find_command
+if /i "%~1"=="-q" shift & goto govman_find_command
+if /i "%~1"=="--verbose" shift & goto govman_find_command
+if /i "%~1"=="-V" shift & goto govman_find_command
+if /i "%~1"=="--" shift & goto govman_find_command
+set "GOVMAN_COMMAND=%~1"
+exit /b 0
 `
-
-	// Parse and execute template
-	t, err := template.New("wrapper").Parse(tmpl)
-	if err != nil {
-		return fmt.Errorf("failed to parse wrapper template: %w", err)
-	}
-
-	var buf strings.Builder
-	data := struct {
-		BinPath string
-	}{
-		BinPath: binPath,
-	}
-
-	if err := t.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to generate wrapper: %w", err)
-	}
+	tmpl = strings.ReplaceAll(tmpl, "{{GOVMAN_BACKEND}}", escapedBackend)
 
 	// Write wrapper file with CRLF line endings for Windows
-	content := strings.ReplaceAll(buf.String(), "\n", "\r\n")
-	if err := os.WriteFile(wrapperPath, []byte(content), 0644); err != nil {
+	content := strings.ReplaceAll(tmpl, "\n", "\r\n")
+	if err := atomicWriteShellFile(wrapperPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to create wrapper: %w", err)
 	}
 
@@ -1191,7 +1279,8 @@ exit /b %errorlevel%
 	fmt.Println("Step 1: Add govman to your PATH")
 	fmt.Println()
 	fmt.Println("   Option A - Permanent (Recommended):")
-	fmt.Printf("   setx PATH \"%%PATH%%;%s\"\n", binPath)
+	fmt.Println("   Use the govman installer or add this exact directory through")
+	fmt.Printf("   System Properties > Environment Variables: %s\n", binPath)
 	fmt.Println()
 	fmt.Println("   Option B - Current session only:")
 	fmt.Printf("   set PATH=%%PATH%%;%s\n", binPath)
@@ -1226,39 +1315,203 @@ exit /b %errorlevel%
 	return nil
 }
 
-// containsGovmanConfig checks if content contains govman configuration.
+type markerBlock struct {
+	start int
+	end   int
+	found bool
+}
+
+func inspectGovmanBlock(content string) (markerBlock, error) {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	starts := make([]int, 0, 1)
+	ends := make([]int, 0, 1)
+	for index, line := range lines {
+		switch line {
+		case govmanMarkerStart:
+			starts = append(starts, index)
+		case govmanMarkerEnd:
+			ends = append(ends, index)
+		}
+	}
+	if len(starts) == 0 && len(ends) == 0 {
+		return markerBlock{}, nil
+	}
+	if len(starts) != 1 || len(ends) != 1 || starts[0] >= ends[0] {
+		return markerBlock{}, fmt.Errorf("malformed or duplicate govman marker block")
+	}
+	return markerBlock{start: starts[0], end: ends[0], found: true}, nil
+}
+
+// containsGovmanConfig only recognizes one complete exact marker block.
 func containsGovmanConfig(content string) bool {
-	for _, marker := range configMarkers {
-		if strings.Contains(content, marker) {
-			return true
+	block, err := inspectGovmanBlock(content)
+	return err == nil && block.found
+}
+
+func removeExistingConfigStrict(content string) (string, error) {
+	newline := "\n"
+	if strings.Contains(content, "\r\n") {
+		newline = "\r\n"
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	block, err := inspectGovmanBlock(normalized)
+	if err != nil {
+		return "", err
+	}
+	if !block.found {
+		return content, nil
+	}
+	lines := strings.Split(normalized, "\n")
+	lines = append(lines[:block.start], lines[block.end+1:]...)
+	cleaned := strings.Join(lines, "\n")
+	cleaned = newlineRegex.ReplaceAllString(cleaned, "\n\n")
+	cleaned = strings.Trim(cleaned, "\n")
+	return strings.ReplaceAll(cleaned, "\n", newline), nil
+}
+
+// removeExistingConfig preserves malformed content instead of deleting an
+// open-ended range. Initialization uses the strict variant and reports errors.
+func removeExistingConfig(content string) string {
+	cleaned, err := removeExistingConfigStrict(content)
+	if err != nil {
+		return content
+	}
+	return cleaned
+}
+
+func writeShellIntegration(configPath string, setupCommands []string, force bool, defaultNewline string) error {
+	newline := defaultNewline
+	mode := os.FileMode(0644)
+	existing := ""
+	info, err := os.Lstat(configPath)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular shell config: %s", configPath)
+		}
+		mode = info.Mode().Perm()
+		data, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			return readErr
+		}
+		existing = string(data)
+		if strings.Contains(existing, "\r\n") {
+			newline = "\r\n"
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	block, err := inspectGovmanBlock(existing)
+	if err != nil {
+		return err
+	}
+	if block.found && !force {
+		return fmt.Errorf("govman is already configured (use --force to override)")
+	}
+	if block.found {
+		existing, err = removeExistingConfigStrict(existing)
+		if err != nil {
+			return err
 		}
 	}
 
-	return false
+	base := strings.TrimRight(existing, "\r\n")
+	generated := strings.Join(setupCommands, newline)
+	finalContent := generated + newline
+	if base != "" {
+		finalContent = base + newline + newline + generated + newline
+	}
+	return atomicWriteShellFile(configPath, []byte(finalContent), mode)
 }
 
-// removeExistingConfig removes existing govman configuration from content.
-func removeExistingConfig(content string) string {
-	// Use the pre-compiled regex for better performance
-	cleanedContent := configRemovalRegex.ReplaceAllString(content, "")
+func removeShellTemp(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
 
-	// Clean up excessive newlines
-	cleanedContent = newlineRegex.ReplaceAllString(cleanedContent, "\n\n")
+func discardShellTemp(file *os.File, path string) error {
+	return errors.Join(file.Close(), removeShellTemp(path))
+}
 
-	return strings.TrimSpace(cleanedContent)
+func atomicWriteShellFile(path string, content []byte, mode os.FileMode) (resultErr error) {
+	directory := filepath.Dir(path)
+	backupPath := ""
+	if existing, err := os.ReadFile(path); err == nil {
+		backupFile, createErr := os.CreateTemp(directory, ".govman-backup-*")
+		if createErr != nil {
+			return createErr
+		}
+		backupPath = backupFile.Name()
+		if chmodErr := backupFile.Chmod(mode); chmodErr != nil {
+			return errors.Join(chmodErr, discardShellTemp(backupFile, backupPath))
+		}
+		if _, writeErr := backupFile.Write(existing); writeErr != nil {
+			return errors.Join(writeErr, discardShellTemp(backupFile, backupPath))
+		}
+		if syncErr := backupFile.Sync(); syncErr != nil {
+			return errors.Join(syncErr, discardShellTemp(backupFile, backupPath))
+		}
+		if closeErr := backupFile.Close(); closeErr != nil {
+			return errors.Join(closeErr, removeShellTemp(backupPath))
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	defer func() {
+		if backupPath != "" {
+			resultErr = errors.Join(resultErr, removeShellTemp(backupPath))
+		}
+	}()
+	tempFile, err := os.CreateTemp(directory, ".govman-config-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			if closeErr := tempFile.Close(); resultErr == nil && closeErr != nil {
+				resultErr = closeErr
+			}
+		}
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, removeShellTemp(tempPath))
+		}
+	}()
+	if err := tempFile.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tempFile.Write(content); err != nil {
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetShellInstructions returns manual setup instructions for a shell.
 func GetShellInstructions(shell Shell, binPath string) string {
 	var instructions strings.Builder
 
-	instructions.WriteString(fmt.Sprintf("Manual setup for %s:\n\n", shell.DisplayName()))
-	instructions.WriteString(fmt.Sprintf("1. Edit: %s\n\n", shell.ConfigFile()))
+	_, _ = fmt.Fprintf(&instructions, "Manual setup for %s:\n\n", shell.DisplayName())
+	_, _ = fmt.Fprintf(&instructions, "1. Edit: %s\n\n", shell.ConfigFile())
 	instructions.WriteString("2. Add these lines:\n\n")
 
 	commands := shell.SetupCommands(binPath)
 	for _, cmd := range commands {
-		instructions.WriteString(fmt.Sprintf("   %s\n", cmd))
+		_, _ = fmt.Fprintf(&instructions, "   %s\n", cmd)
 	}
 
 	instructions.WriteString("\n3. Reload your shell:\n")
@@ -1271,7 +1524,7 @@ func GetShellInstructions(shell Shell, binPath string) string {
 	case "cmd":
 		instructions.WriteString("   (Restart Command Prompt)\n")
 	default:
-		instructions.WriteString(fmt.Sprintf("   source %s\n", shell.ConfigFile()))
+		_, _ = fmt.Fprintf(&instructions, "   source %s\n", shell.ConfigFile())
 	}
 
 	return instructions.String()

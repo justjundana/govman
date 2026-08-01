@@ -5,6 +5,9 @@ param(
     [switch]$Help
 )
 
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
 # Colors and styles for Windows Terminal
 $Colors = @{
     Red = "`e[0;31m"
@@ -45,7 +48,7 @@ function Print-Separator {
 
 # Print fancy header
 function Print-Header {
-    Clear-Host
+    if (-not [Console]::IsOutputRedirected) { Clear-Host }
     Print-Separator "═"
     Write-Host ""
     Write-Host ""
@@ -122,11 +125,155 @@ function Show-Help {
     Write-Host "  .\uninstall.ps1 -Help   # Show help"
 }
 
+function Normalize-WindowsPathEntry {
+    param([AllowEmptyString()][string]$Entry)
+
+    if ($null -eq $Entry) { return "" }
+    return $Entry.Trim().TrimEnd([char[]]@('\', '/'))
+}
+
+function Test-WindowsPathEntry {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry
+    )
+
+    $expected = Normalize-WindowsPathEntry $Entry
+    foreach ($candidate in $PathValue.Split([char[]]@(';'), [StringSplitOptions]::None)) {
+        if ([StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $candidate), $expected)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Update-WindowsPathValue {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry,
+        [ValidateSet("Add", "Remove")][string]$Action
+    )
+
+    $hasEntry = Test-WindowsPathEntry $PathValue $Entry
+    if ($Action -eq "Add") {
+        if ($hasEntry) { return $PathValue }
+        if ([string]::IsNullOrEmpty($PathValue)) { return $Entry }
+        return "$PathValue;$Entry"
+    }
+    if (-not $hasEntry) { return $PathValue }
+
+    $expected = Normalize-WindowsPathEntry $Entry
+    return (@($PathValue.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
+        -not [StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $_), $expected)
+    })) -join ";"
+}
+
+function Remove-UserPathEntry {
+    param([string]$Entry)
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    if ($null -eq $key) { throw "Unable to open HKCU\Environment" }
+
+    $backupName = "Path.govman-backup-$PID-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        $hadPath = @($key.GetValueNames()) -contains "Path"
+        if (-not $hadPath) { return $false }
+        $oldPath = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $valueKind = $key.GetValueKind("Path")
+        if (-not (Test-WindowsPathEntry $oldPath $Entry)) { return $false }
+
+        $newPath = Update-WindowsPathValue -PathValue $oldPath -Entry $Entry -Action Remove
+
+        $key.SetValue($backupName, $oldPath, $valueKind)
+        try {
+            $key.SetValue("Path", $newPath, $valueKind)
+            $actualPath = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($actualPath -cne $newPath -or $key.GetValueKind("Path") -ne $valueKind) {
+                throw "PATH verification failed after registry write"
+            }
+        }
+        catch {
+            $key.SetValue("Path", $oldPath, $valueKind)
+            throw
+        }
+        finally {
+            $key.DeleteValue($backupName, $false)
+        }
+        return $true
+    }
+    finally {
+        $key.Dispose()
+    }
+}
+
+function Get-GovmanProfilePaths {
+    $documents = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+    return @(
+        [string]$PROFILE,
+        (Join-Path $documents "WindowsPowerShell\Microsoft.PowerShell_profile.ps1"),
+        (Join-Path $documents "PowerShell\Microsoft.PowerShell_profile.ps1")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+}
+
+function Remove-GovmanProfileIntegration {
+    param([string[]]$ProfilePaths = @(Get-GovmanProfilePaths))
+
+    $startPattern = '(?m)^# GOVMAN - Go Version Manager\r?$'
+    $endPattern = '(?m)^# END GOVMAN\r?$'
+    $changed = $false
+
+    foreach ($profilePath in $ProfilePaths) {
+        if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { continue }
+        $content = [IO.File]::ReadAllText($profilePath)
+        $starts = [regex]::Matches($content, $startPattern)
+        $ends = [regex]::Matches($content, $endPattern)
+        if ($starts.Count -eq 0 -and $ends.Count -eq 0) { continue }
+        if ($starts.Count -ne 1 -or $ends.Count -ne 1 -or $ends[0].Index -lt $starts[0].Index) {
+            throw "Malformed or duplicate govman marker block in $profilePath"
+        }
+
+        $removeStart = $starts[0].Index
+        $removeEnd = $ends[0].Index + $ends[0].Length
+        if ($removeEnd -lt $content.Length -and $content[$removeEnd] -eq "`n") { $removeEnd++ }
+        $updated = $content.Remove($removeStart, $removeEnd - $removeStart)
+
+        $directory = Split-Path -Parent $profilePath
+        $leaf = Split-Path -Leaf $profilePath
+        $suffix = "$(Get-Date -Format 'yyyyMMddHHmmssfff')-$PID"
+        $backupPath = Join-Path $directory "$leaf.govman-backup-$suffix"
+        $tempPath = Join-Path $directory ".$leaf.govman-$suffix.tmp"
+        $acl = Get-Acl -LiteralPath $profilePath
+        Copy-Item -LiteralPath $profilePath -Destination $backupPath -ErrorAction Stop
+        try {
+            [IO.File]::WriteAllText($tempPath, $updated, [Text.UTF8Encoding]::new($false))
+            Set-Acl -LiteralPath $tempPath -AclObject $acl
+            [IO.File]::Replace($tempPath, $profilePath, $null)
+        }
+        catch {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath $backupPath -Destination $profilePath -Force
+            throw
+        }
+        $changed = $true
+        Print-Success "Removed shell integration from $profilePath (backup: $backupPath)"
+    }
+    return $changed
+}
+
+function Remove-ProfileIntegration {
+    Print-Step "Cleaning PowerShell profile integration..."
+    if (-not (Remove-GovmanProfileIntegration)) {
+        Print-Info "No govman PowerShell profile integration found"
+    }
+}
+
 # Check if govman is installed
 function Test-GovmanInstallation {
     $installDir = Join-Path $env:USERPROFILE ".govman\bin"
     $govmanDir = Join-Path $env:USERPROFILE ".govman"
-    $binaryFound = Test-Path (Join-Path $installDir "govman.exe")
+    $binaryFound = (Test-Path (Join-Path $installDir "govman-real.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.cmd"))
     $commandFound = $null -ne (Get-Command govman -ErrorAction SilentlyContinue)
     $dataFound = Test-Path $govmanDir
 
@@ -145,7 +292,7 @@ function Test-GovmanInstallation {
 
     # Check PATH configuration
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    $pathConfigured = $userPath -like "*$installDir*"
+    $pathConfigured = Test-WindowsPathEntry $userPath $installDir
 
     if ($pathConfigured) {
         Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) PATH configuration: $($Colors.Bold)Found in user PATH$($Colors.Reset)"
@@ -189,7 +336,9 @@ function Show-RemovalPreview {
     $govmanDir = Join-Path $env:USERPROFILE ".govman"
 
     # Check binary
-    if (Test-Path (Join-Path $installDir "govman.exe")) {
+    if ((Test-Path (Join-Path $installDir "govman-real.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.cmd"))) {
         Write-Host "$($Colors.Red) $($Icons.Trash)$($Colors.Reset) Binary directory: $($Colors.Bold)$installDir$($Colors.Reset)"
     } else {
         Write-Host "$($Colors.Gray) $($Icons.Crossmark)$($Colors.Reset) Binary directory: $($Colors.Dim)$installDir (not found)$($Colors.Reset)"
@@ -197,7 +346,7 @@ function Show-RemovalPreview {
 
     # Check PATH configuration
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    if ($userPath -like "*$installDir*") {
+    if (Test-WindowsPathEntry $userPath $installDir) {
         Write-Host "$($Colors.Red) $($Icons.Trash)$($Colors.Reset) PATH configuration: $($Colors.Bold)User PATH entry$($Colors.Reset)"
     } else {
         Write-Host "$($Colors.Gray) $($Icons.Crossmark)$($Colors.Reset) PATH configuration: $($Colors.Dim)No govman PATH found$($Colors.Reset)"
@@ -219,21 +368,6 @@ function Show-RemovalPreview {
     Write-Host ""
 }
 
-# Animated loading for removal process
-function Show-RemovalProgress {
-    param([string]$Item)
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Removing $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 10; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Removing $Item... $($Colors.Cyan)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Removed $Item successfully.      "
-}
-
 # Remove binary with feedback
 function Remove-Binary {
     $installDir = Join-Path $env:USERPROFILE ".govman\bin"
@@ -241,13 +375,13 @@ function Remove-Binary {
     Print-Step "Removing govman binary..."
 
     if (Test-Path $installDir) {
-        Show-RemovalProgress "binary directory"
         try {
             Remove-Item -Path $installDir -Recurse -Force
             Print-Success "Removed govman binary from $installDir"
         }
         catch {
             Print-Error "Failed to remove binary directory: $($_.Exception.Message)"
+            throw
         }
     } else {
         Print-Warning "govman binary directory not found at $installDir"
@@ -260,25 +394,17 @@ function Remove-FromPath {
 
     Print-Step "Cleaning PATH configuration..."
 
-    # Get current user PATH
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-
-    if ($userPath -like "*$installDir*") {
-        Show-RemovalProgress "PATH configuration"
-
-        # Remove the install directory from PATH
-        $pathEntries = $userPath -split ";" | Where-Object { $_ -ne $installDir -and $_ -ne "" }
-        $newPath = $pathEntries -join ";"
-
-        try {
-            [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-            Print-Success "Cleaned PATH configuration"
-        }
-        catch {
-            Print-Error "Failed to update PATH: $($_.Exception.Message)"
-        }
+    if (Remove-UserPathEntry $installDir) {
+        Print-Success "Cleaned PATH configuration"
     } else {
         Print-Info "No govman PATH configuration found"
+    }
+
+    if (Test-WindowsPathEntry $env:PATH $installDir) {
+        $expected = Normalize-WindowsPathEntry $installDir
+        $env:PATH = (@($env:PATH.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
+            -not [StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $_), $expected)
+        })) -join ";"
     }
 }
 
@@ -293,13 +419,13 @@ function Remove-GovmanDir {
         $dirSize = "{0:N2} MB" -f ((Get-ChildItem $govmanDir -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB)
         Print-Info "Removing directory: $govmanDir ($dirSize)"
 
-        Show-RemovalProgress "data directory"
         try {
             Remove-Item -Path $govmanDir -Recurse -Force
             Print-Success "Removed govman data directory"
         }
         catch {
             Print-Error "Failed to remove data directory: $($_.Exception.Message)"
+            throw
         }
     } else {
         Print-Warning "govman directory not found at $govmanDir"
@@ -343,6 +469,7 @@ function Show-Completion {
         Write-Host "$($Colors.Bold)$($Colors.White)What was removed:$($Colors.Reset)"
         Write-Host " • govman binary and executable"
         Write-Host " • PATH configuration"
+        Write-Host " • PowerShell profile integration (when present)"
         Write-Host " • All downloaded Go versions"
         Write-Host " • Complete .govman directory"
     } else {
@@ -352,6 +479,7 @@ function Show-Completion {
         Write-Host "$($Colors.Bold)$($Colors.White)What was removed:$($Colors.Reset)"
         Write-Host " • govman binary and executable"
         Write-Host " • PATH configuration"
+        Write-Host " • PowerShell profile integration (when present)"
         Write-Host ""
         Write-Host "$($Colors.Bold)$($Colors.White)What was kept:$($Colors.Reset)"
         Write-Host " • Downloaded Go versions in .govman directory"
@@ -441,9 +569,11 @@ function Main {
 
             if ($confirm -match "^[Yy]$") {
                 Write-Host ""
-                Remove-Binary
+                Remove-ProfileIntegration
                 Write-Host ""
                 Remove-FromPath
+                Write-Host ""
+                Remove-Binary
                 Write-Host ""
                 Show-Completion $false
             } else {
@@ -471,7 +601,7 @@ function Main {
 
             if ($confirm -eq "DELETE") {
                 Write-Host ""
-                Remove-Binary
+                Remove-ProfileIntegration
                 Write-Host ""
                 Remove-FromPath
                 Write-Host ""
@@ -506,5 +636,7 @@ trap {
     exit 1
 }
 
-# Run main function
-Main
+# Run only when executed, allowing the path helpers to be dot-sourced by tests.
+if ($MyInvocation.InvocationName -ne ".") {
+    Main
+}

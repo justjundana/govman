@@ -9,7 +9,6 @@ import (
 
 	_logger "github.com/justjundana/govman/internal/logger"
 	_manager "github.com/justjundana/govman/internal/manager"
-	_util "github.com/justjundana/govman/internal/util"
 )
 
 // newRefreshCmd creates the 'refresh' Cobra command to re-evaluate the current directory for a .govman-goversion file.
@@ -18,6 +17,7 @@ func newRefreshCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh",
 		Short: "Refresh Go version based on current directory context",
+		Args:  usageArgs(cobra.NoArgs),
 		Long: `Manually trigger version switching based on the current directory.
 
 Purpose:
@@ -37,7 +37,11 @@ Behavior:
 
 			cfg := getConfig()
 			filename := cfg.AutoSwitch.ProjectFile
-			if data, err := os.ReadFile(filename); err == nil {
+			data, readErr := os.ReadFile(filename)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				return fmt.Errorf("failed to read local version file %s: %w", filename, readErr)
+			}
+			if readErr == nil {
 				version := strings.TrimSpace(string(data))
 
 				// Validate version format
@@ -48,8 +52,7 @@ Behavior:
 				}
 
 				if !_manager.VersionFormatRegex.MatchString(version) {
-					_logger.ErrorWithHelp("Invalid version format in %s: %s", "Version should be like '1.25', '1.25.4', or 'latest'", filename, version)
-					return fmt.Errorf("invalid version format: %s", version)
+					return withHelp(fmt.Errorf("invalid version format in %s: %s", filename, version), "Version should be like '1.25', '1.25.4', or 'latest'.")
 				}
 
 				_logger.Info("Found local version file: %s", filename)
@@ -58,28 +61,23 @@ Behavior:
 				if version == "latest" || version == "stable" {
 					resolvedVersion, err := mgr.ResolveVersion(version)
 					if err != nil {
-						_logger.ErrorWithHelp("Failed to resolve version alias '%s'", "Check your internet connection or specify an exact version.", version)
-						return fmt.Errorf("failed to resolve version %s: %w", version, err)
+						return withHelp(fmt.Errorf("failed to resolve version %s: %w", version, err), "Check your internet connection or specify an exact installed version.")
 					}
 					_logger.Verbose("Resolved alias %s to %s", version, resolvedVersion)
 					version = resolvedVersion
 				} else if strings.Count(version, ".") == 1 {
-					// Resolve partial version (e.g., "1.25") to best matching installed version
-					installedVersions, err := mgr.ListInstalled()
-					if err == nil && len(installedVersions) > 0 {
-						if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-							_logger.Verbose("Resolved partial version %s to installed version %s", version, matchedVersion)
-							version = matchedVersion
-						}
+					resolvedVersion, err := resolveInstalledVersion(mgr, version)
+					if err != nil {
+						return err
 					}
+					version = resolvedVersion
 				}
 
 				_logger.Info("Switching to Go %s", version)
 
 				if !mgr.IsInstalled(version) {
 					helpMsg := fmt.Sprintf("Install it first with 'govman install %s'", version)
-					_logger.ErrorWithHelp("Go version %s is not installed", helpMsg, version)
-					return fmt.Errorf("version %s not installed", version)
+					return withHelp(fmt.Errorf("go version %s is not installed", version), helpMsg)
 				}
 
 				return mgr.Use(version, false, false)

@@ -84,7 +84,7 @@ When you navigate to a directory, govman:
 govman resolves the active version in this order:
 
 1. **Session-only**: Temporary activation via `govman use`
-2. **Project-local**: `.govman-goversion` file in current/parent directory
+2. **Project-local**: `.govman-goversion` file in the current directory
 3. **System-default**: Global version set via `govman use --default`
 
 

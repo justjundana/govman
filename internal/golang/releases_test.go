@@ -1,8 +1,10 @@
 package golang
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -45,6 +48,15 @@ func TestGetAvailableVersions(t *testing.T) {
 			shouldError:   false,
 		},
 		{
+			name:            "Reject invalid upstream version",
+			includeUnstable: true,
+			mockResponse: []Release{
+				{Version: "not-a-go-version", Stable: true},
+			},
+			expectedCount: 0,
+			shouldError:   true,
+		},
+		{
 			name:            "Empty response",
 			includeUnstable: false,
 			mockResponse:    []Release{},
@@ -77,7 +89,11 @@ func TestGetAvailableVersions(t *testing.T) {
 
 			// Verify versions are sorted in descending order
 			for i := 0; i < len(versions)-1; i++ {
-				if CompareVersions(versions[i], versions[i+1]) < 0 {
+				comparison, compareErr := CompareVersions(versions[i], versions[i+1])
+				if compareErr != nil {
+					t.Fatalf("failed to compare returned versions: %v", compareErr)
+				}
+				if comparison < 0 {
 					t.Errorf("Versions not sorted correctly: %s should be before %s", versions[i], versions[i+1])
 				}
 			}
@@ -462,6 +478,96 @@ func TestGetVersionInfo(t *testing.T) {
 	}
 }
 
+func TestInstallMetadataControlsInstallDate(t *testing.T) {
+	installPath := createLocalGoInstall(t, "1.25.1")
+	installedAt := time.Date(2026, time.July, 2, 5, 30, 0, 123, time.UTC)
+	if err := WriteInstallMetadata(installPath, "1.25.1", installedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := GetVersionInfo(installPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.InstallDate.Equal(installedAt) {
+		t.Fatalf("InstallDate = %s, want %s", info.InstallDate, installedAt)
+	}
+	metadataPath := filepath.Join(installPath, installMetadataFilename)
+	if runtime.GOOS != "windows" {
+		metadataInfo, err := os.Stat(metadataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metadataInfo.Mode().Perm() != 0600 {
+			t.Fatalf("metadata permissions = %o, want 600", metadataInfo.Mode().Perm())
+		}
+	}
+	if err := WriteInstallMetadata(installPath, "1.25.1", installedAt.Add(time.Hour)); err == nil {
+		t.Fatal("WriteInstallMetadata replaced existing metadata")
+	}
+}
+
+func TestGetVersionInfoLegacyInstallUsesDirectoryTime(t *testing.T) {
+	installPath := createLocalGoInstall(t, "1.24.6")
+	expected := time.Date(2025, time.December, 1, 2, 3, 4, 0, time.UTC)
+	if err := os.Chtimes(installPath, expected, expected); err != nil {
+		t.Fatal(err)
+	}
+	goBinary := filepath.Join(installPath, "bin", "go")
+	if runtime.GOOS == "windows" {
+		goBinary += ".exe"
+	}
+	archiveTime := expected.Add(-365 * 24 * time.Hour)
+	if err := os.Chtimes(goBinary, archiveTime, archiveTime); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := GetVersionInfo(installPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.InstallDate.Equal(expected) {
+		t.Fatalf("legacy InstallDate = %s, want directory time %s", info.InstallDate, expected)
+	}
+}
+
+func TestGetVersionInfoRejectsCorruptInstallMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{name: "malformed", content: "{"},
+		{name: "wrong version", content: `{"version":"1.25.2","installed_at":"2026-07-02T00:00:00Z"}`},
+		{name: "unknown field", content: `{"version":"1.25.1","installed_at":"2026-07-02T00:00:00Z","extra":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installPath := createLocalGoInstall(t, "1.25.1")
+			if err := os.WriteFile(filepath.Join(installPath, installMetadataFilename), []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := GetVersionInfo(installPath); err == nil {
+				t.Fatal("GetVersionInfo accepted corrupt install metadata")
+			}
+		})
+	}
+}
+
+func createLocalGoInstall(t *testing.T, version string) string {
+	t.Helper()
+	installPath := filepath.Join(t.TempDir(), "go"+version)
+	if err := os.MkdirAll(filepath.Join(installPath, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	goBinary := filepath.Join(installPath, "bin", "go")
+	if runtime.GOOS == "windows" {
+		goBinary += ".exe"
+	}
+	if err := os.WriteFile(goBinary, []byte("test"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return installPath
+}
+
 func TestCompareVersions(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -593,10 +699,24 @@ func TestCompareVersions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := CompareVersions(tc.v1, tc.v2)
+			result, err := CompareVersions(tc.v1, tc.v2)
+			if err != nil {
+				t.Fatalf("CompareVersions(%q, %q) error: %v", tc.v1, tc.v2, err)
+			}
 
 			if result != tc.expected {
 				t.Errorf("CompareVersions(%q, %q) = %d, expected %d", tc.v1, tc.v2, result, tc.expected)
+			}
+		})
+	}
+
+	for _, invalid := range []string{"", "invalid", "1", "1.2.3.4", "1.2-preview1"} {
+		t.Run("invalid_"+invalid, func(t *testing.T) {
+			if _, err := CompareVersions(invalid, "1.2.3"); err == nil {
+				t.Fatalf("CompareVersions accepted invalid version %q", invalid)
+			}
+			if _, err := CompareVersions("1.2.3", invalid); err == nil {
+				t.Fatalf("CompareVersions accepted invalid version %q as second operand", invalid)
 			}
 		})
 	}
@@ -610,6 +730,7 @@ func TestParseVersion(t *testing.T) {
 		expectedMinor      int
 		expectedPatch      int
 		expectedPrerelease string
+		expectError        bool
 	}{
 		{
 			name:               "Full version",
@@ -644,18 +765,24 @@ func TestParseVersion(t *testing.T) {
 			expectedPrerelease: "beta2",
 		},
 		{
-			name:               "Invalid version",
-			version:            "invalid",
-			expectedMajor:      0,
-			expectedMinor:      0,
-			expectedPatch:      0,
-			expectedPrerelease: "",
+			name:        "Invalid version",
+			version:     "invalid",
+			expectError: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			parts := parseVersion(tc.version)
+			parts, err := parseVersion(tc.version)
+			if tc.expectError {
+				if err == nil {
+					t.Fatalf("parseVersion(%q) succeeded", tc.version)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseVersion(%q) error: %v", tc.version, err)
+			}
 
 			if parts.numbers[0] != tc.expectedMajor {
 				t.Errorf("Expected major %d, got %d", tc.expectedMajor, parts.numbers[0])
@@ -987,6 +1114,137 @@ func TestFetchReleasesCache(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	})
+}
+
+func TestFetchReleasesCacheIsolatedByEndpointAndPolicy(t *testing.T) {
+	ClearReleasesCache()
+	serverA := createMockServer([]Release{{Version: "go1.24.1", Stable: true}}, http.StatusOK)
+	defer serverA.Close()
+	serverB := createMockServer([]Release{{Version: "go1.25.2", Stable: true}}, http.StatusOK)
+	defer serverB.Close()
+
+	releasesA, err := fetchReleasesWithConfig(serverA.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasesB, err := fetchReleasesWithConfig(serverB.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if releasesA[0].Version != "go1.24.1" || releasesB[0].Version != "go1.25.2" {
+		t.Fatalf("cache leaked across endpoints: A=%v B=%v", releasesA, releasesB)
+	}
+
+	var requests atomic.Int32
+	policyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		json.NewEncoder(writer).Encode([]Release{{Version: "go1.25.2", Stable: true}})
+	}))
+	defer policyServer.Close()
+	if _, err := fetchReleasesWithConfig(policyServer.URL, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchReleasesWithConfig(policyServer.URL, 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("cache policy keys shared one response: requests=%d", requests.Load())
+	}
+}
+
+func TestFetchReleasesReturnsDeepCopies(t *testing.T) {
+	ClearReleasesCache()
+	server := createMockServer([]Release{{
+		Version: "go1.25.2",
+		Stable:  true,
+		Files:   []File{{Filename: "original.tar.gz"}},
+	}}, http.StatusOK)
+	defer server.Close()
+
+	first, err := fetchReleasesWithConfig(server.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first[0].Version = "mutated"
+	first[0].Files[0].Filename = "mutated.tar.gz"
+	second, err := fetchReleasesWithConfig(server.URL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second[0].Version != "go1.25.2" || second[0].Files[0].Filename != "original.tar.gz" {
+		t.Fatalf("caller mutated shared cache: %v", second)
+	}
+}
+
+func TestFetchReleasesDeduplicatesConcurrentRequests(t *testing.T) {
+	ClearReleasesCache()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		if request.Header.Get("User-Agent") != "govman" {
+			t.Errorf("User-Agent = %q, want govman", request.Header.Get("User-Agent"))
+		}
+		time.Sleep(25 * time.Millisecond)
+		json.NewEncoder(writer).Encode([]Release{{Version: "go1.25.2", Stable: true}})
+	}))
+	defer server.Close()
+
+	start := make(chan struct{})
+	errors := make(chan error, 20)
+	var wait sync.WaitGroup
+	for range 20 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := fetchReleasesWithConfig(server.URL, time.Minute)
+			errors <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("concurrent release requests = %d, want 1", requests.Load())
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func TestFetchReleasesUsesInjectedClientAndBoundsBody(t *testing.T) {
+	requestCount := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if request.Header.Get("User-Agent") != "govman" || request.Header.Get("Accept") != "application/json" {
+			t.Fatalf("unexpected request headers: %v", request.Header)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", maxReleasesResponseSize+1))),
+			Request:    request,
+		}, nil
+	})}
+
+	if _, err := fetchReleasesContext(context.Background(), client, "https://example.test/releases"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized response error = %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("injected client requests = %d, want 1", requestCount)
+	}
+	if _, err := fetchReleasesContext(context.Background(), nil, "https://example.test/releases"); err == nil {
+		t.Fatal("nil releases client was accepted")
+	}
 }
 
 func TestGetDirSize(t *testing.T) {
@@ -1324,28 +1582,6 @@ func TestVersionInfoStructFields(t *testing.T) {
 	}
 	if info.Size != 1024000 {
 		t.Errorf("Expected size 1024000, got %d", info.Size)
-	}
-}
-
-func TestConstants(t *testing.T) {
-	testCases := []struct {
-		name     string
-		value    string
-		expected string
-	}{
-		{
-			name:     "GoDownloadURLTemplate",
-			value:    GoDownloadURLTemplate,
-			expected: "%s",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.value != tc.expected {
-				t.Errorf("Expected %q, got %q", tc.expected, tc.value)
-			}
-		})
 	}
 }
 

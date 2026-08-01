@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -26,42 +27,30 @@ Information includes:
   • Platform architecture and OS compatibility
   • Installation date, size, and disk usage
   • Binary locations and environment details
-  • Release notes and changelog links (when available)
 
 Perfect for debugging installation issues and verifying setups.`,
-		Args: cobra.ExactArgs(1),
+		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			version := args[0]
 			mgr := _manager.New(getConfig())
 
-			// Resolve alias to concrete version if needed
-			originalVersion := version
-			if version == "latest" || version == "stable" {
-				installedVersions, _ := mgr.ListInstalled()
-				if len(installedVersions) > 0 {
-					version = installedVersions[0] // installed versions are sorted in descending order
-					_logger.Verbose("Resolved alias %s to installed version %s", originalVersion, version)
-				}
-			} else if strings.Count(version, ".") == 1 {
-				// Partial version: resolve to best match
-				installedVersions, _ := mgr.ListInstalled()
-				if len(installedVersions) > 0 {
-					if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-						_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
-						version = matchedVersion
-					}
-				}
+			resolvedVersion, err := resolveInstalledVersion(mgr, version)
+			if err != nil {
+				return err
 			}
+			version = resolvedVersion
 
 			_logger.Verbose("Gathering comprehensive version information for Go %s", version)
 			info, err := mgr.Info(version)
 			if err != nil {
 				helpMsg := fmt.Sprintf("Verify the version is installed with 'govman list', or install it with 'govman install %s'.", version)
-				_logger.ErrorWithHelp("Unable to retrieve information for Go %s", helpMsg, version)
-				return err
+				return withHelp(fmt.Errorf("unable to retrieve information for Go %s: %w", version, err), helpMsg)
 			}
 
-			current, _ := mgr.Current()
+			current, err := mgr.Current()
+			if err != nil && !errors.Is(err, _manager.ErrNoActiveVersion) && !errors.Is(err, _manager.ErrUnmanagedGo) {
+				return fmt.Errorf("failed to determine active Go version: %w", err)
+			}
 			isActive := current == info.Version
 
 			_logger.Info("Go Version Information:")

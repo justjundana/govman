@@ -7,6 +7,10 @@ param(
     [switch]$Help
 )
 
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 # Colors and styles for Windows Terminal
 $Colors = @{
     Red = "`e[0;31m"
@@ -47,7 +51,7 @@ function Print-Separator {
 # Print fancy header
 function Print-Header {
     if ($Quiet) { return }
-    Clear-Host
+    if (-not [Console]::IsOutputRedirected) { Clear-Host }
     Print-Separator "═"
     Write-Host ""
     Write-Host ""
@@ -120,24 +124,38 @@ function Show-Help {
 
 # Detect platform (Windows architecture)
 function Get-Platform {
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64" -or $env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
-        "amd64"
-    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-        "arm64"
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+		"arm64"
+    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "AMD64" -or $env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
+		"amd64"
+    } elseif ($env:PROCESSOR_ARCHITECTURE -eq "x86") {
+        "386"
     } else {
-        "amd64"  # Default to amd64 for Windows
+        throw "Unsupported Windows architecture: $($env:PROCESSOR_ARCHITECTURE)"
     }
     return "windows/$arch"
+}
+
+function Test-ReleaseVersion {
+    param([string]$Candidate)
+    return $Candidate -match '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$'
 }
 
 # Get the latest release version from GitHub
 function Get-LatestVersion {
     if ($Version) {
+        if (-not (Test-ReleaseVersion $Version)) {
+            throw "Invalid release version: $Version"
+        }
         return $Version
     }
 
     try {
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/justjundana/govman/releases/latest" -TimeoutSec 30
+		$headers = @{ "User-Agent" = "govman-installer"; "Accept" = "application/vnd.github+json" }
+		$response = Invoke-RestMethod -Uri "https://api.github.com/repos/justjundana/govman/releases/latest" -TimeoutSec 30 -Headers $headers
+        if (-not (Test-ReleaseVersion $response.tag_name)) {
+            throw "GitHub returned an invalid release version"
+        }
         return $response.tag_name
     }
     catch {
@@ -149,22 +167,26 @@ function Get-LatestVersion {
 
 # Verify binary (basic validation)
 function Test-Binary {
-    param([string]$BinaryPath)
+    param(
+        [string]$BinaryPath,
+        [string]$ExpectedVersion
+    )
 
     if (-not (Test-Path $BinaryPath)) {
         Print-Error "Binary file not found: $BinaryPath"
         return $false
     }
 
-    # Check file size (should be > 1MB for a Go binary)
-    $fileSize = (Get-Item $BinaryPath).Length
-    if ($fileSize -lt 1048576) {
-        Print-Warning "Binary file seems unusually small ($fileSize bytes)"
-    }
-
-    # Try to get version to ensure it's a valid govman binary
     try {
-        $null = & $BinaryPath --version 2>$null
+		$versionOutput = (& $BinaryPath --version 2>&1 | Out-String).Trim()
+		if ($LASTEXITCODE -ne 0) {
+			throw "--version exited with code $LASTEXITCODE"
+		}
+		$normalizedVersion = $ExpectedVersion.TrimStart('v')
+		$escapedVersion = [Regex]::Escape($normalizedVersion)
+		if ($versionOutput -notmatch "(^|[^0-9])v?$escapedVersion([^0-9]|$)") {
+			throw "binary reports unexpected version: $versionOutput"
+		}
         Print-Success "Binary validation completed"
         return $true
     }
@@ -172,38 +194,6 @@ function Test-Binary {
         Print-Error "Downloaded binary appears to be corrupted or invalid"
         return $false
     }
-}
-
-# Animated loading for download process
-function Show-DownloadProgress {
-    param([string]$Item)
-    if ($Quiet) { return }
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Downloading $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 15; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Downloading $Item... $($Colors.Cyan)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Downloaded $Item successfully.      "
-}
-
-# Animated loading for installation process
-function Show-InstallProgress {
-    param([string]$Item)
-    if ($Quiet) { return }
-
-    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-    Write-Host -NoNewline "   $($Colors.Dim)Installing $Item... $($Colors.Reset)"
-
-    for ($i = 0; $i -lt 10; $i++) {
-        $spinChar = $spinChars[$i % $spinChars.Length]
-        Write-Host -NoNewline "`r   $($Colors.Dim)Installing $Item... $($Colors.Purple)$spinChar$($Colors.Reset) "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host "`r   $($Colors.Green)$($Icons.Checkmark)$($Colors.Reset) Installed $Item successfully.      "
 }
 
 # Download the binary
@@ -218,9 +208,11 @@ function Download-Binary {
     $os = $parts[0]
     $arch = $parts[1]
 
-    # Construct download URL
-    $downloadUrl = "https://github.com/justjundana/govman/releases/download/$Version/govman-$os-$arch.exe"
-    $binaryPath = Join-Path $InstallDir "govman.exe"
+	$assetName = "govman-$os-$arch.exe"
+	$releaseBase = "https://github.com/justjundana/govman/releases/download/$Version"
+    $downloadUrl = "$releaseBase/$assetName"
+	$checksumUrl = "$releaseBase/checksums.txt"
+	$binaryPath = Join-Path $InstallDir "govman-real.exe"
 
     Print-Step "Downloading govman $Version for $Platform..."
     Print-Info "Download URL: $downloadUrl"
@@ -230,43 +222,163 @@ function Download-Binary {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    # Show download progress animation
-    if (-not $Quiet) {
-        Show-DownloadProgress "govman binary"
-    }
-
-    # Download binary
+	$tempBinary = Join-Path $InstallDir ".govman-download-$PID-$([Guid]::NewGuid().ToString('N')).exe"
+	$tempChecksums = Join-Path $InstallDir ".govman-checksums-$PID-$([Guid]::NewGuid().ToString('N')).txt"
+	$backupPath = "$binaryPath.bak.$PID"
     try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $binaryPath -TimeoutSec 60
+		$headers = @{ "User-Agent" = "govman-installer" }
+		Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBinary -TimeoutSec 120 -Headers $headers -UseBasicParsing
+		Invoke-WebRequest -Uri $checksumUrl -OutFile $tempChecksums -TimeoutSec 30 -Headers $headers -UseBasicParsing
+
+		$checksumMatches = @()
+		foreach ($line in Get-Content -LiteralPath $tempChecksums) {
+			if ($line -match '^([A-Fa-f0-9]{64})\s+\*?(.+)$' -and $Matches[2] -eq $assetName) {
+				$checksumMatches += $Matches[1].ToLowerInvariant()
+			}
+		}
+		if ($checksumMatches.Count -ne 1) {
+			throw "Checksum manifest must contain exactly one entry for $assetName"
+		}
+		$actualChecksum = (Get-FileHash -LiteralPath $tempBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+		if ($actualChecksum -ne $checksumMatches[0]) {
+			throw "Checksum verification failed for $assetName"
+		}
+		if (-not (Test-Binary $tempBinary $Version)) {
+			throw "Binary validation failed"
+		}
+
+		if (Test-Path -LiteralPath $binaryPath) {
+			Move-Item -LiteralPath $binaryPath -Destination $backupPath -Force
+		}
+		try {
+			Move-Item -LiteralPath $tempBinary -Destination $binaryPath -Force
+		}
+		catch {
+			if (Test-Path -LiteralPath $backupPath) {
+				Move-Item -LiteralPath $backupPath -Destination $binaryPath -Force
+			}
+			throw
+		}
+		Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Print-Error "Failed to download govman binary"
+		if (-not (Test-Path -LiteralPath $binaryPath) -and (Test-Path -LiteralPath $backupPath)) {
+			Move-Item -LiteralPath $backupPath -Destination $binaryPath -Force
+		}
+        Print-Error "Failed to download, verify, or install govman binary"
         Print-Info "Error: $($_.Exception.Message)"
         exit 1
     }
-
-    # Check if download was successful
-    if (-not (Test-Path $binaryPath)) {
-        Print-Error "Failed to download govman binary"
-        exit 1
+	finally {
+		Remove-Item -LiteralPath $tempBinary -Force -ErrorAction SilentlyContinue
+		Remove-Item -LiteralPath $tempChecksums -Force -ErrorAction SilentlyContinue
     }
 
-    # Validate the downloaded binary
-    if (-not (Test-Binary $binaryPath)) {
-        Print-Error "Binary validation failed"
-        Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
-        exit 1
-    }
-
-    Print-Success "Downloaded govman binary to $binaryPath"
+	Print-Success "Downloaded and verified govman binary at $binaryPath"
     return $binaryPath
+}
+
+# Compare PATH entries without expanding environment-variable references.
+function Normalize-WindowsPathEntry {
+    param([AllowEmptyString()][string]$Entry)
+
+    if ($null -eq $Entry) { return "" }
+    return $Entry.Trim().TrimEnd([char[]]@('\', '/'))
+}
+
+function Test-WindowsPathEntry {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry
+    )
+
+    $expected = Normalize-WindowsPathEntry $Entry
+    foreach ($candidate in $PathValue.Split([char[]]@(';'), [StringSplitOptions]::None)) {
+        if ([StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $candidate), $expected)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Update-WindowsPathValue {
+    param(
+        [AllowEmptyString()][string]$PathValue,
+        [string]$Entry,
+        [ValidateSet("Add", "Remove")][string]$Action
+    )
+
+    $hasEntry = Test-WindowsPathEntry $PathValue $Entry
+    if ($Action -eq "Add") {
+        if ($hasEntry) { return $PathValue }
+        if ([string]::IsNullOrEmpty($PathValue)) { return $Entry }
+        return "$PathValue;$Entry"
+    }
+
+    if (-not $hasEntry) { return $PathValue }
+    $expected = Normalize-WindowsPathEntry $Entry
+    return (@($PathValue.Split([char[]]@(';'), [StringSplitOptions]::None) | Where-Object {
+        -not [StringComparer]::OrdinalIgnoreCase.Equals((Normalize-WindowsPathEntry $_), $expected)
+    })) -join ";"
+}
+
+function Set-UserPathEntry {
+    param(
+        [string]$Entry,
+        [ValidateSet("Add", "Remove")][string]$Action
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    if ($null -eq $key) { throw "Unable to open HKCU\Environment" }
+
+    $backupName = "Path.govman-backup-$PID-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        $hadPath = @($key.GetValueNames()) -contains "Path"
+        $oldPath = if ($hadPath) {
+            [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        } else { "" }
+        $valueKind = if ($hadPath) { $key.GetValueKind("Path") } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+        $hasEntry = Test-WindowsPathEntry $oldPath $Entry
+
+        if ($Action -eq "Add") {
+            if ($hasEntry) { return $false }
+        } else {
+            if (-not $hasEntry) { return $false }
+        }
+        $newPath = Update-WindowsPathValue -PathValue $oldPath -Entry $Entry -Action $Action
+
+        # Keep a registry backup until the write and value kind are verified.
+        $key.SetValue($backupName, $oldPath, $valueKind)
+        try {
+            $key.SetValue("Path", $newPath, $valueKind)
+            $actualPath = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($actualPath -cne $newPath -or $key.GetValueKind("Path") -ne $valueKind) {
+                throw "PATH verification failed after registry write"
+            }
+        }
+        catch {
+            if ($hadPath) {
+                $key.SetValue("Path", $oldPath, $valueKind)
+            } else {
+                $key.DeleteValue("Path", $false)
+            }
+            throw
+        }
+        finally {
+            $key.DeleteValue($backupName, $false)
+        }
+        return $true
+    }
+    finally {
+        $key.Dispose()
+    }
 }
 
 # Add to PATH and initialize environment
 function Add-ToPath {
     param([string]$InstallDir)
 
-    $govmanBinary = Join-Path $InstallDir "govman.exe"
+    $govmanBinary = Join-Path $InstallDir "govman-real.exe"
 
     if (-not (Test-Path $govmanBinary)) {
         Print-Error "govman binary not found at $govmanBinary"
@@ -275,41 +387,30 @@ function Add-ToPath {
 
     Print-Step "Configuring Windows environment..."
 
-    # Show install progress animation
-    if (-not $Quiet) {
-        Show-InstallProgress "environment configuration"
-    }
-
-    # Get current user PATH
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-
-    # Check if install directory is already in PATH
-    if ($userPath -notlike "*$InstallDir*") {
-        # Add to user PATH
-        $newPath = if ($userPath) { "$userPath;$InstallDir" } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+    if (Set-UserPathEntry -Entry $InstallDir -Action Add) {
         Print-Success "Added $InstallDir to user PATH"
     } else {
         Print-Info "Install directory already in PATH"
     }
 
+    if (-not (Test-WindowsPathEntry $env:PATH $InstallDir)) {
+        $env:PATH = if ([string]::IsNullOrEmpty($env:PATH)) { $InstallDir } else { "$($env:PATH);$InstallDir" }
+    }
+
     # Run govman init for additional setup
     try {
-        $initOutput = & $govmanBinary init --force 2>&1
+        $initOutput = & $govmanBinary init --force --shell powershell 2>&1
         if ($LASTEXITCODE -eq 0) {
             Print-Success "Shell configuration completed successfully"
             if ($initOutput -and -not $Quiet) {
                 Write-Host $initOutput
             }
         } else {
-            Print-Warning "Shell configuration had issues. You may need to run 'govman init' manually."
-            if ($initOutput) {
-                Write-Host $initOutput
-            }
+            throw "govman init exited with code $LASTEXITCODE`: $initOutput"
         }
     }
     catch {
-        Print-Warning "Could not run 'govman init'. Please run it manually after installation."
+        throw "Failed to initialize shell integration: $($_.Exception.Message)"
     }
 }
 
@@ -328,7 +429,6 @@ function Show-SystemInfo {
     Print-Separator "┄"
 
     $parts = $Platform -split "/"
-    $os = $parts[0]
     $arch = $parts[1]
 
     Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Operating System: $($Colors.Bold)Windows$($Colors.Reset)"
@@ -374,7 +474,8 @@ function Show-Completion {
 function Test-ExistingInstallation {
     $installDir = Join-Path $env:USERPROFILE ".govman\bin"
     $govmanDir = Join-Path $env:USERPROFILE ".govman"
-    $binaryFound = Test-Path (Join-Path $installDir "govman.exe")
+    $binaryFound = (Test-Path (Join-Path $installDir "govman-real.exe")) -or
+        (Test-Path (Join-Path $installDir "govman.exe"))
     $commandFound = $null -ne (Get-Command govman -ErrorAction SilentlyContinue)
 
     Print-Step "Checking for existing installation..."
@@ -386,7 +487,7 @@ function Test-ExistingInstallation {
         Print-Separator "┄"
 
         if ($binaryFound) {
-            Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Binary found: $($Colors.Bold)$(Join-Path $installDir 'govman.exe')$($Colors.Reset)"
+            Write-Host "$($Colors.Green) $($Icons.Checkmark)$($Colors.Reset) Binary found in: $($Colors.Bold)$installDir$($Colors.Reset)"
         }
 
         if ($commandFound) {
@@ -461,10 +562,10 @@ function Main {
     Write-Host ""
 
     # Show system info
-    Show-SystemInfo $platform $version $installDir
+    Show-SystemInfo -Platform $platform -Version $version -InstallDir $installDir
 
     # Download binary
-    $binaryPath = Download-Binary $version $platform $installDir
+    $binaryPath = Download-Binary -Version $version -Platform $platform -InstallDir $installDir
     Write-Host ""
 
     # Add to PATH
@@ -474,21 +575,15 @@ function Main {
     # Verify installation
     Print-Step "Verifying installation..."
     try {
-        $null = & $binaryPath --version 2>$null
-        $installedVersion = & $binaryPath --version 2>$null | Select-Object -First 1
+        $installedVersion = (& $binaryPath --version 2>&1 | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "--version exited with code $LASTEXITCODE"
+        }
         Print-Success "Installation verified: $($Colors.Bold)$installedVersion$($Colors.Reset)"
         Show-Completion $version
     }
     catch {
-        Print-Warning "Installation completed, but verification failed"
-        Write-Host ""
-        Print-Separator "┄"
-        Write-Host "$($Colors.Bold)$($Colors.White)Manual Steps Required:$($Colors.Reset)"
-        Write-Host " 1. Restart your PowerShell/Command Prompt"
-        Write-Host " 2. Try running 'govman --version'"
-        Write-Host " 3. If issues persist, run 'govman init' manually"
-        Print-Separator "┄"
-        Write-Host ""
+        throw "Installation verification failed: $($_.Exception.Message)"
     }
 }
 
@@ -499,5 +594,7 @@ trap {
     exit 1
 }
 
-# Run main function
-Main
+# Run only when executed, allowing the path helpers to be dot-sourced by tests.
+if ($MyInvocation.InvocationName -ne ".") {
+    Main
+}

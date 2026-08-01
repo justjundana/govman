@@ -12,6 +12,42 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.3.4
+
+**Release Date:** August 1, 2026
+
+v1.3.4 is a security, integrity, and reliability patch. It adds no command, flag, config key, or product feature.
+
+**Security:**
+- Version input is validated before any filesystem mutation, and managed paths are contained under the configured installation root.
+- Go archives are extracted into an isolated sibling staging directory with path, type, mode, file-count, per-file-size, and total-size checks.
+- Standalone installers and `govman selfupdate` require an exact SHA-256 entry from `checksums.txt` before executing or replacing a binary.
+- Unix shell config removal requires one complete exact marker block. Windows PATH updates compare normalized entries instead of performing substring replacement.
+
+**Bug Fixes:**
+- Partial installations are no longer reported as installed.
+- Default activation exposes the complete selected toolchain, including `go` and `gofmt`.
+- Default and local activation roll back when persistence, links, or PATH output fail.
+- Full versions are exact pins; only `major.minor` input floats to the highest installed patch.
+- Download resume validates `206 Content-Range`, length, and total size; transient HTTP failures use bounded retry behavior.
+- Shell wrappers invoke govman once, generated comparisons handle partial versions, and leaving a project restores the default version.
+- Windows self-update completes through a detached helper after the running executable exits.
+- Docker images use the correct health command and target architecture.
+
+**Reliability and Release Engineering:**
+- Configuration decoding is isolated, strict, validated, permission-restricted, and transactional.
+- Install completion metadata records an accurate UTC timestamp.
+- CI covers supported Go versions and platforms, race detection, static/security analysis, scripts, Docker, coverage, and release snapshots.
+- GoReleaser emits seven exact raw binaries and one checksum manifest. A failed target prevents publication.
+- Coverage gates require at least 80% total statements and 70% for `internal/cli`.
+
+**Compatibility:**
+- Existing commands, flags, config files, installed version directories, `.govman-goversion` files, and shell blocks remain supported.
+- `download.parallel`, `download.max_connections`, `mirror.*`, `shell.auto_detect`, and `shell.completion` remain accepted for config compatibility but are reserved/no-op in v1.3.4.
+- No `GOVMAN_HOME` behavior is provided. Configure `install_dir`, `cache_dir`, or `--config` explicitly.
+
+## Previous Releases
+
 ### v1.3.3
 
 **Release Date:** June 01, 2026
@@ -264,7 +300,7 @@ govman follows Semantic Versioning (SemVer):
 **Release Date:** December 01, 2025
 
 **Highlights:**
-- 🎉 Version aliases support for `use` command  
+- 🎉 Version aliases support for `use` command
 - 🗑️ Multi-version uninstall support
 - 🎯 Flexible version matching for `.govman-goversion` files
 - 🔒 Critical security fixes for shell integration
@@ -433,12 +469,11 @@ Development builds track the main branch.
 
 ## Release Process
 
-1. Version bump in `internal/version/version.go`
-2. Update `CHANGELOG.md` and `docs/release-notes.md`
-3. Create git tag: `git tag -a v1.0.0 -m "Release v1.0.0"`
-4. Push tag: `git push origin v1.0.0`
-5. GitHub Actions builds and publishes binaries
-6. Release notes published on GitHub
+1. Update `CHANGELOG.md` and `docs/release-notes.md`
+2. Create git tag: `git tag -a v1.0.0 -m "Release v1.0.0"`
+3. Push tag: `git push origin v1.0.0`
+4. GitHub Actions builds and publishes binaries
+5. Release notes published on GitHub
 
 ## Upgrade Path
 
@@ -447,7 +482,7 @@ Development builds track the main branch.
 ```bash
 # Development versions cannot auto-update
 # Reinstall from release:
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
 ### Between Stable Versions

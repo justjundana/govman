@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # Test cleanup and in-memory response writers intentionally use best-effort
+      # operations. Production code remains fully covered by errcheck.
+      - path: _test\.go
+        linters:
+          - errcheck

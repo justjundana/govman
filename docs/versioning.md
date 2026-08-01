@@ -260,11 +260,11 @@ For CI/CD or reproducible builds:
 
 ```bash
 # Install specific govman version
-curl -sSL https://install.script | bash -s -- --version v1.0.0
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash -s -- --version v1.0.0
 
 # Or pin in Dockerfile
 FROM ubuntu:22.04
-RUN curl -sSL https://install.script | bash -s -- --version v1.0.0
+RUN curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash -s -- --version v1.0.0
 ```
 
 ## Policy Updates

@@ -34,7 +34,7 @@ This project uses govman for Go version management.
 
 1. Install govman:
    ```bash
-   curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
    ```
 
 2. Initialize shell integration:
@@ -67,7 +67,7 @@ The correct Go version should automatically activate when you enter this directo
 
 ```bash
 # Install govman (if not already installed)
-curl -sSL https://install.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # Install project dependencies
 govman install $(cat .govman-goversion)
@@ -88,23 +88,19 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       
-      - name: Install govman
+      - name: Install govman, Go, and test
+        shell: bash
         run: |
-          curl -sSL https://install.script | bash
-          echo "$HOME/.govman/bin" >> $GITHUB_PATH
-      
-      - name: Install Go
-        run: |
-          govman install $(cat .govman-goversion)
-          govman use $(cat .govman-goversion)
-      
-      - name: Verify Go version
-        run: go version
-      
-      - name: Run tests
-        run: go test -v ./...
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+          export PATH="$HOME/.govman/bin:$PATH"
+          version=$(tr -d '[:space:]' < .govman-goversion)
+          govman install "$version"
+          eval "$(govman use "$version")"
+          go version
+          go test -v ./...
 ```
 
 **GitLab CI** (`.gitlab-ci.yml`):
@@ -114,10 +110,10 @@ image: ubuntu:latest
 
 before_script:
   - apt-get update && apt-get install -y curl tar gzip
-  - curl -sSL https://install.script | bash
+  - curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
   - export PATH="$HOME/.govman/bin:$PATH"
   - govman install $(cat .govman-goversion)
-  - govman use $(cat .govman-goversion)
+  - eval "$(govman use $(cat .govman-goversion))"
 
 test:
   script:
@@ -134,7 +130,7 @@ test:
 **Linux/macOS**:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell)**:
@@ -363,7 +359,7 @@ govman refresh
 ls ~/.govman/bin/govman
 
 # If not installed
-curl -sSL https://install.script | bash
+curl -fsSL https://raw.githubusercontent.com/justjundana/govman/main/scripts/install.sh | bash
 
 # If installed but not in PATH
 govman init --force

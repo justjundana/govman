@@ -179,7 +179,7 @@ govman minimizes dependencies by:
 
 ## License Compatibility
 
-All dependencies use permissive licenses compatible with Apache 2.0:
+All dependencies use permissive licenses compatible with this project's MIT license:
 
 | Dependency | License    | Compatible |
 |-----------|-----------|------------|

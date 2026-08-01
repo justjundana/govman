@@ -2,24 +2,25 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	cobra "github.com/spf13/cobra"
 
-	_golang "github.com/justjundana/govman/internal/golang"
 	_logger "github.com/justjundana/govman/internal/logger"
 	_manager "github.com/justjundana/govman/internal/manager"
 	_util "github.com/justjundana/govman/internal/util"
 )
 
 // installVersions performs the installation loop and returns results.
-func installVersions(mgr *_manager.Manager, versions []string) (successful, errors []string) {
+func installVersions(mgr *_manager.Manager, versions []string) (successful []string, failures []error) {
 	for i, version := range versions {
 		_logger.Info("[%d/%d] Installing Go %s...", i+1, len(versions), version)
 		if err := mgr.Install(version); err != nil {
-			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			_logger.Warning("Failed to install Go %s: %v", version, err)
 			continue
 		}
@@ -30,27 +31,27 @@ func installVersions(mgr *_manager.Manager, versions []string) (successful, erro
 }
 
 // uninstallVersions performs the uninstallation loop and returns results.
-func uninstallVersions(mgr *_manager.Manager, versions []string, current string) (successful []string, totalFreedSpace int64, errors []string) {
+func uninstallVersions(mgr *_manager.Manager, versions []string, current string) (successful []string, totalFreedSpace int64, failures []error) {
 	for i, version := range versions {
 		_logger.Info("[%d/%d] Uninstalling Go %s...", i+1, len(versions), version)
 
 		if current == version {
 			_logger.Warning("Cannot uninstall currently active Go version %s", version)
-			errors = append(errors, fmt.Sprintf("Go %s: cannot uninstall active version", version))
+			failures = append(failures, fmt.Errorf("go %s: cannot uninstall active version", version))
 			continue
 		}
 
 		info, err := mgr.Info(version)
 		if err != nil {
 			_logger.Warning("Go version %s is not installed or information is unavailable", version)
-			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
 		_logger.Progress("Removing installation directory and associated files")
 		if err = mgr.Uninstall(version); err != nil {
 			_logger.Warning("Failed to uninstall Go %s: %v", version, err)
-			errors = append(errors, fmt.Sprintf("Go %s: %v", version, err))
+			failures = append(failures, fmt.Errorf("go %s: %w", version, err))
 			continue
 		}
 
@@ -73,12 +74,11 @@ func newInstallCmd() *cobra.Command {
 		Long: `Download and install one or more Go versions from official releases.
 
 Features:
-  • Lightning-fast parallel downloads with resume capability
+  • Resumable downloads with bounded retry handling
   • Automatic integrity verification and checksum validation
   • Smart caching to avoid re-downloading existing archives
   • Support for latest, stable, and pre-release versions
   • Batch installation with detailed progress tracking
-  • Automatic cleanup of temporary files on completion
   • Wildcard pattern support for batch installation (e.g., 1.14.*)
 
 Examples:
@@ -88,7 +88,7 @@ Examples:
   govman install 1.22rc1             # Pre-release version
   govman install '1.14.*'            # All 1.14.x stable versions (quote the pattern!)
   govman install '1.14.*' --unstable # All 1.14.x versions including beta/rc`,
-		Args: cobra.MinimumNArgs(1),
+		Args: usageArgs(cobra.MinimumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr := _manager.New(getConfig())
 
@@ -105,6 +105,9 @@ Examples:
 
 			// Show confirmation for pattern-based installation
 			if hasWildcardPattern(args) && !skipConfirm {
+				if getConfig().Quiet {
+					return withUsageHelp(cmd, fmt.Errorf("quiet batch installation requires --yes"), "Pass --yes to confirm without an interactive prompt.")
+				}
 				versionType := "stable"
 				if includeUnstable {
 					versionType = "unstable/prerelease"
@@ -125,7 +128,7 @@ Examples:
 			_logger.Info("Starting installation of %d Go version(s)...", len(expandedVersions))
 			_logger.Progress("Preparing downloads and verifying version availability")
 
-			successful, errors := installVersions(mgr, expandedVersions)
+			successful, failures := installVersions(mgr, expandedVersions)
 
 			_logger.Info(strings.Repeat("─", 50))
 
@@ -136,16 +139,11 @@ Examples:
 				}
 			}
 
-			if len(errors) > 0 {
-				_logger.ErrorWithHelp("Failed to install %d version(s):", "Review the errors below and try installing problematic versions individually for more details.", len(errors))
-				for _, err := range errors {
-					_logger.Info("  %s", err)
-				}
-				_logger.Info("Common solutions:")
-				_logger.Info("  • Check your internet connection")
-				_logger.Info("  • Verify version exists with 'govman list --remote'")
-				_logger.Info("  • Try again with verbose mode: govman install <version> --verbose")
-				return fmt.Errorf("failed to install %d version(s)", len(errors))
+			if len(failures) > 0 {
+				return withHelp(
+					fmt.Errorf("failed to install %d version(s): %w", len(failures), errors.Join(failures...)),
+					"Check the network and release endpoint, then retry a failed version individually with --verbose.",
+				)
 			}
 
 			if len(successful) > 0 {
@@ -195,7 +193,7 @@ Examples:
   govman rm 1.21.1 1.22.0 1.23.0       # Using alias
   govman uninstall '1.14.*'            # All 1.14.x versions (quote the pattern!)`,
 		Aliases: []string{"remove", "rm"},
-		Args:    cobra.MinimumNArgs(1),
+		Args:    usageArgs(cobra.MinimumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr := _manager.New(getConfig())
 
@@ -212,6 +210,9 @@ Examples:
 
 			// Show confirmation for pattern-based uninstallation
 			if hasWildcardPattern(args) && !skipConfirm {
+				if getConfig().Quiet {
+					return withUsageHelp(cmd, fmt.Errorf("quiet batch uninstallation requires --yes"), "Pass --yes to confirm without an interactive prompt.")
+				}
 				_logger.Info("The following %d version(s) will be uninstalled:", len(expandedVersions))
 				for _, v := range expandedVersions {
 					_logger.Info("  • Go %s", v)
@@ -227,8 +228,11 @@ Examples:
 			_logger.Info("Starting uninstallation of %d Go version(s)...", len(expandedVersions))
 			_logger.Progress("Validating versions and checking installation status")
 
-			current, _ := mgr.Current()
-			successful, totalFreedSpace, errors := uninstallVersions(mgr, expandedVersions, current)
+			current, currentErr := mgr.Current()
+			if currentErr != nil && !errors.Is(currentErr, _manager.ErrNoActiveVersion) && !errors.Is(currentErr, _manager.ErrUnmanagedGo) {
+				return fmt.Errorf("failed to determine active Go version: %w", currentErr)
+			}
+			successful, totalFreedSpace, failures := uninstallVersions(mgr, expandedVersions, current)
 
 			_logger.Info(strings.Repeat("─", 50))
 
@@ -240,16 +244,11 @@ Examples:
 				_logger.Info("Total disk space freed: %s", _util.FormatBytes(totalFreedSpace))
 			}
 
-			if len(errors) > 0 {
-				_logger.ErrorWithHelp("Failed to uninstall %d version(s):", "Review the errors below and address any issues.", len(errors))
-				for _, err := range errors {
-					_logger.Info("  %s", err)
-				}
-				_logger.Info("Common solutions:")
-				_logger.Info("  • Switch to a different version if trying to uninstall active version")
-				_logger.Info("  • Verify version is installed with 'govman list'")
-				_logger.Info("  • Ensure no processes are using the Go installation")
-				return fmt.Errorf("failed to uninstall %d version(s)", len(errors))
+			if len(failures) > 0 {
+				return withHelp(
+					fmt.Errorf("failed to uninstall %d version(s): %w", len(failures), errors.Join(failures...)),
+					"Switch away from active versions and verify filesystem permissions before retrying.",
+				)
 			}
 
 			if len(successful) > 0 {
@@ -276,25 +275,41 @@ func hasWildcardPattern(args []string) bool {
 	return false
 }
 
+func validateGlobPattern(pattern string) error {
+	_, err := filepath.Match(pattern, pattern)
+	return err
+}
+
 // expandInstallPatterns expands wildcard patterns in version arguments using remote available versions.
 // When includeUnstable is true, both stable and prerelease versions are returned.
 // Returns a deduplicated, sorted list of concrete versions to install.
 func expandInstallPatterns(args []string, mgr *_manager.Manager, includeUnstable bool) ([]string, error) {
 	var allVersions []string
 	seenVersions := make(map[string]bool)
+	var remoteVersions []string
+	for _, arg := range args {
+		if _util.IsWildcardPattern(arg) {
+			if err := validateGlobPattern(arg); err != nil {
+				return nil, fmt.Errorf("invalid version pattern %q: %w", arg, err)
+			}
+		}
+	}
+	if hasWildcardPattern(args) {
+		var err error
+		remoteVersions, err = mgr.ListRemote(includeUnstable)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch remote versions: %w", err)
+		}
+	}
 
 	for _, arg := range args {
 		if _util.IsWildcardPattern(arg) {
-			// Fetch remote versions and filter by pattern
 			_logger.Progress("Fetching available versions for pattern '%s'...", arg)
-			// When includeUnstable is true, fetch all versions (stable + prerelease).
-			// Otherwise, fetch stable versions only.
-			remoteVersions, err := _golang.GetAvailableVersions(includeUnstable)
-			if err != nil {
-				return nil, fmt.Errorf("failed to fetch remote versions: %w", err)
-			}
 
-			matched := _util.MatchVersionPattern(arg, remoteVersions)
+			matched, err := _util.MatchVersionPattern(arg, remoteVersions)
+			if err != nil {
+				return nil, fmt.Errorf("failed to match install pattern %q: %w", arg, err)
+			}
 			if len(matched) == 0 {
 				_logger.Warning("No versions matched pattern '%s'", arg)
 				continue
@@ -318,17 +333,6 @@ func expandInstallPatterns(args []string, mgr *_manager.Manager, includeUnstable
 	return allVersions, nil
 }
 
-// filterPrereleaseVersions returns only versions that are prerelease (contain rc, beta, or alpha).
-func filterPrereleaseVersions(versions []string) []string {
-	var prerelease []string
-	for _, v := range versions {
-		if isPrerelease(v) {
-			prerelease = append(prerelease, v)
-		}
-	}
-	return prerelease
-}
-
 // isPrerelease checks if a version string is a prerelease version (beta, rc, or alpha).
 func isPrerelease(version string) bool {
 	return strings.Contains(version, "rc") ||
@@ -341,6 +345,13 @@ func isPrerelease(version string) bool {
 func expandUninstallPatterns(args []string, mgr *_manager.Manager) ([]string, error) {
 	var allVersions []string
 	seenVersions := make(map[string]bool)
+	for _, arg := range args {
+		if _util.IsWildcardPattern(arg) {
+			if err := validateGlobPattern(arg); err != nil {
+				return nil, fmt.Errorf("invalid version pattern %q: %w", arg, err)
+			}
+		}
+	}
 
 	installedVersions, err := mgr.ListInstalled()
 	if err != nil {
@@ -350,7 +361,10 @@ func expandUninstallPatterns(args []string, mgr *_manager.Manager) ([]string, er
 	for _, arg := range args {
 		if _util.IsWildcardPattern(arg) {
 			// Filter installed versions by pattern
-			matched := _util.MatchVersionPattern(arg, installedVersions)
+			matched, err := _util.MatchVersionPattern(arg, installedVersions)
+			if err != nil {
+				return nil, fmt.Errorf("failed to match uninstall pattern %q: %w", arg, err)
+			}
 			if len(matched) == 0 {
 				_logger.Warning("No installed versions matched pattern '%s'", arg)
 				continue
@@ -364,20 +378,9 @@ func expandUninstallPatterns(args []string, mgr *_manager.Manager) ([]string, er
 			}
 		} else {
 			// Regular version - resolve alias if needed
-			version := arg
-			if version == "latest" || version == "stable" {
-				if len(installedVersions) > 0 {
-					version = installedVersions[0]
-					_logger.Verbose("Resolved alias %s to installed version %s", arg, version)
-				}
-			} else if strings.Count(version, ".") == 1 {
-				// Partial version: resolve to best match
-				if len(installedVersions) > 0 {
-					if matchedVersion, err := _util.FindBestMatchingVersion(version, installedVersions); err == nil {
-						_logger.Verbose("Resolved %s to installed version %s", version, matchedVersion)
-						version = matchedVersion
-					}
-				}
+			version, err := resolveInstalledVersionFromList(arg, installedVersions)
+			if err != nil {
+				return nil, err
 			}
 
 			if !seenVersions[version] {

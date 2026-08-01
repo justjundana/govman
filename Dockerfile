@@ -1,94 +1,67 @@
-# Dockerfile for GOVMAN
-# Multi-stage build for minimal image size
+# syntax=docker/dockerfile:1.7
 
-# Build stage
-FROM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.11-alpine3.24 AS builder
 
-# Build arguments for version injection
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+ARG BUILD_BY=docker
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -buildvcs=false -trimpath -tags=netgo \
+    -ldflags="-s -w \
+    -X github.com/justjundana/govman/internal/version.Version=${VERSION} \
+    -X github.com/justjundana/govman/internal/version.Commit=${COMMIT} \
+    -X github.com/justjundana/govman/internal/version.Date=${DATE} \
+    -X github.com/justjundana/govman/internal/version.BuildBy=${BUILD_BY}" \
+    -o /out/govman ./cmd/govman
+
+FROM alpine:3.24.1
+
 ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown
 
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates tzdata
+LABEL org.opencontainers.image.title="govman" \
+      org.opencontainers.image.description="Cross-platform Go version manager" \
+      org.opencontainers.image.url="https://github.com/justjundana/govman" \
+      org.opencontainers.image.source="https://github.com/justjundana/govman" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="justjundana" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${DATE}" \
+      org.opencontainers.image.revision="${COMMIT}"
 
-# Set working directory
-WORKDIR /app
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -s /bin/sh govman \
+    && mkdir -p /home/govman/.govman/bin \
+        /home/govman/.govman/cache \
+        /home/govman/.govman/versions \
+        /home/govman/.govman/downloads \
+    && chown -R govman:govman /home/govman/.govman \
+    && chmod 0700 /home/govman/.govman \
+    && chmod 0755 /home/govman/.govman/bin
 
-# Copy go mod files first for better caching
-COPY go.mod go.sum ./
+COPY --from=builder /out/govman /usr/local/bin/govman
 
-# Download dependencies (cached layer)
-RUN go mod download && go mod verify
-
-# Copy source code
-COPY . .
-
-# Build binary with optimizations and version info
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w \
-    -X 'github.com/justjundana/govman/internal/version.Version=${VERSION}' \
-    -X 'github.com/justjundana/govman/internal/version.Commit=${COMMIT}' \
-    -X 'github.com/justjundana/govman/internal/version.Date=${DATE}'" \
-    -a -installsuffix cgo \
-    -trimpath \
-    -o govman \
-    ./cmd/govman
-
-# Verify binary was built
-RUN test -f govman && chmod +x govman
-
-# Final stage - minimal runtime image
-FROM alpine:latest
-
-# Install runtime dependencies
-RUN apk --no-cache add \
-    ca-certificates \
-    git \
-    curl \
-    tar \
-    gzip \
-    bash \
-    && adduser -D -s /bin/sh govman
-
-# Copy timezone data from builder
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
-
-# Copy CA certificates from builder
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
-# Copy binary from builder
-COPY --from=builder /app/govman /usr/local/bin/govman
-
-# Create govman directories with proper permissions
-RUN mkdir -p /home/govman/.govman/{bin,cache,versions,downloads} && \
-    chown -R govman:govman /home/govman/.govman && \
-    chmod -R 755 /home/govman/.govman
-
-# Switch to non-root user for security
 USER govman
 WORKDIR /home/govman
 
-# Set environment variables
-ENV HOME=/home/govman
-ENV PATH="/home/govman/.govman/bin:${PATH}"
-ENV GOVMAN_HOME="/home/govman/.govman"
+ENV HOME=/home/govman \
+    PATH=/home/govman/.govman/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Health check - verify govman is working
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD govman version || exit 1
+    CMD ["/usr/local/bin/govman", "--version"]
 
-# Default entrypoint and command
-ENTRYPOINT ["govman"]
+ENTRYPOINT ["/usr/local/bin/govman"]
 CMD ["--help"]
-
-# Metadata labels (OCI standard)
-LABEL org.opencontainers.image.title="GOVMAN - Go Version Manager"
-LABEL org.opencontainers.image.description="Cross-platform Go version manager for easy installation and switching between Go versions"
-LABEL org.opencontainers.image.url="https://github.com/justjundana/govman"
-LABEL org.opencontainers.image.source="https://github.com/justjundana/govman"
-LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.vendor="justjundana"
-LABEL org.opencontainers.image.version="${VERSION}"
-LABEL org.opencontainers.image.created="${DATE}"
-LABEL org.opencontainers.image.revision="${COMMIT}"

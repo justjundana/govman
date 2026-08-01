@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
  # govman installation script
 # This script installs govman to $HOME/.govman/bin and adds it to PATH
- set -e
+set -euo pipefail
  # Global flags
 QUIET_MODE=false
 SPECIFIC_VERSION=""
@@ -14,6 +14,14 @@ parse_arguments() {
                 shift
                 ;;
             --version|-v)
+				if [[ $# -lt 2 ]]; then
+					print_error "Missing value for $1"
+					exit 1
+				fi
+                if [[ "$2" == -* ]]; then
+                    print_error "Missing value for $1"
+                    exit 1
+                fi
                 SPECIFIC_VERSION="$2"
                 shift 2
                 ;;
@@ -58,29 +66,27 @@ NC='\033[0m'
  # Style effects
 BOLD='\033[1m'
 DIM='\033[2m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
  # Unicode characters for better UI
 CHECKMARK="✓"
 CROSSMARK="✗"
 ARROW="→"
-DOWNLOAD="⬇"
 WARNING="⚠"
 INSTALL="📦"
 INFO="ℹ"
 ROCKET="🚀"
-GEAR="⚙"
  # Terminal width detection
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
  # Print separator line
 print_separator() {
     local char="${1:--}"
-    printf "%*s\n" "$TERM_WIDTH" | tr ' ' "$char"
+    printf "%*s\n" "$TERM_WIDTH" "" | tr ' ' "$char"
 }
  # Print fancy header
 print_header() {
     [[ "$QUIET_MODE" == "true" ]] && return
-    clear
+    if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+        clear 2>/dev/null || true
+    fi
     print_separator "═"
     echo
     echo
@@ -123,16 +129,19 @@ print_info() {
 }
  # Check if running on Windows (Git Bash)
 is_windows() {
-    [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]
+    [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]
 }
  # Detect current shell and return appropriate config file
+# The ~ below is deliberate: config_file is only ever echoed back to the user as
+# something they will type (e.g. "source ~/.zshrc"), never used to open a file.
+# shellcheck disable=SC2088
 detect_shell_config() {
     local shell_name=""
     local config_file=""
          # Debug: Print environment variables for troubleshooting
     # echo "DEBUG: SHELL=$SHELL, ZSH_VERSION=$ZSH_VERSION, BASH_VERSION=$BASH_VERSION" >&2
          # First priority: Check the actual running shell from $SHELL
-    case "$(basename "$SHELL")" in
+    case "$(basename "${SHELL:-}")" in
         zsh)
             shell_name="zsh"
             config_file="~/.zshrc"
@@ -151,7 +160,7 @@ detect_shell_config() {
             ;;
         *)
             # Fallback: Check version variables (less reliable when running bash script in zsh)
-            if [ -n "$ZSH_VERSION" ]; then
+            if [ -n "${ZSH_VERSION:-}" ]; then
                 shell_name="zsh"
                 config_file="~/.zshrc"
             elif [ -n "$BASH_VERSION" ]; then
@@ -161,7 +170,7 @@ detect_shell_config() {
                 else
                     config_file="~/.bashrc"
                 fi
-            elif [ -n "$FISH_VERSION" ]; then
+            elif [ -n "${FISH_VERSION:-}" ]; then
                 shell_name="fish"
                 config_file="~/.config/fish/config.fish"
             else
@@ -176,8 +185,9 @@ detect_shell_config() {
 get_restart_instruction() {
     local shell_info
     shell_info=$(detect_shell_config)
-    local shell_name=$(echo "$shell_info" | cut -d':' -f1)
-    local config_file=$(echo "$shell_info" | cut -d':' -f2)
+    local shell_name config_file
+    shell_name=$(echo "$shell_info" | cut -d':' -f1)
+    config_file=$(echo "$shell_info" | cut -d':' -f2)
          if is_windows; then
         echo "Please restart your terminal or PowerShell window"
     else
@@ -203,6 +213,7 @@ detect_platform() {
         Darwin*)    os=darwin;;
         MINGW*)     os=windows;;
         MSYS*)      os=windows;;
+		CYGWIN*)    os=windows;;
         *)          print_error "Unsupported operating system"; exit 1;;
     esac
          case "$(uname -m)" in
@@ -213,44 +224,73 @@ detect_platform() {
         i386|i686) arch=386;;
         *)          print_error "Unsupported architecture"; exit 1;;
     esac
-         # Special case for Windows
-    if [[ "$os" == "windows" ]]; then
-        arch=amd64  # Default to amd64 for Windows
-    fi
-         echo "${os}/${arch}"
+	         echo "${os}/${arch}"
 }
- # Get shell configuration files
+
+validate_release_version() {
+	local version="$1"
+	if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]*)?$ ]]; then
+		print_error "Invalid release version: $version"
+		return 1
+	fi
+}
+# Get shell configuration files without serializing paths through word splitting.
+SHELL_CONFIGS=()
 get_shell_configs() {
-    local configs=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc")
-    [[ -f "$HOME/.config/fish/config.fish" ]] && configs+=("$HOME/.config/fish/config.fish")
-    printf '%s ' "${configs[@]}"
+    SHELL_CONFIGS=(
+        "$HOME/.bashrc"
+        "$HOME/.bash_profile"
+        "$HOME/.profile"
+        "$HOME/.zshrc"
+        "$HOME/.config/fish/config.fish"
+    )
 }
  # Get the latest release version from GitHub
 get_latest_version() {
     # If specific version is requested, use it
     if [[ -n "$SPECIFIC_VERSION" ]]; then
+		validate_release_version "$SPECIFIC_VERSION" || exit 1
         echo "$SPECIFIC_VERSION"
         return
     fi
      local version=""
     if command -v curl >/dev/null 2>&1; then
-        version=$(curl -s https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+		version=$(curl --fail --silent --show-error --location --max-time 30 \
+			-H "Accept: application/vnd.github+json" -H "User-Agent: govman-installer" \
+			https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
-        version=$(wget -qO- https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+		version=$(wget --quiet --https-only --timeout=30 -O- \
+			--header="Accept: application/vnd.github+json" --header="User-Agent: govman-installer" \
+			https://api.github.com/repos/justjundana/govman/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     else
         print_error "Either curl or wget is required to download govman"
         exit 1
     fi
-     if [[ -z "$version" ]]; then
+    if [[ -z "$version" ]]; then
         print_error "Failed to get latest version information"
         exit 1
     fi
+	validate_release_version "$version" || exit 1
      echo "$version"
 }
- # Verify binary checksum (basic validation)
-verify_binary() {
+
+calculate_sha256() {
+	local file_path="$1"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$file_path" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$file_path" | awk '{print $1}'
+	elif command -v openssl >/dev/null 2>&1; then
+		openssl dgst -sha256 "$file_path" | awk '{print $NF}'
+	else
+		print_error "sha256sum, shasum, or openssl is required to verify govman"
+		return 1
+	fi
+}
+
+ verify_binary() {
     local binary_path="$1"
-    local binary_name="$(basename "$binary_path")"
+	local expected_version="$2"
      # Basic file validation
     if [[ ! -f "$binary_path" ]]; then
         print_error "Binary file not found: $binary_path"
@@ -261,139 +301,170 @@ verify_binary() {
         print_error "Binary is not executable: $binary_path"
         return 1
     fi
-     # Check file size (should be > 1MB for a Go binary)
-    local file_size
-    if command -v stat >/dev/null 2>&1; then
-        case "$(uname -s)" in
-            Darwin*) file_size=$(stat -f%z "$binary_path") ;;
-            *) file_size=$(stat -c%s "$binary_path") ;;
-        esac
-         if [[ $file_size -lt 1048576 ]]; then  # Less than 1MB
-            print_warning "Binary file seems unusually small ($file_size bytes)"
-        fi
-    fi
-     # Try to get version to ensure it's a valid govman binary
-    if ! "$binary_path" --version >/dev/null 2>&1; then
+	local version_output
+	if ! version_output=$("$binary_path" --version 2>&1); then
         print_error "Downloaded binary appears to be corrupted or invalid"
         return 1
     fi
+	local normalized_version="${expected_version#v}"
+	local escaped_version="${normalized_version//./\\.}"
+	if ! printf '%s\n' "$version_output" | grep -Eq "(^|[^0-9])v?${escaped_version}([^0-9]|$)"; then
+		print_error "Downloaded binary reports the wrong version"
+		return 1
+	fi
      print_success "Binary validation completed"
     return 0
-}
- # Animated loading for download process
-show_download_progress() {
-    [[ "$QUIET_MODE" == "true" ]] && return
-    local item="$1"
-    local delay=0.1
-    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    local temp
-     echo -n "   ${DIM}Downloading $item... ${NC}"
-    for i in {1..15}; do
-        temp=${spinstr#?}
-        printf "\r   ${DIM}Downloading $item... ${CYAN}%c${NC} " "$spinstr"
-        spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-    done
-    printf "\r   ${GREEN}${CHECKMARK}${NC} Downloaded $item successfully.      \n"
-}
- # Animated loading for installation process
-show_install_progress() {
-    [[ "$QUIET_MODE" == "true" ]] && return
-    local item="$1"
-    local delay=0.1
-    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    local temp
-     echo -n "   ${DIM}Installing $item... ${NC}"
-    for i in {1..10}; do
-        temp=${spinstr#?}
-        printf "\r   ${DIM}Installing $item... ${PURPLE}%c${NC} " "$spinstr"
-        spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-    done
-    printf "\r   ${GREEN}${CHECKMARK}${NC} Installed $item successfully.      \n"
 }
  # Download the binary
 download_binary() {
     local version="$1"
     local platform="$2"
     local install_dir="$3"
-         local os=$(echo "$platform" | cut -d'/' -f1)
-    local arch=$(echo "$platform" | cut -d'/' -f2)
-         # Construct binary name
+	local os
+	local arch
+	os=$(echo "$platform" | cut -d'/' -f1)
+	arch=$(echo "$platform" | cut -d'/' -f2)
+	local asset_name="govman-${os}-${arch}"
     local binary_name="govman"
     if [[ "$os" == "windows" ]]; then
+		asset_name="${asset_name}.exe"
         binary_name="govman.exe"
     fi
-         # Construct download URL
-    local download_url="https://github.com/justjundana/govman/releases/download/${version}/govman-${os}-${arch}"
-    if [[ "$os" == "windows" ]]; then
-        download_url="${download_url}.exe"
-    fi
-         print_step "Downloading govman ${version} for ${platform}..."
+	local release_base="https://github.com/justjundana/govman/releases/download/${version}"
+	local download_url="${release_base}/${asset_name}"
+	local checksum_url="${release_base}/checksums.txt"
+	print_step "Downloading govman ${version} for ${platform}..."
     print_info "Download URL: $download_url"
-         # Create install directory
     mkdir -p "$install_dir"
-         # Download binary
-    [[ "$QUIET_MODE" == "false" ]] && show_download_progress "govman binary"
-     if command -v curl >/dev/null 2>&1; then
-        if [[ "$QUIET_MODE" == "true" ]]; then
-            curl -sSL -o "${install_dir}/${binary_name}" "$download_url"
-        else
-            curl -sSL -o "${install_dir}/${binary_name}" "$download_url"
-        fi
+
+	local temp_binary
+	local temp_checksums
+	temp_binary=$(mktemp "${install_dir}/.govman-download.XXXXXX") || exit 1
+	if [[ "$os" == "windows" ]]; then
+		mv "$temp_binary" "${temp_binary}.exe"
+		temp_binary="${temp_binary}.exe"
+	fi
+	temp_checksums=$(mktemp "${install_dir}/.govman-checksums.XXXXXX") || {
+		rm -f "$temp_binary"
+		exit 1
+	}
+
+	if command -v curl >/dev/null 2>&1; then
+		if ! curl --fail --silent --show-error --location --max-time 120 -o "$temp_binary" "$download_url" ||
+			! curl --fail --silent --show-error --location --max-time 30 -o "$temp_checksums" "$checksum_url"; then
+			rm -f "$temp_binary" "$temp_checksums"
+			print_error "Failed to download govman binary or checksum manifest"
+			exit 1
+		fi
     elif command -v wget >/dev/null 2>&1; then
-        if [[ "$QUIET_MODE" == "true" ]]; then
-            wget -qO "${install_dir}/${binary_name}" "$download_url"
-        else
-            wget -qO "${install_dir}/${binary_name}" "$download_url"
-        fi
+		if ! wget --quiet --https-only --timeout=120 -O "$temp_binary" "$download_url" ||
+			! wget --quiet --https-only --timeout=30 -O "$temp_checksums" "$checksum_url"; then
+			rm -f "$temp_binary" "$temp_checksums"
+			print_error "Failed to download govman binary or checksum manifest"
+			exit 1
+		fi
     else
+		rm -f "$temp_binary" "$temp_checksums"
         print_error "Either curl or wget is required to download govman"
         exit 1
     fi
-     # Check if download was successful
-    if [[ ! -f "${install_dir}/${binary_name}" ]]; then
-        print_error "Failed to download govman binary"
-        exit 1
-    fi
-     # Make binary executable
-    chmod +x "${install_dir}/${binary_name}"
-     # Validate the downloaded binary
-    if ! verify_binary "${install_dir}/${binary_name}"; then
+
+	local checksum_matches
+	checksum_matches=$(awk -v name="$asset_name" '$2 == name || $2 == "*" name { print $1 }' "$temp_checksums")
+	rm -f "$temp_checksums"
+	local checksum_count
+	checksum_count=$(printf '%s\n' "$checksum_matches" | awk 'NF { count++ } END { print count+0 }')
+	if [[ "$checksum_count" -ne 1 ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum manifest must contain exactly one entry for $asset_name"
+		exit 1
+	fi
+	local expected_checksum
+	expected_checksum=$(printf '%s\n' "$checksum_matches" | awk 'NF { print tolower($1) }')
+	if [[ ! "$expected_checksum" =~ ^[0-9a-f]{64}$ ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum manifest contains an invalid SHA-256 value"
+		exit 1
+	fi
+	local actual_checksum
+	actual_checksum=$(calculate_sha256 "$temp_binary") || {
+		rm -f "$temp_binary"
+		exit 1
+	}
+	actual_checksum=$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+	if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+		rm -f "$temp_binary"
+		print_error "Checksum verification failed for $asset_name"
+		exit 1
+	fi
+
+	chmod 0755 "$temp_binary"
+	if ! verify_binary "$temp_binary" "$version"; then
         print_error "Binary validation failed"
-        rm -f "${install_dir}/${binary_name}"
+		rm -f "$temp_binary"
         exit 1
     fi
-         print_success "Downloaded govman binary to ${install_dir}/${binary_name}"
+
+	local binary_path="${install_dir}/${binary_name}"
+	local backup_path="${binary_path}.bak.$$"
+	if [[ -e "$binary_path" ]]; then
+		mv "$binary_path" "$backup_path"
+	fi
+	if ! mv "$temp_binary" "$binary_path"; then
+		[[ -e "$backup_path" ]] && mv "$backup_path" "$binary_path"
+		print_error "Failed to install govman binary; previous binary was restored"
+		exit 1
+	fi
+	rm -f "$backup_path"
+	print_success "Downloaded and verified govman binary at ${binary_path}"
 }
  # Add to PATH and initialize shell configuration
 add_to_path() {
     local install_dir="$1"
     local govman_binary="${install_dir}/govman"
+	if is_windows; then
+		govman_binary="${govman_binary}.exe"
+	fi
      # Ensure the govman binary is executable
     if [ ! -x "$govman_binary" ]; then
         print_error "govman binary not found or not executable at $govman_binary"
         exit 1
     fi
      print_step "Configuring shell environment..."
-     # Show install progress animation
-    [[ "$QUIET_MODE" == "false" ]] && show_install_progress "shell configuration"
      # Run `govman init` and capture its output
     # The `init` command will automatically detect the shell and provide setup instructions
     # We use `--force` to ensure it overwrites any existing configuration
-    local init_output
-    if init_output=$("$govman_binary" init --force 2>&1); then
+    local init_output shell_info init_shell
+    shell_info=$(detect_shell_config)
+    init_shell=${shell_info%%:*}
+    case "$init_shell" in
+        bash|zsh|fish)
+            if init_output=$("$govman_binary" init --force --shell "$init_shell" 2>&1); then
+                :
+            else
+                print_error "Shell configuration failed; the verified binary remains installed at $govman_binary"
+                printf '%s\n' "$init_output" >&2
+                print_warning "Run '$govman_binary init --force --shell $init_shell' after correcting the shell config error."
+                return 1
+            fi
+            ;;
+        *)
+            if init_output=$("$govman_binary" init --force 2>&1); then
+                :
+            else
+                print_error "Shell configuration failed; the verified binary remains installed at $govman_binary"
+                printf '%s\n' "$init_output" >&2
+                print_warning "Run '$govman_binary init --force' after correcting the shell config error."
+                return 1
+            fi
+            ;;
+    esac
+
+    if [[ -n "$init_output" ]]; then
         print_success "Shell configuration completed successfully"
-        # The output of `govman init` will guide the user if manual steps are needed
-        # For Unix-like shells, it will automatically update the config file
-        # For PowerShell/cmd, it will print instructions
-        if [[ -n "$init_output" ]]; then
-            echo "$init_output"
-        fi
+        [[ "$QUIET_MODE" == "true" ]] || printf '%s\n' "$init_output"
     else
-        print_error "Shell configuration failed. Please check the output below for details:"
-        echo "$init_output"
-        print_warning "You may need to run 'govman init' manually to complete the setup."
+        print_success "Shell configuration completed successfully"
     fi
 }
  # Show system information
@@ -401,13 +472,19 @@ show_system_info() {
     local platform="$1"
     local version="$2"
     local install_dir="$3"
+    [[ "$QUIET_MODE" == "true" ]] && return
          print_separator "┄"
     echo -e "${BOLD}${WHITE}System Information:${NC}"
     print_separator "┄"
-         local os=$(echo "$platform" | cut -d'/' -f1)
-    local arch=$(echo "$platform" | cut -d'/' -f2)
-         # Capitalize first letter (compatible with older bash versions)
-    local os_capitalized=$(echo "$os" | sed 's/./\U&/')
+    local os arch os_capitalized
+    os=$(echo "$platform" | cut -d'/' -f1)
+    arch=$(echo "$platform" | cut -d'/' -f2)
+    case "$os" in
+        linux) os_capitalized="Linux" ;;
+        darwin) os_capitalized="Darwin" ;;
+        windows) os_capitalized="Windows" ;;
+        *) os_capitalized="$os" ;;
+    esac
          echo -e "${GREEN} ${CHECKMARK}${NC} Operating System: ${BOLD}${os_capitalized}${NC}"
     echo -e "${GREEN} ${CHECKMARK}${NC} Architecture: ${BOLD}${arch}${NC}"
     echo -e "${GREEN} ${CHECKMARK}${NC} Version: ${BOLD}${version}${NC}"
@@ -419,6 +496,7 @@ show_system_info() {
 show_completion() {
     local version="$1"
     local restart_instruction="$2"
+    [[ "$QUIET_MODE" == "true" ]] && return
          echo
     print_separator "═"
     echo
@@ -448,20 +526,21 @@ show_completion() {
 check_existing_installation() {
     local install_dir="$HOME/.govman/bin"
     local govman_dir="$HOME/.govman"
-    local shell_configs_str
-    shell_configs_str=$(get_shell_configs)
-    local shell_configs=($shell_configs_str)
+    local shell_config binary_path
     local binary_found=false
     local config_found=false
     local command_found=false
          print_step "Checking for existing installation..."
          # Check binary directory
-    if [[ -f "$install_dir/govman" ]]; then
+    binary_path="$install_dir/govman"
+    is_windows && binary_path="${binary_path}.exe"
+    if [[ -f "$binary_path" ]]; then
         binary_found=true
     fi
          # Check shell configurations
-    for shell_config in "${shell_configs[@]}"; do
-        if [[ -f "$shell_config" ]] && grep -q "# GOVMAN - Go Version Manager" "$shell_config" 2>/dev/null; then
+    get_shell_configs
+    for shell_config in "${SHELL_CONFIGS[@]}"; do
+        if [[ -f "$shell_config" ]] && grep -Fxq "# GOVMAN - Go Version Manager" "$shell_config" 2>/dev/null; then
             config_found=true
             break
         fi
@@ -477,17 +556,19 @@ check_existing_installation() {
         echo -e "${BOLD}${WHITE}Existing Installation Detected:${NC}"
         print_separator "┄"
                  if [[ "$binary_found" == true ]]; then
-            echo -e "${GREEN} ${CHECKMARK}${NC} Binary found: ${BOLD}$install_dir/govman${NC}"
+            echo -e "${GREEN} ${CHECKMARK}${NC} Binary found: ${BOLD}$binary_path${NC}"
         fi
                  if [[ "$config_found" == true ]]; then
             echo -e "${GREEN} ${CHECKMARK}${NC} Shell configuration: ${BOLD}Found in PATH${NC}"
         fi
                  if [[ "$command_found" == true ]]; then
-            local version=$(govman --version 2>/dev/null | head -1 || echo "unknown")
+            local version
+            version=$(govman --version 2>/dev/null | head -1 || echo "unknown")
             echo -e "${GREEN} ${CHECKMARK}${NC} Command available: ${BOLD}govman${NC} ${DIM}($version)${NC}"
         fi
                  if [[ -d "$govman_dir" ]]; then
-            local dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
+            local dir_size
+            dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
             echo -e "${BLUE} ${INFO}${NC} Data directory: ${BOLD}$govman_dir${NC} ${DIM}($dir_size)${NC}"
         fi
                  print_separator "┄"
@@ -544,27 +625,26 @@ main() {
     download_binary "$version" "$platform" "$install_dir"
     echo
          # Add to PATH
-    add_to_path "$install_dir"
+    if ! add_to_path "$install_dir"; then
+        print_error "Installation is incomplete because shell initialization failed"
+        return 1
+    fi
     echo
          # Verify installation
     print_step "Verifying installation..."
-    if "$install_dir/govman" --version >/dev/null 2>&1; then
-        local installed_version=$("$install_dir/govman" --version 2>/dev/null | head -1 || echo "unknown")
+    local installed_binary="$install_dir/govman"
+    is_windows && installed_binary="${installed_binary}.exe"
+    if "$installed_binary" --version >/dev/null 2>&1; then
+        local installed_version
+        installed_version=$("$installed_binary" --version 2>/dev/null | head -1 || echo "unknown")
         print_success "Installation verified: ${BOLD}$installed_version${NC}"
                  # Dynamic restart instruction
         local restart_instruction
         restart_instruction=$(get_restart_instruction)
                  show_completion "$version" "$restart_instruction"
     else
-        print_warning "Installation completed, but verification failed"
-        echo
-        print_separator "┄"
-        echo -e "${BOLD}${WHITE}Manual Steps Required:${NC}"
-        echo " 1. Restart your terminal"
-        echo " 2. Try running 'govman --version'"
-        echo " 3. If issues persist, run 'govman init' manually"
-        print_separator "┄"
-        echo
+        print_error "Installation verification failed for $installed_binary"
+        return 1
     fi
 }
  # Trap to ensure clean exit

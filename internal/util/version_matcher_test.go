@@ -70,11 +70,11 @@ func TestFindBestMatchingVersion(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:              "full version matches different patch",
+			name:              "full version does not match different patch",
 			requestedVersion:  "1.25.4",
 			installedVersions: []string{"1.25.1", "1.24.3"},
-			expectedVersion:   "1.25.1",
-			expectError:       false,
+			expectedVersion:   "",
+			expectError:       true,
 		},
 		{
 			name:              "no matching version",
@@ -98,11 +98,18 @@ func TestFindBestMatchingVersion(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:              "multiple versions, picks highest",
+			name:              "full version never floats to highest patch",
 			requestedVersion:  "1.25.2",
 			installedVersions: []string{"1.25.9", "1.25.1", "1.25.4"},
-			expectedVersion:   "1.25.9",
-			expectError:       false,
+			expectedVersion:   "",
+			expectError:       true,
+		},
+		{
+			name:              "prerelease requires exact match",
+			requestedVersion:  "1.26rc2",
+			installedVersions: []string{"1.26rc1", "1.26.0"},
+			expectedVersion:   "",
+			expectError:       true,
 		},
 	}
 
@@ -231,7 +238,10 @@ func TestMatchVersionPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := MatchVersionPattern(tt.pattern, tt.versions)
+			result, err := MatchVersionPattern(tt.pattern, tt.versions)
+			if err != nil {
+				t.Fatalf("MatchVersionPattern(%q, %v) error: %v", tt.pattern, tt.versions, err)
+			}
 
 			if len(result) != len(tt.expectedMatches) {
 				t.Errorf("MatchVersionPattern(%q, %v) returned %d matches, want %d\nGot: %v\nWant: %v",
@@ -429,7 +439,9 @@ func TestSortVersionsDescending(t *testing.T) {
 			input := make([]string, len(tt.input))
 			copy(input, tt.input)
 
-			sortVersionsDescending(input)
+			if err := sortVersionsDescending(input); err != nil {
+				t.Fatalf("sortVersionsDescending(%v) error: %v", tt.input, err)
+			}
 
 			if len(input) != len(tt.expected) {
 				t.Errorf("sortVersionsDescending(%v) resulted in %d elements, want %d",
@@ -444,5 +456,15 @@ func TestSortVersionsDescending(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVersionSortingRejectsInvalidInput(t *testing.T) {
+	versions := []string{"1.25.0", "invalid"}
+	if err := sortVersionsDescending(versions); err == nil {
+		t.Fatal("sortVersionsDescending accepted an invalid version")
+	}
+	if _, err := MatchVersionPattern("*", versions); err == nil {
+		t.Fatal("MatchVersionPattern accepted an invalid version")
 	}
 }

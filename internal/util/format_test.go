@@ -34,7 +34,7 @@ func TestFormatBytes(t *testing.T) {
 		{
 			name:     "Just below 1 MB",
 			size:     1024*1024 - 1,
-			expected: "1024 KB",
+			expected: "1 MB",
 		},
 		{
 			name:     "Exactly 1 MB",
@@ -49,7 +49,7 @@ func TestFormatBytes(t *testing.T) {
 		{
 			name:     "Just below 1 GB",
 			size:     1024*1024*1024 - 1,
-			expected: "1024 MB",
+			expected: "1 GB",
 		},
 		{
 			name:     "Exactly 1 GB",
@@ -168,6 +168,11 @@ func TestFormatDuration(t *testing.T) {
 			name:     "Negative duration - hours",
 			duration: -3*time.Hour - 45*time.Minute,
 			expected: "-3h45m",
+		},
+		{
+			name:     "Minimum duration does not overflow",
+			duration: time.Duration(-1 << 63),
+			expected: "-2562047h47m",
 		},
 	}
 

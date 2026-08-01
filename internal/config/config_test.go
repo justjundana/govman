@@ -9,32 +9,75 @@ import (
 	"time"
 )
 
-// setTestHome sets HOME (or USERPROFILE on Windows) to tempHome and returns a cleanup function.
-func setTestHome(t *testing.T, tempHome string) {
-	t.Helper()
-	oldHome := os.Getenv("HOME")
-	if runtime.GOOS == "windows" {
-		os.Setenv("USERPROFILE", tempHome)
-		t.Cleanup(func() { os.Setenv("USERPROFILE", oldHome) })
-	} else {
-		os.Setenv("HOME", tempHome)
-		t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+func setTestEnv(key, value string) func() {
+	oldValue, existed := os.LookupEnv(key)
+	_ = os.Setenv(key, value)
+	return func() {
+		if existed {
+			_ = os.Setenv(key, oldValue)
+			return
+		}
+		_ = os.Unsetenv(key)
 	}
 }
 
-// makeGovmanDirReadOnly creates a read-only .govman directory under tempHome.
-func makeGovmanDirReadOnly(t *testing.T, tempHome string) {
+func unsetTestHome() func() {
+	restoreHome := setTestEnv("HOME", "")
+	restoreUserProfile := setTestEnv("USERPROFILE", "")
+	_ = os.Unsetenv("HOME")
+	_ = os.Unsetenv("USERPROFILE")
+	return func() {
+		restoreUserProfile()
+		restoreHome()
+	}
+}
+
+// setTestHomeEnv points both home-directory environment variables at tempHome and
+// returns an exact restore func. getHomeDir reads USERPROFILE on Windows and HOME
+// everywhere else, so setting only one of them would leave the real user profile
+// in play on the other platform.
+func setTestHomeEnv(tempHome string) func() {
+	restoreHome := setTestEnv("HOME", tempHome)
+	restoreUserProfile := setTestEnv("USERPROFILE", tempHome)
+	return func() {
+		restoreUserProfile()
+		restoreHome()
+	}
+}
+
+// setTestHome redirects the home directory to tempHome for the duration of the test.
+func setTestHome(t *testing.T, tempHome string) {
 	t.Helper()
-	govmanDir := filepath.Join(tempHome, ".govman")
-	if err := os.MkdirAll(govmanDir, 0755); err != nil {
-		t.Fatalf("Failed to create govman dir: %v", err)
+	t.Cleanup(setTestHomeEnv(tempHome))
+}
+
+// blockGovmanConfigDir plants a regular file where <tempHome>/.govman has to be a
+// directory, so Load cannot produce a config file. This replaces a chmod 0444 on
+// that directory: on Windows os.Chmod only toggles FILE_ATTRIBUTE_READONLY, which
+// is ignored for directories, so a read-only .govman would still accept MkdirAll
+// and CreateTemp and Load would succeed.
+//
+// On linux/darwin os.Lstat(<tempHome>/.govman/config.yaml) fails with ENOTDIR,
+// which is not os.IsNotExist, so Load reports "failed to inspect config file".
+// On Windows the same Lstat reports ERROR_PATH_NOT_FOUND, which maps to
+// fs.ErrNotExist, so Load falls through to Save() where os.MkdirAll stats the
+// regular file, sees !IsDir and returns ENOTDIR, and Load reports "failed to
+// create config file with default values". Both are errors, on every platform.
+func blockGovmanConfigDir(t *testing.T, tempHome string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(tempHome, ".govman"), []byte("not a directory\n"), 0600); err != nil {
+		t.Fatalf("Failed to plant blocking file: %v", err)
 	}
-	if err := os.Chmod(govmanDir, 0444); err != nil {
-		t.Fatalf("Failed to make govman dir read-only: %v", err)
+}
+
+// occupyGovmanConfigPath creates a directory at the exact path Load expects the
+// config file to be. os.Lstat then succeeds while reporting a non-regular file,
+// which Load rejects identically on linux, darwin and windows.
+func occupyGovmanConfigPath(t *testing.T, tempHome string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(tempHome, ".govman", "config.yaml"), 0755); err != nil {
+		t.Fatalf("Failed to create directory at config path: %v", err)
 	}
-	t.Cleanup(func() {
-		os.Chmod(govmanDir, 0755)
-	})
 }
 
 func TestLoad(t *testing.T) {
@@ -88,26 +131,17 @@ default_version: "1.21.0"`
 		{
 			name: "Home directory not accessible",
 			setup: func(t *testing.T) string {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				t.Cleanup(func() {
-					os.Setenv("HOME", oldHome)
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				})
+				t.Cleanup(unsetTestHome())
 				return ""
 			},
 			expectError: true,
 		},
 		{
-			name: "Config save fails during initial creation",
+			name: "Config directory path occupied by a regular file",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
 				setTestHome(t, tempHome)
-				makeGovmanDirReadOnly(t, tempHome)
+				blockGovmanConfigDir(t, tempHome)
 				return ""
 			},
 			expectError: true,
@@ -121,11 +155,11 @@ default_version: "1.21.0"`
 			expectError: false,
 		},
 		{
-			name: "Home directory accessible but config creation fails",
+			name: "Config path occupied by a directory",
 			setup: func(t *testing.T) string {
 				tempHome := t.TempDir()
 				setTestHome(t, tempHome)
-				makeGovmanDirReadOnly(t, tempHome)
+				occupyGovmanConfigPath(t, tempHome)
 				return ""
 			},
 			expectError: true,
@@ -174,14 +208,7 @@ default_version: "1.21.0"`
 func TestSetDefaults(t *testing.T) {
 	// Set up fake home directory
 	tempHome := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if runtime.GOOS == "windows" {
-		os.Setenv("USERPROFILE", tempHome)
-		defer os.Setenv("USERPROFILE", oldHome)
-	} else {
-		os.Setenv("HOME", tempHome)
-		defer os.Setenv("HOME", oldHome)
-	}
+	defer setTestHomeEnv(tempHome)()
 
 	cfg := &Config{}
 	cfg.setDefaults()
@@ -272,18 +299,7 @@ func TestExpandPaths(t *testing.T) {
 			cacheDir:    "~/test/cache",
 			expectError: true,
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 		},
 	}
@@ -326,10 +342,12 @@ func TestExpandPaths(t *testing.T) {
 
 func TestCreateDirectories(t *testing.T) {
 	testCases := []struct {
-		name        string
-		installDir  string
-		cacheDir    string
-		expectError bool
+		name         string
+		installDir   string
+		cacheDir     string
+		blockInstall bool
+		blockCache   bool
+		expectError  bool
 	}{
 		{
 			name:        "Valid directories",
@@ -338,15 +356,17 @@ func TestCreateDirectories(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Install directory creation fails",
-			installDir:  "/invalid/path/that/does/not/exist/install",
-			cacheDir:    "cache",
-			expectError: true,
+			name:         "Install directory creation fails",
+			installDir:   "install",
+			cacheDir:     "cache",
+			blockInstall: true,
+			expectError:  true,
 		},
 		{
 			name:        "Cache directory creation fails",
 			installDir:  "install",
-			cacheDir:    "/invalid/path/that/does/not/exist/cache",
+			cacheDir:    "cache",
+			blockCache:  true,
 			expectError: true,
 		},
 	}
@@ -360,12 +380,22 @@ func TestCreateDirectories(t *testing.T) {
 				CacheDir:   filepath.Join(tempDir, tc.cacheDir),
 			}
 
-			// For error cases, use absolute paths that will fail
-			if tc.expectError && strings.Contains(tc.installDir, "invalid") {
-				cfg.InstallDir = tc.installDir
-			}
-			if tc.expectError && strings.Contains(tc.cacheDir, "invalid") {
-				cfg.CacheDir = tc.cacheDir
+			// For error cases, route the directory through a regular file so that
+			// os.MkdirAll fails with ENOTDIR on linux, darwin and windows alike.
+			// A hardcoded POSIX path such as "/invalid/path/..." is not portable:
+			// on Windows it resolves against the current drive, where MkdirAll can
+			// legitimately succeed.
+			if tc.blockInstall || tc.blockCache {
+				blocker := filepath.Join(tempDir, "blocker")
+				if err := os.WriteFile(blocker, []byte("not a directory\n"), 0600); err != nil {
+					t.Fatalf("Failed to create blocker file: %v", err)
+				}
+				if tc.blockInstall {
+					cfg.InstallDir = filepath.Join(blocker, tc.installDir)
+				}
+				if tc.blockCache {
+					cfg.CacheDir = filepath.Join(blocker, tc.cacheDir)
+				}
 			}
 
 			err := cfg.createDirectories()
@@ -486,6 +516,154 @@ func TestSaveFailure(t *testing.T) {
 	}
 }
 
+func TestLoadUsesIsolatedViperInstances(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	firstDir := t.TempDir()
+	secondDir := t.TempDir()
+	firstPath := filepath.Join(firstDir, "first.yaml")
+	secondPath := filepath.Join(secondDir, "second.yaml")
+	if err := os.WriteFile(firstPath, []byte("default_version: 1.21.1\ninstall_dir: first-versions\ncache_dir: first-cache\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("default_version: 1.22.2\ninstall_dir: second-versions\ncache_dir: second-cache\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Load(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.decoder == nil || second.decoder == nil || first.decoder == second.decoder {
+		t.Fatal("config loads must retain distinct decoder instances")
+	}
+	if first.DefaultVersion != "1.21.1" || second.DefaultVersion != "1.22.2" {
+		t.Fatalf("config values leaked across instances: first=%q second=%q", first.DefaultVersion, second.DefaultVersion)
+	}
+	if first.InstallDir != filepath.Join(firstDir, "first-versions") {
+		t.Fatalf("first relative install path = %q", first.InstallDir)
+	}
+	if second.CacheDir != filepath.Join(secondDir, "second-cache") {
+		t.Fatalf("second relative cache path = %q", second.CacheDir)
+	}
+}
+
+func TestLoadRejectsUnknownKeysAndSymlinks(t *testing.T) {
+	setTestHome(t, t.TempDir())
+
+	t.Run("unknown top-level key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("download_typo: true\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid keys") {
+			t.Fatalf("expected strict unmarshal error, got %v", err)
+		}
+	})
+
+	t.Run("unknown nested key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("download:\n  retries: 3\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid keys") {
+			t.Fatalf("expected strict nested-key error, got %v", err)
+		}
+	})
+
+	if runtime.GOOS != "windows" {
+		t.Run("symlink", func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "target.yaml")
+			link := filepath.Join(directory, "config.yaml")
+			if err := os.WriteFile(target, []byte("{}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(link); err == nil || !strings.Contains(err.Error(), "not a symlink") {
+				t.Fatalf("expected symlink rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	newValidConfig := func(t *testing.T) *Config {
+		t.Helper()
+		setTestHome(t, t.TempDir())
+		config := &Config{}
+		config.setDefaults()
+		return config
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"zero timeout", func(c *Config) { c.Download.Timeout = 0 }, "download.timeout"},
+		{"zero retries", func(c *Config) { c.Download.RetryCount = 0 }, "download.retry_count"},
+		{"negative retry delay", func(c *Config) { c.Download.RetryDelay = -time.Second }, "download.retry_delay"},
+		{"zero max connections", func(c *Config) { c.Download.MaxConnections = 0 }, "download.max_connections"},
+		{"zero cache expiry", func(c *Config) { c.GoReleases.CacheExpiry = 0 }, "cache_expiry"},
+		{"overlapping paths", func(c *Config) { c.CacheDir = filepath.Join(c.InstallDir, "cache") }, "must not overlap"},
+		{"path project filename", func(c *Config) { c.AutoSwitch.ProjectFile = "nested/version" }, "project_file"},
+		{"windows project filename", func(c *Config) { c.AutoSwitch.ProjectFile = `nested\version` }, "project_file"},
+		{"conflicting output", func(c *Config) { c.Quiet, c.Verbose = true, true }, "cannot both"},
+		{"invalid mirror URL", func(c *Config) { c.Mirror.URL = "ftp://example.com" }, "mirror.url"},
+		{"credentialed URL", func(c *Config) { c.SelfUpdate.GitHubAPIURL = "https://user:pass@example.com/releases" }, "github_api_url"},
+		{"missing download placeholder", func(c *Config) { c.GoReleases.DownloadURL = "https://go.dev/dl/archive" }, "exactly one"},
+		{"duplicate download placeholder", func(c *Config) { c.GoReleases.DownloadURL = "https://go.dev/%s/%s" }, "exactly one"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := newValidConfig(t)
+			test.mutate(config)
+			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("prefix paths do not overlap", func(t *testing.T) {
+		config := newValidConfig(t)
+		config.InstallDir = filepath.Join(t.TempDir(), "go")
+		config.CacheDir = config.InstallDir + "-cache"
+		if err := config.Validate(); err != nil {
+			t.Fatalf("prefix-like paths should be valid: %v", err)
+		}
+	})
+}
+
+func TestConfigFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permissions := info.Mode().Perm(); permissions != 0600 {
+		t.Fatalf("config permissions = %o, want 600", permissions)
+	}
+}
+
 func TestGetVersionDir(t *testing.T) {
 	cfg := &Config{
 		InstallDir: "/opt/govman/versions",
@@ -510,46 +688,21 @@ func TestGetBinPath(t *testing.T) {
 		{
 			name: "Valid HOME on Unix",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS != "windows" {
-					os.Setenv("HOME", tempHome)
-					return func() { os.Setenv("HOME", oldHome) }
-				}
-				os.Setenv("USERPROFILE", tempHome)
-				return func() { os.Setenv("USERPROFILE", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 			expectError: false,
 		},
 		{
 			name: "Valid USERPROFILE on Windows",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("USERPROFILE")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					return func() { os.Setenv("USERPROFILE", oldHome) }
-				}
-				os.Setenv("HOME", tempHome)
-				return func() { os.Setenv("HOME", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 			expectError: false,
 		},
 		{
 			name: "Fallback when home directory not found",
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 			expectError: false, // GetBinPath doesn't return error, it falls back to "."
 		},
@@ -591,44 +744,19 @@ func TestGetCurrentSymlink(t *testing.T) {
 		{
 			name: "Valid HOME on Unix",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("HOME")
-				if runtime.GOOS != "windows" {
-					os.Setenv("HOME", tempHome)
-					return func() { os.Setenv("HOME", oldHome) }
-				}
-				os.Setenv("USERPROFILE", tempHome)
-				return func() { os.Setenv("USERPROFILE", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 		},
 		{
 			name: "Valid USERPROFILE on Windows",
 			setup: func() func() {
-				tempHome := t.TempDir()
-				oldHome := os.Getenv("USERPROFILE")
-				if runtime.GOOS == "windows" {
-					os.Setenv("USERPROFILE", tempHome)
-					return func() { os.Setenv("USERPROFILE", oldHome) }
-				}
-				os.Setenv("HOME", tempHome)
-				return func() { os.Setenv("HOME", oldHome) }
+				return setTestHomeEnv(t.TempDir())
 			},
 		},
 		{
 			name: "Fallback when home directory not found",
 			setup: func() func() {
-				oldHome := os.Getenv("HOME")
-				oldUserProfile := os.Getenv("USERPROFILE")
-				os.Unsetenv("HOME")
-				os.Unsetenv("USERPROFILE")
-				return func() {
-					if oldHome != "" {
-						os.Setenv("HOME", oldHome)
-					}
-					if oldUserProfile != "" {
-						os.Setenv("USERPROFILE", oldUserProfile)
-					}
-				}
+				return unsetTestHome()
 			},
 		},
 	}

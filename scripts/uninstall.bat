@@ -204,11 +204,14 @@ set "COMMAND_FOUND=0"
 set "DATA_FOUND=0"
 
 REM Check binary directory
+if exist "%USERPROFILE%\.govman\bin\govman-real.exe" set "BINARY_FOUND=1"
 if exist "%USERPROFILE%\.govman\bin\govman.exe" set "BINARY_FOUND=1"
+if exist "%USERPROFILE%\.govman\bin\govman.cmd" set "BINARY_FOUND=1"
 
-REM Check if govman is in PATH
-for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
-echo "!USER_PATH!" | find "%USERPROFILE%\.govman\bin" >nul
+REM Check PATH through PowerShell so the registry value never passes through
+REM cmd delayed expansion.
+set "INSTALL_DIR=%USERPROFILE%\.govman\bin"
+powershell -NoProfile -Command "function N([string]$p){if($null -eq $p){return ''};$p.Trim().TrimEnd([char[]]@('\','/'))};$e=$env:INSTALL_DIR;$p=[Environment]::GetEnvironmentVariable('Path','User');foreach($part in $p.Split([char[]]@(';'),[StringSplitOptions]::None)){if([StringComparer]::OrdinalIgnoreCase.Equals((N $part),(N $e))){exit 0}};exit 1" >nul 2>&1
 if !errorlevel!==0 set "PATH_FOUND=1"
 
 REM Check if govman command works
@@ -286,15 +289,17 @@ echo %BOLD%%WHITE%Removal Preview:%RESET%
 call :print_separator "-"
 
 REM Check binary
-if exist "%USERPROFILE%\.govman\bin\govman.exe" (
+if exist "%USERPROFILE%\.govman\bin\govman-real.exe" (
+    echo %RED% %TRASH%%RESET% Binary directory: %BOLD%%USERPROFILE%\.govman\bin%RESET%
+) else if exist "%USERPROFILE%\.govman\bin\govman.exe" (
     echo %RED% %TRASH%%RESET% Binary directory: %BOLD%%USERPROFILE%\.govman\bin%RESET%
 ) else (
     echo %GRAY% %CROSSMARK%%RESET% Binary directory: %DIM%%USERPROFILE%\.govman\bin (not found)%RESET%
 )
 
-REM Check PATH configuration
-for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
-echo "!USER_PATH!" | find "%USERPROFILE%\.govman\bin" >nul
+REM Check PATH configuration without importing it into cmd.exe.
+set "INSTALL_DIR=%USERPROFILE%\.govman\bin"
+powershell -NoProfile -Command "function N([string]$p){if($null -eq $p){return ''};$p.Trim().TrimEnd([char[]]@('\','/'))};$e=$env:INSTALL_DIR;$p=[Environment]::GetEnvironmentVariable('Path','User');foreach($part in $p.Split([char[]]@(';'),[StringSplitOptions]::None)){if([StringComparer]::OrdinalIgnoreCase.Equals((N $part),(N $e))){exit 0}};exit 1" >nul 2>&1
 if !errorlevel!==0 (
     echo %RED% %TRASH%%RESET% PATH configuration: %BOLD%User PATH entry%RESET%
 ) else (
@@ -329,8 +334,10 @@ set /p "CONFIRM=Proceed with minimal removal? (y/N): "
 if /i "!CONFIRM!"=="y" (
     echo.
     call :remove_binary
+    if !errorlevel! neq 0 exit /b !errorlevel!
     echo.
     call :remove_from_path
+    if !errorlevel! neq 0 exit /b !errorlevel!
     echo.
     call :show_completion "false"
 ) else (
@@ -358,10 +365,13 @@ set /p "CONFIRM=Type 'DELETE' to confirm complete removal: "
 if "!CONFIRM!"=="DELETE" (
     echo.
     call :remove_binary
+    if !errorlevel! neq 0 exit /b !errorlevel!
     echo.
     call :remove_from_path
+    if !errorlevel! neq 0 exit /b !errorlevel!
     echo.
     call :remove_govman_dir
+    if !errorlevel! neq 0 exit /b !errorlevel!
     echo.
     call :show_completion "true"
 ) else (
@@ -384,6 +394,7 @@ if exist "%USERPROFILE%\.govman\bin" (
         call :print_success "Removed govman binary from %USERPROFILE%\.govman\bin"
     ) else (
         call :print_error "Failed to remove binary directory"
+        exit /b 1
     )
 ) else (
     call :print_warning "govman binary directory not found"
@@ -393,30 +404,15 @@ goto :eof
 :remove_from_path
 call :print_step "Cleaning PATH configuration..."
 
-REM Get current user PATH
-for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
-
-REM Check if govman path exists
-echo "!USER_PATH!" | find "%USERPROFILE%\.govman\bin" >nul
-if !errorlevel!==0 (
-    echo    Removing PATH configuration...
-
-    REM Remove govman path from PATH string
-    set "NEW_PATH=!USER_PATH!"
-    set "NEW_PATH=!NEW_PATH:;%USERPROFILE%\.govman\bin=!"
-    set "NEW_PATH=!NEW_PATH:%USERPROFILE%\.govman\bin;=!"
-    set "NEW_PATH=!NEW_PATH:%USERPROFILE%\.govman\bin=!"
-
-    REM Update registry
-    reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "!NEW_PATH!" /f >nul
-    if !errorlevel!==0 (
-        call :print_success "Cleaned PATH configuration"
-    ) else (
-        call :print_error "Failed to update PATH"
-    )
-) else (
-    call :print_info "No govman PATH configuration found"
+set "INSTALL_DIR=%USERPROFILE%\.govman\bin"
+REM Parse as an entry list, compare exact normalized entries, preserve empty
+REM entries and %VAR% references, keep the registry value kind, then verify.
+powershell -NoProfile -Command "$ErrorActionPreference='Stop';function N([string]$p){if($null -eq $p){return ''};$p.Trim().TrimEnd([char[]]@('\','/'))};$entry=$env:INSTALL_DIR;$key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');if($null -eq $key){throw 'Unable to open HKCU\Environment'};try{$had=@($key.GetValueNames()) -contains 'Path';if(-not $had){exit 0};$old=[string]$key.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);$kind=$key.GetValueKind('Path');$expected=N $entry;$found=$false;$kept=[Collections.Generic.List[string]]::new();foreach($part in $old.Split([char[]]@(';'),[StringSplitOptions]::None)){if([StringComparer]::OrdinalIgnoreCase.Equals((N $part),$expected)){$found=$true}else{$kept.Add($part)}};if($found){$new=$kept -join ';';$backup='Path.govman-backup-'+$PID+'-'+[Guid]::NewGuid().ToString('N');$key.SetValue($backup,$old,$kind);try{$key.SetValue('Path',$new,$kind);$actual=[string]$key.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);if($actual -cne $new -or $key.GetValueKind('Path') -ne $kind){throw 'PATH verification failed'}}catch{$key.SetValue('Path',$old,$kind);throw}finally{$key.DeleteValue($backup,$false)}}}finally{$key.Dispose()}" >nul 2>&1
+if !errorlevel! neq 0 (
+    call :print_error "Failed to update PATH; the original registry value was restored"
+    exit /b 1
 )
+call :print_success "Removed exact govman entries from user PATH"
 goto :eof
 
 :remove_govman_dir
@@ -430,6 +426,7 @@ if exist "%USERPROFILE%\.govman" (
         call :print_success "Removed govman data directory"
     ) else (
         call :print_error "Failed to remove data directory"
+        exit /b 1
     )
 ) else (
     call :print_warning "govman directory not found"
