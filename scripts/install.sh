@@ -66,24 +66,20 @@ NC='\033[0m'
  # Style effects
 BOLD='\033[1m'
 DIM='\033[2m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
  # Unicode characters for better UI
 CHECKMARK="✓"
 CROSSMARK="✗"
 ARROW="→"
-DOWNLOAD="⬇"
 WARNING="⚠"
 INSTALL="📦"
 INFO="ℹ"
 ROCKET="🚀"
-GEAR="⚙"
  # Terminal width detection
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
  # Print separator line
 print_separator() {
     local char="${1:--}"
-    printf "%*s\n" "$TERM_WIDTH" | tr ' ' "$char"
+    printf "%*s\n" "$TERM_WIDTH" "" | tr ' ' "$char"
 }
  # Print fancy header
 print_header() {
@@ -136,6 +132,9 @@ is_windows() {
     [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]
 }
  # Detect current shell and return appropriate config file
+# The ~ below is deliberate: config_file is only ever echoed back to the user as
+# something they will type (e.g. "source ~/.zshrc"), never used to open a file.
+# shellcheck disable=SC2088
 detect_shell_config() {
     local shell_name=""
     local config_file=""
@@ -186,8 +185,9 @@ detect_shell_config() {
 get_restart_instruction() {
     local shell_info
     shell_info=$(detect_shell_config)
-    local shell_name=$(echo "$shell_info" | cut -d':' -f1)
-    local config_file=$(echo "$shell_info" | cut -d':' -f2)
+    local shell_name config_file
+    shell_name=$(echo "$shell_info" | cut -d':' -f1)
+    config_file=$(echo "$shell_info" | cut -d':' -f2)
          if is_windows; then
         echo "Please restart your terminal or PowerShell window"
     else
@@ -562,11 +562,13 @@ check_existing_installation() {
             echo -e "${GREEN} ${CHECKMARK}${NC} Shell configuration: ${BOLD}Found in PATH${NC}"
         fi
                  if [[ "$command_found" == true ]]; then
-            local version=$(govman --version 2>/dev/null | head -1 || echo "unknown")
+            local version
+            version=$(govman --version 2>/dev/null | head -1 || echo "unknown")
             echo -e "${GREEN} ${CHECKMARK}${NC} Command available: ${BOLD}govman${NC} ${DIM}($version)${NC}"
         fi
                  if [[ -d "$govman_dir" ]]; then
-            local dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
+            local dir_size
+            dir_size=$(du -sh "$govman_dir" 2>/dev/null | cut -f1 || echo "unknown")
             echo -e "${BLUE} ${INFO}${NC} Data directory: ${BOLD}$govman_dir${NC} ${DIM}($dir_size)${NC}"
         fi
                  print_separator "┄"
