@@ -1727,9 +1727,24 @@ func testInitializePowerShell(t *testing.T, shell *PowerShell, existingCfg strin
 		return tempDir, nil
 	}
 
-	profileDir := filepath.Join(tempDir, "Documents", "WindowsPowerShell")
-	os.MkdirAll(profileDir, 0755)
-	profileFile := filepath.Join(profileDir, "Microsoft.PowerShell_profile.ps1")
+	// ConfigFile picks Documents/PowerShell when pwsh is on PATH and
+	// Documents/WindowsPowerShell otherwise. Pin the flavour so the profile the
+	// helper writes is always the one the code reads: every GitHub runner ships
+	// PowerShell Core, so an unpinned lookup wrote the existing config where
+	// InitializeShell never looked and the "already configured" error never fired.
+	originalLookPath := execLookPath
+	defer func() { execLookPath = originalLookPath }()
+	execLookPath = func(cmd string) (string, error) {
+		if cmd == "powershell" {
+			return "/usr/bin/powershell", nil
+		}
+		return "", exec.ErrNotFound
+	}
+
+	profileFile := shell.ConfigFile()
+	if err := os.MkdirAll(filepath.Dir(profileFile), 0755); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
 
 	if existingCfg != "" {
 		if err := os.WriteFile(profileFile, []byte(existingCfg), 0644); err != nil {
