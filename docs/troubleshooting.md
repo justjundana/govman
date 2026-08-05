@@ -642,3 +642,23 @@ rm ~/.govman/config.yaml
 # Next govman command recreates it
 govman --version
 ```
+
+### "invalid keys" Error After Upgrading
+
+**Symptom:** After upgrading govman, commands fail with errors such as:
+
+```text
+Error: failed to load config: failed to unmarshal config: decoding failed due to the following error(s):
+
+'download' has invalid keys: maxconnections, retrycount, retrydelay
+'auto_switch' has invalid keys: projectfile
+'shell' has invalid keys: autodetect
+'go_releases' has invalid keys: apiurl, cacheexpiry, downloadurl
+'self_update' has invalid keys: githubapiurl, githubreleasesurl
+```
+
+**Cause:** The config file was written by a govman release before v1.3.4, which used key names without underscores (`maxconnections`, `projectfile`, `autodetect`, `apiurl`, ...). Current releases use strict decoding and reject unknown keys.
+
+**Solution:** Upgrading to v1.3.5 or later fixes this automatically — the legacy keys are migrated to their current snake_case names on the first load, and the original contents are preserved as `~/.govman/config.yaml.migrated.bak`. Simply run any govman command.
+
+If you cannot upgrade yet, edit `~/.govman/config.yaml` manually: rename `maxconnections` → `max_connections`, `retrycount` → `retry_count`, `retrydelay` → `retry_delay`, `projectfile` → `project_file`, `autodetect` → `auto_detect`, `apiurl` → `api_url`, `downloadurl` → `download_url`, `cacheexpiry` → `cache_expiry`, `githubapiurl` → `github_api_url`, and `githubreleasesurl` → `github_releases_url`. Keep the values unchanged.

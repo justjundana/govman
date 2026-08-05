@@ -553,6 +553,229 @@ func TestLoadUsesIsolatedViperInstances(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesLegacyConfigKeys(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+
+	// This is the exact shape written by pre-v1.3.4 releases: key names
+	// without underscores. It used to make Load fail with "invalid keys".
+	legacyContent := `auto_switch:
+    enabled: true
+    projectfile: .govman-goversion
+cache_dir: /tmp/legacy/cache
+default_version: 1.26.4
+download:
+    parallel: true
+    maxconnections: 4
+    timeout: 5m0s
+    retrycount: 3
+    retrydelay: 5s
+go_releases:
+    apiurl: https://go.dev/dl/?mode=json&include=all
+    downloadurl: https://go.dev/dl/%s
+    cacheexpiry: 10m0s
+install_dir: /tmp/legacy/versions
+mirror:
+    enabled: false
+    url: https://golang.google.cn/dl/
+quiet: false
+self_update:
+    githubapiurl: https://api.github.com/repos/justjundana/govman/releases/latest
+    githubreleasesurl: https://api.github.com/repos/justjundana/govman/releases?per_page=1
+shell:
+    autodetect: true
+    completion: true
+verbose: false
+`
+	if err := os.WriteFile(path, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy config should load with migration, got: %v", err)
+	}
+
+	// Values from the legacy file must be preserved.
+	if cfg.DefaultVersion != "1.26.4" {
+		t.Errorf("default_version = %q, want 1.26.4", cfg.DefaultVersion)
+	}
+	if cfg.Download.MaxConnections != 4 {
+		t.Errorf("download.max_connections = %d, want 4", cfg.Download.MaxConnections)
+	}
+	if cfg.Download.RetryCount != 3 {
+		t.Errorf("download.retry_count = %d, want 3", cfg.Download.RetryCount)
+	}
+	if cfg.Download.RetryDelay != 5*time.Second {
+		t.Errorf("download.retry_delay = %v, want 5s", cfg.Download.RetryDelay)
+	}
+	if cfg.AutoSwitch.ProjectFile != ".govman-goversion" {
+		t.Errorf("auto_switch.project_file = %q", cfg.AutoSwitch.ProjectFile)
+	}
+	if !cfg.Shell.AutoDetect {
+		t.Error("shell.auto_detect should be true")
+	}
+	if cfg.GoReleases.APIURL == "" || cfg.SelfUpdate.GitHubAPIURL == "" {
+		t.Error("migrated endpoint URLs must be preserved")
+	}
+
+	// The file must now use the current key names and load cleanly again.
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rewritten), "maxconnections") {
+		t.Error("legacy key maxconnections still present after migration")
+	}
+	for _, current := range []string{"max_connections", "retry_count", "retry_delay", "project_file", "auto_detect", "api_url", "download_url", "cache_expiry", "github_api_url", "github_releases_url"} {
+		if !strings.Contains(string(rewritten), current) {
+			t.Errorf("migrated file missing key %q", current)
+		}
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("migrated config should load cleanly, got: %v", err)
+	}
+}
+
+func TestLoadLegacyConfigWritesBackup(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	legacyContent := "download:\n    maxconnections: 4\n    retrycount: 3\n"
+	if err := os.WriteFile(path, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("legacy config should load, got: %v", err)
+	}
+
+	backup, err := os.ReadFile(path + ".migrated.bak")
+	if err != nil {
+		t.Fatalf("expected legacy backup file: %v", err)
+	}
+	if string(backup) != legacyContent {
+		t.Errorf("backup does not match original contents:\n got: %q\nwant: %q", string(backup), legacyContent)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path + ".migrated.bak")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if permissions := info.Mode().Perm(); permissions != 0600 {
+			t.Errorf("backup permissions = %o, want 600", permissions)
+		}
+	}
+}
+
+func TestLoadMigrationPreservesCommentsAndCurrentKeys(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	legacyContent := `# Keep this operator note.
+download:
+  # The current spelling must win.
+  max_connections: 8
+  maxconnections: 4
+`
+	if err := os.WriteFile(path, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Download.MaxConnections != 8 {
+		t.Fatalf("download.max_connections = %d, want 8", cfg.Download.MaxConnections)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rewritten), "# Keep this operator note.") || !strings.Contains(string(rewritten), "# The current spelling must win.") {
+		t.Fatalf("migration removed YAML comments:\n%s", rewritten)
+	}
+	if strings.Contains(string(rewritten), "maxconnections") {
+		t.Fatalf("legacy key remains after migration:\n%s", rewritten)
+	}
+}
+
+func TestLoadDoesNotMigrateAliasesOutsideTheirSection(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "download:\n  apiurl: https://example.com\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid keys") {
+		t.Fatalf("expected strict nested-key error, got %v", err)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rewritten) != content {
+		t.Fatalf("invalid config was changed:\n got: %q\nwant: %q", rewritten, content)
+	}
+	if _, err := os.Lstat(path + ".migrated.bak"); !os.IsNotExist(err) {
+		t.Fatal("invalid config must not create a migration backup")
+	}
+}
+
+func TestLoadMigrationRejectsUnsafeBackupPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is not uniformly available on Windows")
+	}
+	setTestHome(t, t.TempDir())
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	legacyContent := "download:\n  maxconnections: 4\n"
+	if err := os.WriteFile(path, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, "sentinel")
+	if err := os.WriteFile(target, []byte("do not overwrite"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".migrated.bak"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "existing backup must be a regular file") {
+		t.Fatalf("expected unsafe-backup error, got %v", err)
+	}
+	gotTarget, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotTarget) != "do not overwrite" {
+		t.Fatalf("backup symlink target was modified: %q", gotTarget)
+	}
+	gotConfig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotConfig) != legacyContent {
+		t.Fatalf("config changed after backup failure:\n got: %q\nwant: %q", gotConfig, legacyContent)
+	}
+}
+
+func TestLoadMigratesWithoutRewritingCurrentConfig(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	currentContent := "download:\n    max_connections: 4\n    retry_count: 3\n"
+	if err := os.WriteFile(path, []byte(currentContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".migrated.bak"); !os.IsNotExist(err) {
+		t.Error("no backup should be created when there is nothing to migrate")
+	}
+}
+
 func TestLoadRejectsUnknownKeysAndSymlinks(t *testing.T) {
 	setTestHome(t, t.TempDir())
 

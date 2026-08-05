@@ -42,6 +42,19 @@ self_update:
 
 Reserved fields remain readable and writable so v1.3.3 config files stay compatible. They must not be treated as active parallel download, mirror routing, shell detection, or completion settings in v1.3.4.
 
+## Automatic migration of legacy keys
+
+Config files written by govman releases before v1.3.4 used key names without underscores, for example `download.maxconnections` or `shell.autodetect`. Those keys no longer match the current schema and would previously make loading fail with "invalid keys" errors.
+
+Since v1.3.5, govman migrates such files automatically on the first load:
+
+- Legacy keys are rewritten to their current snake_case names in their respective sections: `max_connections`, `retry_count`, and `retry_delay` in `download`; `project_file` in `auto_switch`; `auto_detect` in `shell`; `api_url`, `download_url`, and `cache_expiry` in `go_releases`; and `github_api_url` and `github_releases_url` in `self_update`.
+- The original file is preserved as `config.yaml.migrated.bak` (mode `0600`) before the config is atomically replaced, in case you need to inspect or restore it. An existing backup is never overwritten.
+- When both a legacy and a current key exist, the current key wins and the legacy one is removed.
+- Config files that already use the current key names are left untouched and no backup is created.
+
+No manual action is needed when upgrading: run any govman command and the migration happens automatically.
+
 ## Active options
 
 ### Paths
