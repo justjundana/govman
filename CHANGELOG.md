@@ -5,6 +5,12 @@ All notable changes to GOVMAN (Go Version Manager) will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-09-01
+
+### Fixed
+
+- Automatically migrated configuration files written by pre-v1.3.4 releases: legacy keys without underscores (`maxconnections`, `retrycount`, `retrydelay`, `projectfile`, `autodetect`, `apiurl`, `downloadurl`, `cacheexpiry`, `githubapiurl`, `githubreleasesurl`) are rewritten to their current snake_case names on load, so upgrading no longer fails with "invalid keys" errors. The original file is preserved as `config.yaml.migrated.bak` (mode `0600`) before rewriting.
+
 ## [1.3.4] - 2026-08-01
 
 ### Security

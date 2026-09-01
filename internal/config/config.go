@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	viper "github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -62,6 +64,217 @@ type SelfUpdateConfig struct {
 	GitHubReleasesURL string `mapstructure:"github_releases_url"`
 }
 
+// legacyConfigKeyAliases maps key names written by govman releases before
+// v1.3.4 (which serialized config without underscores) to their current
+// snake_case names. Upgrading across that boundary previously made Load fail
+// with "invalid keys" because UnmarshalExact rejects unknown keys; we now
+// detect and rewrite them before unmarshalling.
+var legacyConfigKeyAliases = map[string]map[string]string{
+	"download": {
+		"maxconnections": "max_connections",
+		"retrycount":     "retry_count",
+		"retrydelay":     "retry_delay",
+	},
+	"auto_switch": {
+		"projectfile": "project_file",
+	},
+	"shell": {
+		"autodetect": "auto_detect",
+	},
+	"go_releases": {
+		"apiurl":      "api_url",
+		"downloadurl": "download_url",
+		"cacheexpiry": "cache_expiry",
+	},
+	"self_update": {
+		"githubapiurl":      "github_api_url",
+		"githubreleasesurl": "github_releases_url",
+	},
+}
+
+// normalizeLegacyKeys rewrites legacy keys in their valid sections while
+// retaining YAML comments and scalar styles. It returns the original bytes
+// unchanged when no migration is needed or when the YAML is invalid, allowing
+// the regular decoder to report invalid input.
+func normalizeLegacyKeys(rawConfig []byte) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(rawConfig, &document); err != nil {
+		// Leave invalid YAML untouched: the later read path reports it.
+		return rawConfig, nil
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return rawConfig, nil
+	}
+
+	changed := false
+	root := document.Content[0]
+	for index := 0; index < len(root.Content); index += 2 {
+		section, value := root.Content[index], root.Content[index+1]
+		aliases, ok := legacyConfigKeyAliases[section.Value]
+		if !ok {
+			continue
+		}
+		if rewriteLegacyKeys(value, aliases) {
+			changed = true
+		}
+	}
+	if !changed {
+		return rawConfig, nil
+	}
+	normalized, err := yaml.Marshal(&document)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal normalized config: %w", err)
+	}
+	return normalized, nil
+}
+
+// rewriteLegacyKeys updates a YAML mapping in place. When both spellings are
+// present, the current spelling wins and the legacy key is removed.
+func rewriteLegacyKeys(mapping *yaml.Node, aliases map[string]string) bool {
+	if mapping.Kind != yaml.MappingNode {
+		return false
+	}
+
+	currentKeys := make(map[string]struct{}, len(mapping.Content)/2)
+	for index := 0; index < len(mapping.Content); index += 2 {
+		currentKeys[mapping.Content[index].Value] = struct{}{}
+	}
+
+	changed := false
+	for index := 0; index < len(mapping.Content); {
+		key := mapping.Content[index]
+		newKey, isLegacy := aliases[key.Value]
+		if !isLegacy {
+			index += 2
+			continue
+		}
+
+		changed = true
+		if _, exists := currentKeys[newKey]; exists {
+			mapping.Content = append(mapping.Content[:index], mapping.Content[index+2:]...)
+			continue
+		}
+		key.Value = newKey
+		currentKeys[newKey] = struct{}{}
+		index += 2
+	}
+	return changed
+}
+
+// migrateLegacyConfig rewrites a config file that still uses pre-v1.3.4 key
+// names in place: it preserves the original contents as <path>.migrated.bak,
+// then replaces the config atomically. It is a no-op when the file contains no
+// legacy keys.
+func (c *Config) migrateLegacyConfig(rawConfig []byte) error {
+	normalized, err := normalizeLegacyKeys(rawConfig)
+	if err != nil {
+		return err
+	}
+	if string(normalized) == string(rawConfig) {
+		return nil
+	}
+	backupPath := c.configPath + ".migrated.bak"
+	if err := createLegacyConfigBackup(backupPath, rawConfig); err != nil {
+		return fmt.Errorf("failed to back up legacy config: %w", err)
+	}
+	if err := writeConfigAtomically(c.configPath, normalized); err != nil {
+		return fmt.Errorf("failed to migrate legacy config keys: %w", err)
+	}
+	return nil
+}
+
+// createLegacyConfigBackup creates a 0600 backup without following or
+// overwriting an existing path. If a previous interrupted migration already
+// created the exact same secure backup, it is safe to resume from it.
+func createLegacyConfigBackup(backupPath string, rawConfig []byte) error {
+	backupDir := filepath.Dir(backupPath)
+	tempFile, err := os.CreateTemp(backupDir, ".govman-config-backup-*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary backup: %w", err)
+	}
+	tempPath := tempFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tempFile.Close()
+		}
+		_ = os.Remove(tempPath)
+	}()
+
+	if err := tempFile.Chmod(0600); err != nil {
+		return fmt.Errorf("failed to secure temporary backup: %w", err)
+	}
+	if _, err := tempFile.Write(rawConfig); err != nil {
+		return fmt.Errorf("failed to write temporary backup: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temporary backup: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary backup: %w", err)
+	}
+	closed = true
+
+	if err := os.Link(tempPath, backupPath); err == nil {
+		return nil
+	} else if !os.IsExist(err) {
+		return fmt.Errorf("failed to create backup: %w", err)
+	}
+
+	info, err := os.Lstat(backupPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect existing backup: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		return fmt.Errorf("existing backup must be a regular file with mode 0600: %s", backupPath)
+	}
+	existing, err := os.ReadFile(backupPath)
+	if err != nil {
+		return fmt.Errorf("failed to read existing backup: %w", err)
+	}
+	if !bytes.Equal(existing, rawConfig) {
+		return fmt.Errorf("existing backup does not match the legacy config: %s", backupPath)
+	}
+	return nil
+}
+
+// writeConfigAtomically writes a complete replacement to a secure temporary
+// file and renames it into place, so interrupted migrations never truncate the
+// live config file.
+func writeConfigAtomically(configPath string, contents []byte) error {
+	configDir := filepath.Dir(configPath)
+	tempFile, err := os.CreateTemp(configDir, ".govman-config-*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary config file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tempFile.Close()
+		}
+		_ = os.Remove(tempPath)
+	}()
+
+	if err := tempFile.Chmod(0600); err != nil {
+		return fmt.Errorf("failed to secure temporary config file: %w", err)
+	}
+	if _, err := tempFile.Write(contents); err != nil {
+		return fmt.Errorf("failed to write temporary config file: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temporary config file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary config file: %w", err)
+	}
+	closed = true
+	if err := os.Rename(tempPath, configPath); err != nil {
+		return fmt.Errorf("failed to replace config file: %w", err)
+	}
+	return nil
+}
+
 // Load loads configuration from a YAML file.
 // If configFile is empty, it defaults to ~/.govman/config.yaml.
 // It applies defaults, reads/unmarshals the file, expands paths, ensures directories, and returns the Config or an error.
@@ -96,6 +309,17 @@ func Load(configFile string) (*Config, error) {
 	}
 	if err := os.Chmod(cfg.configPath, 0600); err != nil {
 		return nil, fmt.Errorf("failed to restrict config file permissions: %w", err)
+	}
+
+	// Migrate config files written by pre-v1.3.4 releases, whose key names
+	// lacked underscores. UnmarshalExact below rejects those unknown keys, so
+	// rewrite the file before the decoder reads it.
+	rawConfig, err := os.ReadFile(cfg.configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+	if err := cfg.migrateLegacyConfig(rawConfig); err != nil {
+		return nil, fmt.Errorf("failed to migrate config file: %w", err)
 	}
 
 	decoder := newDecoder(cfg.configPath, cfg)

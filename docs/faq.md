@@ -119,6 +119,10 @@ Development builds do not self-update. The update refuses automatic downgrade an
 
 Yes. Reserved fields remain accepted, installed toolchain directory names remain compatible, and existing project files/shell marker blocks are migrated in place.
 
+### Will v1.3.5 read my pre-v1.3.4 config?
+
+Yes. Config files written by older releases used key names without underscores (for example `maxconnections` or `autodetect`). On the first load, govman rewrites those legacy keys to the current snake_case names automatically and keeps the original contents as `config.yaml.migrated.bak`, so no manual editing is required.
+
 ### Is `GOVMAN_HOME` supported?
 
 No. Use `install_dir`, `cache_dir`, and `--config`.
