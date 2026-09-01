@@ -12,6 +12,21 @@ govman follows Semantic Versioning (SemVer):
 
 ## Latest Release
 
+### v1.3.5
+
+**Release Date:** September 1, 2026
+
+v1.3.5 is a compatibility patch that lets govman read configuration files written by pre-v1.3.4 releases.
+
+**Bug Fixes:**
+- Legacy config keys without underscores (`maxconnections`, `retrycount`, `retrydelay`, `projectfile`, `autodetect`, `apiurl`, `downloadurl`, `cacheexpiry`, `githubapiurl`, `githubreleasesurl`) are migrated automatically on load to their current snake_case names.
+- Upgrading no longer fails with "invalid keys" errors when the existing config still uses the old key names.
+- The original config is preserved as `config.yaml.migrated.bak` (mode `0600`) before it is rewritten; configs that already use current key names are left untouched.
+
+**Compatibility:**
+- Existing commands, flags, config files, installed version directories, `.govman-goversion` files, and shell blocks remain supported.
+- No manual configuration editing is required when upgrading from any earlier release.
+
 ### v1.3.4
 
 **Release Date:** August 1, 2026
@@ -47,6 +62,14 @@ v1.3.4 is a security, integrity, and reliability patch. It adds no command, flag
 - No `GOVMAN_HOME` behavior is provided. Configure `install_dir`, `cache_dir`, or `--config` explicitly.
 
 ## Previous Releases
+
+### v1.3.4
+
+**Release Date:** August 01, 2026
+
+**Highlights:**
+- 🔒 **Security:** Strict version input validation and contained paths, transactional archive extraction, SHA-256 verification for installers and self-update, and hardened shell/PATH cleanup
+- 🛠️ **Reliability:** Isolated Viper state with strict decoding, transactional temp files, deterministic builds, and install metadata
 
 ### v1.3.3
 
